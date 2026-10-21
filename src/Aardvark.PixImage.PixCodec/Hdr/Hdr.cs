@@ -192,7 +192,9 @@ namespace Aardvark.ImageCodecs.HdrImpl
             var h = ParseHeader(d, out int pos, out int w, out int ht, out var order);
             if ((long)w * ht > opt.MaxPixels) throw new ImageNotSupportedException($"HDR: {w}x{ht} exceeds MaxPixels");
             int lines = order.XMajor ? w : ht, len = order.XMajor ? ht : w;
-            var rgbe = new byte[(long)lines * len * 4 > int.MaxValue ? throw new ImageNotSupportedException("HDR: too large") : lines * len * 4];
+            if ((long)lines * len * 3 > Array.MaxLength) throw new ImageNotSupportedException("HDR: too large");
+            var px = new float[(long)w * ht * 3];
+            double scale = opt.ApplyExposure ? 1 / h.Exposure : 1;
             var line = new byte[len * 4];
             for (int s = 0; s < lines; s++)
             {
@@ -212,19 +214,14 @@ namespace Aardvark.ImageCodecs.HdrImpl
                         y = order.FirstNeg ? s : lines - 1 - s;   // "-Y": first scanline is the top row
                         x = order.SecondNeg ? len - 1 - i : i;    // "+X": left to right
                     }
-                    line.AsSpan(i * 4, 4).CopyTo(rgbe.AsSpan((y * w + x) * 4, 4));
+                    int e = line[i * 4 + 3];
+                    if (e == 0) continue;
+                    double f = Math.ScaleB(scale, e - 136);
+                    int o = (y * w + x) * 3;
+                    px[o] = (float)(line[i * 4] * f);
+                    px[o + 1] = (float)(line[i * 4 + 1] * f);
+                    px[o + 2] = (float)(line[i * 4 + 2] * f);
                 }
-            }
-            var px = new float[(long)w * ht * 3];
-            double scale = opt.ApplyExposure ? 1 / h.Exposure : 1;
-            for (int i = 0, n = w * ht; i < n; i++)
-            {
-                int e = rgbe[i * 4 + 3];
-                if (e == 0) continue;
-                double f = Math.ScaleB(scale, e - 136);
-                px[i * 3] = (float)(rgbe[i * 4] * f);
-                px[i * 3 + 1] = (float)(rgbe[i * 4 + 1] * f);
-                px[i * 3 + 2] = (float)(rgbe[i * 4 + 2] * f);
             }
             var color = ColorModel.Rgb;
             if (h.IsXyz)

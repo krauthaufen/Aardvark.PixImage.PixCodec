@@ -212,7 +212,9 @@ namespace Aardvark.ImageCodecs
                 {
                     try
                     {
-                        Parallel.For(0, needed.Length, () => new ExrScratch(), (i, _, s) => { d.DecodeChunk(needed[i], s); return s; }, _ => { });
+                        // Parallel.For starts a worker replica (and its local state) many times: their scratch is passed on
+                        var spare = new System.Collections.Concurrent.ConcurrentBag<ExrScratch>();
+                        Parallel.For(0, needed.Length, () => spare.TryTake(out var s) ? s : new ExrScratch(), (i, _, s) => { d.DecodeChunk(needed[i], s); return s; }, spare.Add);
                     }
                     catch (AggregateException e) when (e.InnerException != null)
                     {

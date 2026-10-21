@@ -113,7 +113,8 @@ namespace Aardvark.ImageCodecs
                     {
                         try
                         {
-                            Parallel.For(from, to, () => new ExrScratch(), (i, _, s) => { EncodeChunk(order[i].part, order[i].chunk, s); return s; }, _ => { });
+                            var spare = new System.Collections.Concurrent.ConcurrentBag<ExrScratch>();
+                            Parallel.For(from, to, () => spare.TryTake(out var s) ? s : new ExrScratch(), (i, _, s) => { EncodeChunk(order[i].part, order[i].chunk, s); return s; }, spare.Add);
                         }
                         catch (AggregateException ex) when (ex.InnerException != null)
                         {

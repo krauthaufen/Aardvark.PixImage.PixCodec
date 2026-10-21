@@ -167,7 +167,7 @@ namespace Aardvark.ImageCodecs
             return options.ApplyOrientation && f.Orientation > 1 ? ImageOps.ApplyOrientation(img) : img;
         }
 
-        public static RawImage Decode(Stream stream, JpegXrDecodeOptions? options = null) => Decode(ImageCodec.ReadAll(stream), options);
+        public static RawImage Decode(Stream stream, JpegXrDecodeOptions? options = null) => ImageCodec.WithData(stream, d => Decode(d, options));
 
         /// <summary>Encodes an image (lossless by default) with its ICC profile, XMP and resolution.</summary>
         public static byte[] Encode(RawImage image, JpegXrEncodeOptions? options = null)

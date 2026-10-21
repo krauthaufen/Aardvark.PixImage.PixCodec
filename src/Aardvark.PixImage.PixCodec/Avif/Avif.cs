@@ -261,7 +261,7 @@ namespace Aardvark.ImageCodecs
             return Guard(() => DecodeCore(copy, options ?? AvifDecodeOptions.Default));
         }
 
-        public static RawImage Decode(Stream stream, AvifDecodeOptions? options = null) => Decode(ImageCodec.ReadAll(stream), options);
+        public static RawImage Decode(Stream stream, AvifDecodeOptions? options = null) => ImageCodec.WithData(stream, d => Decode(d, options));
 
         static RawImage DecodeCore(byte[] data, AvifDecodeOptions opt)
         {

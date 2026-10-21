@@ -188,7 +188,7 @@ namespace Aardvark.ImageCodecs
             return Mapped(path, length, d => GetInfo(d));
         }
 
-        delegate T SpanFunc<T>(ReadOnlySpan<byte> data);
+        internal delegate T SpanFunc<T>(ReadOnlySpan<byte> data);
 
         static unsafe T Mapped<T>(string path, long length, SpanFunc<T> f)
         {
@@ -226,7 +226,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <inheritdoc cref="ReadMetadata(ReadOnlySpan{byte})"/>
-        public static PhotoMetadata ReadMetadata(Stream stream) => ReadMetadata(ReadAll(stream));
+        public static PhotoMetadata ReadMetadata(Stream stream) => WithData(stream, d => ReadMetadata(d));
 
         /// <summary>Returns false instead of throwing when the file is missing, unreadable or not a supported image.</summary>
         public static bool TryGetInfo(string path, out ImageInfo info)
@@ -370,10 +370,10 @@ namespace Aardvark.ImageCodecs
         };
 
         /// <inheritdoc cref="DecodeHdr(ReadOnlySpan{byte}, double?)"/>
-        public static RawImage DecodeHdr(Stream stream, double? headroom = null) => DecodeHdr(ReadAll(stream), headroom);
+        public static RawImage DecodeHdr(Stream stream, double? headroom = null) => WithData(stream, d => DecodeHdr(d, headroom));
 
         /// <inheritdoc cref="DecodeHdr(ReadOnlySpan{byte}, double?)"/>
-        public static RawImage DecodeHdr(string path, double? headroom = null) => DecodeHdr(File.ReadAllBytes(path), headroom);
+        public static RawImage DecodeHdr(string path, double? headroom = null) => WithFile(path, d => DecodeHdr(d, headroom));
 
         static RawImage DecodeCore(ReadOnlySpan<byte> data) => DetectFormat(data) switch
         {
@@ -417,7 +417,7 @@ namespace Aardvark.ImageCodecs
             _ => throw new ImageFormatException("unknown image format"),
         };
 
-        public static RawImage Decode(Stream stream) => Decode(ReadAll(stream));
+        public static RawImage Decode(Stream stream) => WithData(stream, d => Decode(d));
 
         /// <summary>
         /// Decodes an image file. For volumes (NRRD, NIfTI, MetaImage, FITS cubes, DDS / KTX volume textures) this is the first z
@@ -427,7 +427,7 @@ namespace Aardvark.ImageCodecs
         {
             var f = SniffFile(path);
             if (IsVolumeFormat(f)) return ColorTags.Tag(DecodeVolume(path).GetSlice(0), default, f);
-            return Decode(File.ReadAllBytes(path));
+            return WithFile(path, d => Decode(d));
         }
 
         static bool IsVolumeFormat(ImageFormat f) => f is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits;
@@ -455,7 +455,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Nifti: return Nifti.DecodeVolume(path, options);
                 case ImageFormat.MetaImage: return MetaImage.DecodeVolume(path, options);
                 case ImageFormat.Fits: return Fits.DecodeVolume(path, options);
-                default: return DecodeVolume(File.ReadAllBytes(path), options);
+                default: return WithFile(path, d => DecodeVolume(d, options));
             }
         }
 
@@ -493,7 +493,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <inheritdoc cref="DecodeVolume(ReadOnlySpan{byte}, VolumeDecodeOptions?)"/>
-        public static RawVolume DecodeVolume(Stream stream, VolumeDecodeOptions? options = null) => DecodeVolume(ReadAll(stream), options);
+        public static RawVolume DecodeVolume(Stream stream, VolumeDecodeOptions? options = null) => WithData(stream, d => DecodeVolume(d, options));
 
         /// <summary>
         /// Writes a sample grid in the format given by the extension: .nrrd (gzip), .nhdr (+ .raw.gz), .nii, .nii.gz, .mha,
@@ -617,7 +617,7 @@ namespace Aardvark.ImageCodecs
                 for (int z = 0; z < v.Depth; z++) r.Add(v.GetSlice(z, f));
         }
 
-        public static RawImage[] DecodeAll(Stream stream) => DecodeAll(ReadAll(stream));
+        public static RawImage[] DecodeAll(Stream stream) => WithData(stream, d => DecodeAll(d));
 
         /// <summary>
         /// <see cref="DecodeAll(ReadOnlySpan{byte})"/> of a file; for NRRD, NIfTI, MetaImage and FITS every z slice of every frame
@@ -632,7 +632,7 @@ namespace Aardvark.ImageCodecs
                 AddSlices(r, DecodeVolume(path));
                 return ColorTags.Tag(r.ToArray(), default, f);
             }
-            return DecodeAll(File.ReadAllBytes(path));
+            return WithFile(path, d => DecodeAll(d));
         }
 
         /// <summary>
@@ -651,8 +651,8 @@ namespace Aardvark.ImageCodecs
             _ => new[] { Decode(data) },
         };
 
-        public static RawImage[] DecodeMipmaps(Stream stream) => DecodeMipmaps(ReadAll(stream));
-        public static RawImage[] DecodeMipmaps(string path) => DecodeMipmaps(File.ReadAllBytes(path));
+        public static RawImage[] DecodeMipmaps(Stream stream) => WithData(stream, d => DecodeMipmaps(d));
+        public static RawImage[] DecodeMipmaps(string path) => WithFile(path, d => DecodeMipmaps(d));
 
         static RawImage[] Frames<TF>(IReadOnlyList<TF> frames, Func<TF, RawImage> image)
         {
@@ -720,6 +720,39 @@ namespace Aardvark.ImageCodecs
             using var ms = new MemoryStream();
             Encode(image, ms, format);
             return ms.ToArray();
+        }
+
+        /// <summary>
+        /// Runs <paramref name="f"/> over the remainder of the stream without keeping a copy of it: a MemoryStream's own
+        /// buffer, else the data read into a pooled buffer that is handed back afterwards (decoders only read the span
+        /// while they run). Leaves the stream at its end.
+        /// </summary>
+        internal static T WithData<T>(Stream stream, SpanFunc<T> f)
+        {
+            ArgumentNullException.ThrowIfNull(stream);
+            if (stream is MemoryStream m && m.TryGetBuffer(out var seg))
+            {
+                int pos = (int)Math.Min(m.Position, seg.Count);
+                m.Position = m.Length;
+                return f(seg.AsSpan(pos));
+            }
+            if (!stream.CanSeek) return f(ReadAll(stream));
+            long len = Math.Max(stream.Length - stream.Position, 0);
+            if (len > Array.MaxLength) throw new IOException("the data is too large for one array");
+            var buf = System.Buffers.ArrayPool<byte>.Shared.Rent((int)len);
+            try
+            {
+                stream.ReadExactly(buf, 0, (int)len);
+                return f(buf.AsSpan(0, (int)len));
+            }
+            finally { System.Buffers.ArrayPool<byte>.Shared.Return(buf); }
+        }
+
+        /// <summary><see cref="WithData"/> over a whole file.</summary>
+        internal static T WithFile<T>(string path, SpanFunc<T> f)
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.SequentialScan);
+            return WithData(fs, f);
         }
 
         /// <summary>Reads the remainder of a stream into an array.</summary>

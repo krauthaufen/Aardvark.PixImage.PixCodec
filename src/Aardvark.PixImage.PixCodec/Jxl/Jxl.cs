@@ -246,7 +246,7 @@ namespace Aardvark.ImageCodecs
             return outImg;
         }
 
-        public static RawImage Decode(Stream stream, JxlDecodeOptions? options = null) => Decode(ImageCodec.ReadAll(stream), options);
+        public static RawImage Decode(Stream stream, JxlDecodeOptions? options = null) => ImageCodec.WithData(stream, d => Decode(d, options));
 
         /// <summary>Decodes all displayed frames (each the whole canvas).</summary>
         public static JxlAnimation DecodeAnimation(ReadOnlySpan<byte> data, JxlDecodeOptions? options = null)

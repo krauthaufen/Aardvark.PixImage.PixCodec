@@ -106,32 +106,13 @@ namespace Aardvark.ImageCodecs.TgaImpl
             if (!h.Rle && pixels > opt.MaxUnbackedPixels && data.Length - pos < pixels * bpp)
                 throw new ImageFormatException($"TGA: {w}x{hh} image with only {data.Length - pos} bytes of pixel data");
 
-            // the stored pixels in file order, decompressed
-            var raw = new byte[pixels * bpp];
-            if (!h.Rle) data.Slice(pos, (int)Math.Min(raw.LongLength, data.Length - pos)).CopyTo(raw);
-            else
-            {
-                long n = 0, total = raw.LongLength;
-                while (n < total && pos < data.Length)
-                {
-                    int c = data[pos++];
-                    int count = (c & 0x7F) + 1;
-                    if ((c & 0x80) != 0)
-                    {
-                        if (pos + bpp > data.Length) break;
-                        var v = data.Slice(pos, bpp);
-                        pos += bpp;
-                        for (int i = 0; i < count && n < total; i++, n += bpp) v.CopyTo(raw.AsSpan((int)n));
-                    }
-                    else
-                    {
-                        int bytes = (int)Math.Min(Math.Min(count * bpp, data.Length - pos), total - n);
-                        data.Slice(pos, bytes).CopyTo(raw.AsSpan((int)n));
-                        pos += count * bpp;
-                        n += bytes;
-                    }
-                }
-            }
+            // the stored pixels in file order, a row at a time: straight from the data when it is plain and complete,
+            // else decompressed (RLE packets may run across rows) or zero padded into a row buffer
+            int rowBytes = w * bpp;
+            bool direct = !h.Rle && data.Length - pos >= pixels * bpp;
+            var rowArr = direct ? null : new byte[rowBytes];
+            int rleLeft = 0;
+            bool rleRepeat = false;
 
             var color = h.Color;
             int ch = RawImage.ChannelCount(color);
@@ -140,11 +121,56 @@ namespace Aardvark.ImageCodecs.TgaImpl
             bool alpha = h.HasAlpha, anyAlpha = false;
             for (int y = 0; y < hh; y++)
             {
+                ReadOnlySpan<byte> raw;
+                if (direct) raw = data.Slice(pos + y * rowBytes, rowBytes);
+                else
+                {
+                    var row = rowArr.AsSpan();
+                    int n = 0;
+                    if (!h.Rle)
+                    {
+                        long start = pos + (long)y * rowBytes;
+                        if (start < data.Length) { n = (int)Math.Min(rowBytes, data.Length - start); data.Slice((int)start, n).CopyTo(row); }
+                    }
+                    else
+                    {
+                        while (n < rowBytes)
+                        {
+                            if (rleLeft == 0)
+                            {
+                                if (pos >= data.Length) break;
+                                int c = data[pos++];
+                                rleLeft = (c & 0x7F) + 1;
+                                rleRepeat = (c & 0x80) != 0;
+                                if (rleRepeat)
+                                {
+                                    if (pos + bpp > data.Length) { pos = data.Length; rleLeft = 0; break; }
+                                    pos += bpp;
+                                }
+                            }
+                            if (rleRepeat)
+                            {
+                                var v = data.Slice(pos - bpp, bpp);
+                                for (; rleLeft > 0 && n < rowBytes; rleLeft--, n += bpp) v.CopyTo(row.Slice(n));
+                            }
+                            else
+                            {
+                                int k = Math.Min(rleLeft, (rowBytes - n) / bpp);
+                                int bytes = Math.Min(k * bpp, data.Length - pos);
+                                data.Slice(pos, bytes).CopyTo(row.Slice(n));
+                                pos += bytes; n += bytes; rleLeft -= k;
+                                if (bytes < k * bpp) { rleLeft = 0; break; }
+                            }
+                        }
+                    }
+                    row.Slice(n).Clear();
+                    raw = row;
+                }
                 int dy = h.TopDown ? y : hh - 1 - y;
                 for (int x = 0; x < w; x++)
                 {
                     int dx = h.RightToLeft ? w - 1 - x : x;
-                    var s = raw.AsSpan((int)(((long)y * w + x) * bpp), bpp);
+                    var s = raw.Slice(x * bpp, bpp);
                     if (h.Kind == 1)
                     {
                         int idx = (bpp == 1 ? s[0] : s[0] | s[1] << 8) - h.MapFirst;

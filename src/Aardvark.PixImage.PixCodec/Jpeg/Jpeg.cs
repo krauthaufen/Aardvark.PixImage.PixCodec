@@ -164,11 +164,11 @@ namespace Aardvark.ImageCodecs
             return i;
         }
 
-        static JpegDecoder Open(byte* p, ReadOnlySpan<byte> data, JpegDecodeOptions o, bool headerOnly)
+        static JpegDecoder Open(byte* p, ReadOnlySpan<byte> data, JpegDecodeOptions o, bool headerOnly, Func<JpegDecoder, JpegPost.Assembler?>? stream = null)
         {
             if (o.ScaleDenominator is not (1 or 2 or 4 or 8)) throw new ArgumentException("ScaleDenominator must be 1, 2, 4 or 8");
             int start = FindStart(data, o);
-            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator };
+            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator, OnStream = stream };
             d.Parse(headerOnly);
             return d;
         }
@@ -240,12 +240,27 @@ namespace Aardvark.ImageCodecs
             options ??= s_defaults;
             fixed (byte* p = data)
             {
-                var d = Open(p, data, options, headerOnly: false);
-                var (cs, model, channels) = Plan(d, options);
+                // 8 bit frames are converted band by band into the output while decoding instead of keeping whole planes
+                // (rows go straight to their upright place, so a rotated photo needs no second copy either)
+                byte[]? streamed = null;
+                (JpegColorSpace, ColorModel, int) streamPlan = default;
+                int streamOrientation = 1;
+                JpegPost.Assembler? Stream(JpegDecoder dd)
+                {
+                    streamPlan = Plan(dd, options);
+                    int o = options.ApplyOrientation && dd.HasMetadata ? dd.Metadata.Orientation : 1;
+                    streamOrientation = o is >= 2 and <= 8 ? o : 1;
+                    streamed = GC.AllocateUninitializedArray<byte>(checked(dd.OutWidth * dd.OutHeight * streamPlan.Item3), pinned: true);
+                    fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation);
+                }
+                var d = Open(p, data, options, headerOnly: false, Stream);
+                // (as planned when the scan started, should a marker after it change the color space)
+                var (cs, model, channels) = d.Streamed ? streamPlan : Plan(d, options);
                 int w = d.OutWidth, h = d.OutHeight;
                 int count = checked(w * h * channels);
                 Array pixels;
-                if (!d.Wide)
+                if (d.Streamed) pixels = streamed!;
+                else if (!d.Wide)
                 {
                     var bytes = GC.AllocateUninitializedArray<byte>(count);
                     JpegPost.Assemble(d, bytes, w, h, cs);
@@ -265,6 +280,8 @@ namespace Aardvark.ImageCodecs
                     }
                 }
                 var meta = d.HasMetadata ? d.Metadata : null;
+                if (d.Streamed && streamOrientation >= 5) (w, h) = (h, w);
+                if (d.Streamed && streamOrientation > 1) ImageOps.MarkUpright(meta, streamOrientation);
                 var img = new RawImage(w, h, model, pixels, channels, meta);
                 return options.ApplyOrientation ? ImageOps.ApplyOrientation(img) : img;
             }
@@ -289,11 +306,16 @@ namespace Aardvark.ImageCodecs
         /// </summary>
         internal static void DecodeForTiff(JpegTiffTables? tables, ReadOnlySpan<byte> data, int width, int height, int components, bool convertYCbCrToRgb, Span<byte> destination)
         {
+            var cs = TiffConversion(components, convertYCbCrToRgb);
             fixed (byte* p = data)
+            fixed (byte* o = destination)
             {
-                var d = OpenForTiff(p, data.Length, tables, width, height, components, destination.Length);
+                // 8 bit data goes band by band straight into the destination (frames that do not fit are rejected after parsing)
+                byte* op = o;
+                var d = OpenForTiff(p, data.Length, tables, width, height, components, destination.Length,
+                    dd => dd.Comps.Length == components && dd.Width >= width && dd.Height >= height ? new JpegPost.Assembler(dd, op, width, height, cs) : null);
+                if (d.Streamed) return;
                 if (d.Precision > 8) throw new ImageFormatException($"JPEG data in TIFF has {d.Precision} bit samples, expected at most 8");
-                var cs = TiffConversion(components, convertYCbCrToRgb);
                 if (!d.Wide) { JpegPost.Assemble(d, destination, width, height, cs); return; }
                 var wide = new ushort[destination.Length];
                 JpegPost16.Assemble(d, wide, width, height, cs);
@@ -321,11 +343,12 @@ namespace Aardvark.ImageCodecs
         static JpegColorSpace TiffConversion(int components, bool convertYCbCrToRgb)
             => components == 3 && convertYCbCrToRgb ? JpegColorSpace.YCbCr : components == 1 ? JpegColorSpace.Gray : JpegColorSpace.Raw;
 
-        static JpegDecoder OpenForTiff(byte* p, int length, JpegTiffTables? tables, int width, int height, int components, int destinationLength)
+        static JpegDecoder OpenForTiff(byte* p, int length, JpegTiffTables? tables, int width, int height, int components, int destinationLength,
+            Func<JpegDecoder, JpegPost.Assembler?>? stream = null)
         {
             if (width <= 0 || height <= 0 || components <= 0 || destinationLength != (long)width * height * components)
                 throw new ArgumentException("destination does not match width x height x components");
-            var d = new JpegDecoder(p, length);
+            var d = new JpegDecoder(p, length) { OnStream = stream };
             if (tables != null) d.ImportTables(tables);
             d.Parse(headerOnly: false);
             if (d.Comps.Length != components)

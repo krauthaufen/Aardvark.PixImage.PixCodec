@@ -179,41 +179,29 @@ namespace Aardvark.ImageCodecs
             var dcData = src.Slice(p, (int)dcPacked); p += (int)dcPacked;
             var rleData = src.Slice(p, (int)rlePacked);
 
-            var ac = new ushort[(int)acCount];
+            // the sections in buffers kept for the next chunk (slots 0..2 + 3.. for the planes)
+            var ac = s.Reuse<ushort>(0, (int)acCount);
             if (acCount > 0)
             {
-                if (acCompression == 0) ExrPiz.HufDecode(acData, ac, s.Piz ??= new ExrPiz.Tables(), s);
-                else ExrCodecs.Inflate(acData, MemoryMarshal.AsBytes<ushort>(ac));
+                if (acCompression == 0) ExrPiz.HufDecode(acData, ac.AsSpan(0, (int)acCount), s.Piz ??= new ExrPiz.Tables(), s);
+                else ExrCodecs.Inflate(acData, MemoryMarshal.AsBytes(ac.AsSpan(0, (int)acCount)));
             }
-            var dc = new ushort[(int)l.DcCount];
+            var dc = s.Reuse<ushort>(1, (int)l.DcCount);
             if (l.DcCount > 0)
             {
-                var tmp = new byte[l.DcCount * 2];
+                var tmp = s.Reuse<byte>(2, (int)l.DcCount * 2).AsSpan(0, (int)l.DcCount * 2);
                 ExrCodecs.Inflate(dcData, tmp);
-                ExrCodecs.Reconstruct(tmp, MemoryMarshal.AsBytes<ushort>(dc));
+                ExrCodecs.Reconstruct(tmp, MemoryMarshal.AsBytes(dc.AsSpan(0, (int)l.DcCount)));
             }
             var rle = new byte[l.RleBytes];
             if (l.RleBytes > 0)
             {
-                var tmp = new byte[rleSize];
+                var tmp = s.Reuse<byte>(2, (int)rleSize).AsSpan(0, (int)rleSize);
                 ExrCodecs.Inflate(rleData, tmp);
                 ExrCodecs.RleDecode(tmp, rle);
             }
             var unk = new byte[l.UnknownBytes];
             if (l.UnknownBytes > 0) ExrCodecs.Inflate(unknown, unk);
-
-            // DCT channels decode to planes of half bits; DC planes and the AC stream follow the decoding order
-            var halves = new ushort[nc][];
-            for (int i = 0; i < nc; i++)
-                if (scheme[i] == SchemeDct) halves[i] = new ushort[l.W[i] * l.H[i]];
-            int acPos = 0, dcPos = 0;
-            var dcStart = new int[nc];
-            foreach (var set in l.DctSets)
-            {
-                int blocks = (int)Blocks(l.W[set[0]], l.H[set[0]]);
-                foreach (int ch in set) { dcStart[ch] = dcPos; dcPos += blocks; }
-                DecodeDct(set.Length, set, halves, dc, dcStart, ac, ref acPos, l.W[set[0]], l.H[set[0]], c.Chans);
-            }
 
             // build the channel planes, then interleave them into lines
             var planes = s.Bytes(0, dst.Length);
@@ -222,15 +210,29 @@ namespace Aardvark.ImageCodecs
             fixed (byte* pd = dst)
             fixed (uint* h2f = ExrHalf.ToFloatBits)
             {
+                // DCT channels decode to half bits right in their planes (float ones into the upper half, widened below);
+                // DC planes and the AC stream follow the decoding order
+                ushort** halves = stackalloc ushort*[nc];
+                for (int i = 0; i < nc; i++)
+                    halves[i] = (ushort*)(pp + l.PlaneOffset[i] + (l.Bytes[i] == 4 ? 2L * l.W[i] * l.H[i] : 0));
+                int acPos = 0, dcPos = 0;
+                var dcStart = new int[nc];
+                foreach (var set in l.DctSets)
+                {
+                    int blocks = (int)Blocks(l.W[set[0]], l.H[set[0]]);
+                    foreach (int ch in set) { dcStart[ch] = dcPos; dcPos += blocks; }
+                    DecodeDct(set.Length, set, halves, dc, dcStart, ac, (int)acCount, ref acPos, l.W[set[0]], l.H[set[0]], c.Chans);
+                }
+
                 for (int i = 0; i < nc; i++)
                 {
                     int n = l.W[i] * l.H[i], bytes = l.Bytes[i];
                     byte* plane = pp + l.PlaneOffset[i];
                     if (scheme[i] == SchemeDct)
                     {
-                        var hp = halves[i];
-                        if (bytes == 2) for (int k = 0; k < n; k++) ((ushort*)plane)[k] = hp[k];
-                        else for (int k = 0; k < n; k++) ((uint*)plane)[k] = h2f[hp[k]];
+                        // in place, front to back: each float lands on halves that are already read
+                        ushort* hp = halves[i];
+                        if (bytes == 4) for (int k = 0; k < n; k++) { uint v = h2f[hp[k]]; ((uint*)plane)[k] = v; }
                     }
                     else if (scheme[i] == SchemeRle)
                     {
@@ -312,7 +314,7 @@ namespace Aardvark.ImageCodecs
             }
         }
 
-        static void DecodeDct(int ncomp, int[] chan, ushort[][] planes, ushort[] dc, int[] dcStart, ushort[] ac, ref int acPos, int w, int h, ExrChan[] chans)
+        static void DecodeDct(int ncomp, int[] chan, ushort** planes, ushort[] dc, int[] dcStart, ushort[] ac, int acCount, ref int acPos, int w, int h, ExrChan[] chans)
         {
             int nbx = (w + 7) / 8, nby = (h + 7) / 8;
             float* f = stackalloc float[3 * 64];
@@ -333,7 +335,7 @@ namespace Aardvark.ImageCodecs
                             int k = 1, last = 0;
                             while (k < 64)
                             {
-                                if (acPos >= ac.Length) throw Corrupt("AC data is truncated");
+                                if (acPos >= acCount) throw Corrupt("AC data is truncated");
                                 ushort v = ac[acPos++];
                                 if (v == 0xff00) break;                       // end of block
                                 if ((v >> 8) == 0xff) k += v & 0xff;          // run of zeros
@@ -360,7 +362,7 @@ namespace Aardvark.ImageCodecs
                         int x0 = bx * 8, y0 = by * 8, bw = Math.Min(8, w - x0), bh = Math.Min(8, h - y0);
                         for (int comp = 0; comp < ncomp; comp++)
                         {
-                            var plane = planes[chan[comp]];
+                            ushort* plane = planes[chan[comp]];
                             float* blk = f + comp * 64;
                             // channels flagged pLinear (RY / BY of luminance/chroma files) are stored as they are
                             bool linear = chans[chan[comp]].PLinear;

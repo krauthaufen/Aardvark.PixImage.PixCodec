@@ -377,6 +377,47 @@ public class JpegTests
         Assert.Equal((upright.Width, upright.Height, 1), (again.Width, again.Height, again.Metadata!.Orientation));
     }
 
+    public static IEnumerable<object[]> StreamedOrientationCases()
+    {
+        for (int o = 1; o <= 8; o++)
+            foreach (var color in new[] { ColorModel.Gray, ColorModel.Rgb })
+                foreach (bool progressive in new[] { false, true })
+                    foreach (int scale in new[] { 1, 4 })
+                        yield return new object[] { o, color, progressive, scale };
+    }
+
+    // Streamed decodes write rows straight to their upright place: the same pixels as turning the stored image afterwards.
+    [Theory]
+    [MemberData(nameof(StreamedOrientationCases))]
+    public void StreamedOrientationMatchesApplyOrientation(int orientation, ColorModel color, bool progressive, int scale)
+    {
+        var src = Synthetic(83, 45, color, seed: orientation);
+        src.Metadata = new ImageMetadata { Orientation = orientation };
+        var data = Encode(src, new JpegEncodeOptions { Quality = 90, Progressive = progressive, Subsampling = color == ColorModel.Rgb ? JpegSubsampling.Chroma420 : JpegSubsampling.Auto });
+        var stored = Jpeg.Decode(data, new JpegDecodeOptions { ApplyOrientation = false, ScaleDenominator = scale });
+        var upright = Jpeg.Decode(data, new JpegDecodeOptions { ScaleDenominator = scale });
+        TestUtil.AssertEqual(ImageOps.ApplyOrientation(stored), upright, 0);
+        Assert.Equal(1, upright.Metadata!.Orientation);
+    }
+
+    // Baseline and progressive decodes allocate about the output, rotated or not (no whole component planes, no second copy).
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(false, 6)]
+    [InlineData(true, 8)]
+    public void DecodeAllocatesAboutTheOutput(bool progressive, int orientation)
+    {
+        var src = Synthetic(1024, 768, ColorModel.Rgb, seed: 5);
+        src.Metadata = new ImageMetadata { Orientation = orientation };
+        var data = Encode(src, new JpegEncodeOptions { Quality = 90, Progressive = progressive, Subsampling = JpegSubsampling.Chroma444 });
+        Jpeg.Decode(data);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var img = Jpeg.Decode(data);
+        long used = GC.GetAllocatedBytesForCurrentThread() - before, output = img.Data.Length;
+        // progressive files keep their coefficients (two bytes per sample) until the last scan
+        Assert.True(used < output * (progressive ? 3.2 : 1.2), $"{used} bytes for {output} bytes of pixels");
+    }
+
     static readonly JpegDecodeOptions Stored = new() { ApplyOrientation = false };
 
     /// <summary>The orientation tag of an EXIF blob, read back through a JPEG carrying it.</summary>

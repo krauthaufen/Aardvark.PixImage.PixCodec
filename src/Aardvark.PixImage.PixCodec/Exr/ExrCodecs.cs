@@ -25,6 +25,16 @@ namespace Aardvark.ImageCodecs
             return b;
         }
 
+        readonly object?[] _arrays = new object?[8];
+
+        /// <summary>A zeroed reusable array of at least <paramref name="size"/> elements for the given slot (the rest is not cleared).</summary>
+        public T[] Reuse<T>(int slot, int size)
+        {
+            if (_arrays[slot] is T[] a && a.Length >= size) a.AsSpan(0, size).Clear();
+            else _arrays[slot] = a = new T[Math.Max(size, 64)];
+            return a;
+        }
+
         public ushort[] Words(int size)
         {
             if (_words == null || _words.Length < size) _words = new ushort[Math.Max(size, 256)];

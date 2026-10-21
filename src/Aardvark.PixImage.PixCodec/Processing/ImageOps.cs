@@ -108,13 +108,21 @@ namespace Aardvark.ImageCodecs
             if (o < 0 || o > 8) throw new ArgumentOutOfRangeException(nameof(orientation), "EXIF orientation is 1..8");
             if (o <= 1) return image;
             var r = Reorient(image, o);
-            if (r.Metadata is { } m)
-            {
-                m.Orientation = 1;
-                if (m.Exif != null) m.Exif = ExifTags.WithOrientation(m.Exif, 1);
-                if (m.Xmp != null) m.Xmp = ExifTags.XmpWithOrientation(m.Xmp, 1);
-            }
+            MarkUpright(r.Metadata);
             return r;
+        }
+
+        /// <summary>
+        /// Sets the orientation in the metadata (and its EXIF / XMP blocks) to 1 once the pixels are upright; for a turn
+        /// by 90 degrees (orientation 5..8) the resolutions swap too, as in <see cref="ApplyOrientation"/>.
+        /// </summary>
+        internal static void MarkUpright(ImageMetadata? m, int turnedFrom = 1)
+        {
+            if (m == null) return;
+            if (turnedFrom >= 5) (m.DpiX, m.DpiY) = (m.DpiY, m.DpiX);
+            m.Orientation = 1;
+            if (m.Exif != null) m.Exif = ExifTags.WithOrientation(m.Exif, 1);
+            if (m.Xmp != null) m.Xmp = ExifTags.XmpWithOrientation(m.Xmp, 1);
         }
 
         static RawImage Reorient(RawImage image, int o)

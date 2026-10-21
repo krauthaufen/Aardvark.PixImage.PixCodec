@@ -830,7 +830,7 @@ public class ExrFeatureTests
         var o = new ExrEncodeOptions();
         o.Attributes.Add(ExrAttribute.Float("xDensity", 72f));
         Assert.Equal((72.0, 72.0), (Exr.GetInfo(Encode(img, o)).DpiX, Exr.GetInfo(Encode(img, o)).DpiY));
-        Assert.Equal(1, o.Attributes.Count);
+        Assert.Single(o.Attributes);
         Assert.Null(Exr.Decode(Encode(RawImage.Create(6, 4, ColorModel.Rgb, SampleType.Float32), new ExrEncodeOptions())).Metadata);
         Assert.Equal(0.0, Exr.GetInfo(File.ReadAllBytes(TestUtil.Fixture("exr/rgb_half_zip.exr"))).DpiX);
     }

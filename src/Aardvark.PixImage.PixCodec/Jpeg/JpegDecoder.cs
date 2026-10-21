@@ -19,6 +19,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
         /// <summary>Samples that carry image content (the rest of the plane is padding).</summary>
         public int SampledW, SampledH;
         public int Stride;
+        /// <summary>
+        /// Streaming decode: the plane is a ring of <see cref="RingBlocks"/> block rows (<see cref="RingRows"/> sample rows)
+        /// instead of the whole component; 0 for a full plane. <see cref="UnitRows"/> sample rows complete per decoded unit row.
+        /// </summary>
+        public int RingBlocks, RingRows, UnitRows;
         public byte[]? PlaneArr;
         public byte* Plane;
         public ushort[]? Plane16Arr;
@@ -94,6 +99,17 @@ namespace Aardvark.ImageCodecs.JpegImpl
         public readonly ImageMetadata Metadata = new ImageMetadata();
         bool _hasMetadata;
         List<(int seq, int count, byte[] data)>? _icc;
+
+        /// <summary>
+        /// Set before parsing to decode 8 bit sequential (all components in one scan) and progressive frames in bands:
+        /// called once the planes are about to be allocated, it returns the assembler that consumes finished rows, or
+        /// null to decode into full planes. The planes are then small rings and <see cref="Streamed"/> tells that the
+        /// output is complete.
+        /// </summary>
+        public Func<JpegDecoder, JpegPost.Assembler?>? OnStream;
+        JpegPost.Assembler? _sink;
+        bool _streamDone;
+        public bool Streamed => _streamDone;
 
         public JpegDecoder(byte* data, int length)
         {
@@ -483,7 +499,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             }
         }
 
-        void Allocate(int remainingBytes)
+        void Allocate(int remainingBytes, int scanComponents)
         {
             SetupGeometry();
             long pixels = (long)Width * Height;
@@ -491,9 +507,19 @@ namespace Aardvark.ImageCodecs.JpegImpl
             // that promise far more than the data can hold. Small images are exempt so that heavily truncated files still decode.
             if (pixels > 1 << 16 && pixels / (Lossless ? 16 : 1024) > remainingBytes) throw Bad("image dimensions do not fit the amount of data");
             if ((long)OutWidth * OutHeight * Comps.Length > Array.MaxLength) throw new ImageNotSupportedException("JPEG image is too large");
+            _sink = OnStream != null && !Wide && (Progressive || scanComponents == Comps.Length) ? OnStream(this) : null;
             foreach (var c in Comps)
             {
-                long size = (long)c.Stride * c.BlocksH * c.S;
+                c.RingBlocks = c.RingRows = 0;
+                if (_sink != null)
+                {
+                    // a few unit rows: the upsampling filters look one sample row back and ahead
+                    int unit = Comps.Length == 1 ? 1 : c.V;
+                    c.UnitRows = unit * c.S;
+                    c.RingBlocks = Math.Min(unit * Math.Max(4, (16 + c.UnitRows - 1) / c.UnitRows), c.BlocksH);
+                    c.RingRows = c.RingBlocks * c.S;
+                }
+                long size = (long)c.Stride * (c.RingBlocks != 0 ? c.RingBlocks : c.BlocksH) * c.S;
                 long coefs = (long)c.BlocksW * c.BlocksH * 64;
                 if (size > Array.MaxLength || (Progressive && coefs > Array.MaxLength)) throw new ImageNotSupportedException("JPEG image is too large");
                 // data units that never get decoded (truncated file) come out mid gray
@@ -505,7 +531,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 }
                 else
                 {
-                    c.PlaneArr = GC.AllocateUninitializedArray<byte>((int)size, pinned: true);
+                    c.PlaneArr = c.RingBlocks != 0 ? RentRing(Array.IndexOf(Comps, c), (int)size) : GC.AllocateUninitializedArray<byte>((int)size, pinned: true);
                     fixed (byte* q = c.PlaneArr) c.Plane = q;
                     c.PlaneArr.AsSpan().Fill(128);
                 }
@@ -573,10 +599,26 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 for (int i = 0; i < 16; i++) total += counts[i];
                 p += 16;
                 if (total > 256 || p + total > end) throw Bad("bad Huffman table");
-                var table = new HuffDecodeTable(counts, new ReadOnlySpan<byte>(_d + p, total));
+                var table = CachedTable(new ReadOnlySpan<byte>(_d + p - 16, 16 + total));
                 p += total;
                 if (tc == 0) _dc[th] = table; else _ac[th] = table;
             }
+        }
+
+        // Writers that repeat the same tables in every TIFF strip or tile (or every frame) get them built once per
+        // thread: the tables are immutable and depend only on the counts and symbols.
+        [ThreadStatic] static (byte[] Key, HuffDecodeTable Table)[]? t_tables;
+        [ThreadStatic] static int t_tableNext;
+
+        static HuffDecodeTable CachedTable(ReadOnlySpan<byte> spec)
+        {
+            var cache = t_tables ??= new (byte[], HuffDecodeTable)[8];
+            foreach (var (key, t) in cache)
+                if (key != null && spec.SequenceEqual(key)) return t;
+            var table = new HuffDecodeTable(spec.Slice(0, 16), spec.Slice(16));
+            cache[t_tableNext] = (spec.ToArray(), table);
+            t_tableNext = (t_tableNext + 1) % cache.Length;
+            return table;
         }
 
         void ReadApp0(int p, int n)
@@ -674,7 +716,9 @@ namespace Aardvark.ImageCodecs.JpegImpl
             else if (!Progressive) { ss = 0; se = 63; ah = 0; al = 0; }
             else if (ss > se || se > 63 || al > 13 || ah > 13 || (ss == 0 && se != 0) || (ss != 0 && ns != 1))
                 throw Bad("bad progressive scan parameters");
-            if (!_allocated) Allocate(_len - p);
+            // a streamed sequential frame is complete after its scan; further scans of it are invalid and ignored
+            if (_streamDone && !Progressive) return p + n;
+            if (!_allocated) Allocate(_len - p, ns);
             if (Arithmetic) _arith ??= new JpegArith();
 
             for (int i = 0; i < ns; i++)
@@ -756,6 +800,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void PutBlock(JpegComponent c, short* block, bool dcOnly, int col, int row)
         {
+            if (c.RingBlocks != 0) row %= c.RingBlocks;
             if (c.Plane != null && c.S == 8)
             {
                 byte* dst = c.Plane + ((nint)row * c.Stride + col) * 8;
@@ -809,10 +854,17 @@ namespace Aardvark.ImageCodecs.JpegImpl
             int mcusX = single ? sc[0].ScanBlocksW : _mcusX, mcusY = single ? sc[0].ScanBlocksH : _mcusY;
             short* block = stackalloc short[64];
             int ri = _restartInterval, todo = ri, expected = 0;
-            bool skip = false;
+            bool skip = false, dead = false;
+            var sink = _sink;
             for (int my = 0; my < mcusY; my++)
             {
-                for (int mx = 0; mx < mcusX; mx++)
+                if (sink != null)
+                {
+                    // emit what the rows so far complete, then reuse the oldest slot; data units that never get decoded come out mid gray
+                    if (my > 0) sink.Advance(my);
+                    foreach (var c in sc) ClearRingUnit(c, my);
+                }
+                for (int mx = 0; mx < mcusX && !dead; mx++)
                 {
                     if (ri != 0)
                     {
@@ -841,11 +893,52 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     if (arith ? _arith!.Corrupt : br.Overrun)
                     {
                         // ran past the end of the data: nothing more to decode until the next restart marker
-                        if (ri == 0) return;
+                        if (ri == 0)
+                        {
+                            if (sink == null) return;
+                            dead = true;
+                        }
                         skip = true;
                     }
                 }
             }
+            if (sink != null)
+            {
+                sink.Advance(int.MaxValue);
+                _streamDone = true;
+                ReturnRings();
+            }
+        }
+
+        // The ring planes of a finished streaming decode serve the next one on the same thread: TIFF strips and tiles
+        // are many small JPEG streams. Only small rings are kept.
+        [ThreadStatic] static byte[]?[]? t_rings;
+        const int MaxCachedRing = 1 << 18;
+
+        static byte[] RentRing(int i, int size)
+        {
+            var cache = t_rings;
+            if (cache?[i] is { } a && a.Length >= size) { cache[i] = null; return a; }
+            return GC.AllocateUninitializedArray<byte>(size, pinned: true);
+        }
+
+        void ReturnRings()
+        {
+            for (int i = 0; i < Comps.Length; i++)
+            {
+                var a = Comps[i].PlaneArr;
+                if (a == null || a.Length > MaxCachedRing) continue;
+                var cache = t_rings ??= new byte[4][];
+                if (cache[i] == null || cache[i]!.Length < a.Length) cache[i] = a;
+            }
+        }
+
+        /// <summary>Resets the ring slot of unit row <paramref name="unit"/> to mid gray before it is decoded.</summary>
+        static void ClearRingUnit(JpegComponent c, int unit)
+        {
+            int rows = c.UnitRows;
+            int first = unit * rows % c.RingRows;
+            new Span<byte>(c.Plane + (nint)first * c.Stride, rows * c.Stride).Fill(128);
         }
 
         /// <summary>Decodes one sequential block into natural order; returns the zigzag index of the last coefficient written.</summary>
@@ -1174,26 +1267,47 @@ namespace Aardvark.ImageCodecs.JpegImpl
         void IdctAll()
         {
             short* nat = stackalloc short[64];
-            byte* zz = JpegTables.ZigZag;
-            foreach (var c in Comps)
+            if (_sink == null)
             {
-                if (c.Quant == null) continue; // never appeared in a scan: stays gray
-                for (int by = 0; by < c.ScanBlocksH; by++)
+                foreach (var c in Comps) IdctRows(c, 0, c.ScanBlocksH, nat);
+                return;
+            }
+            // streaming: one unit row of every component at a time, handed on as soon as it is done
+            int units = Comps.Length == 1 ? Comps[0].ScanBlocksH : _mcusY;
+            for (int u = 0; u < units; u++)
+            {
+                if (u > 0) _sink.Advance(u);
+                foreach (var c in Comps)
                 {
-                    short* blk = c.Coefs + (nint)by * c.BlocksW * 64;
-                    for (int bx = 0; bx < c.ScanBlocksW; bx++, blk += 64)
+                    ClearRingUnit(c, u);
+                    int unit = c.UnitRows / c.S;
+                    IdctRows(c, u * unit, Math.Min((u + 1) * unit, c.ScanBlocksH), nat);
+                }
+            }
+            _sink.Advance(int.MaxValue);
+            _streamDone = true;
+            ReturnRings();
+        }
+
+        void IdctRows(JpegComponent c, int by0, int by1, short* nat)
+        {
+            if (c.Quant == null) return; // never appeared in a scan: stays gray
+            byte* zz = JpegTables.ZigZag;
+            for (int by = by0; by < by1; by++)
+            {
+                short* blk = c.Coefs + (nint)by * c.BlocksW * 64;
+                for (int bx = 0; bx < c.ScanBlocksW; bx++, blk += 64)
+                {
+                    ulong mask = JpegTables.NonZeroMask(blk) & ~1UL;
+                    // zigzag -> natural order
+                    Unsafe.InitBlockUnaligned(nat, 0, 128);
+                    nat[0] = blk[0];
+                    for (ulong m = mask; m != 0; m &= m - 1)
                     {
-                        ulong mask = JpegTables.NonZeroMask(blk) & ~1UL;
-                        // zigzag -> natural order
-                        Unsafe.InitBlockUnaligned(nat, 0, 128);
-                        nat[0] = blk[0];
-                        for (ulong m = mask; m != 0; m &= m - 1)
-                        {
-                            int k = System.Numerics.BitOperations.TrailingZeroCount(m);
-                            nat[zz[k]] = blk[k];
-                        }
-                        PutBlock(c, nat, mask == 0, bx, by);
+                        int k = System.Numerics.BitOperations.TrailingZeroCount(m);
+                        nat[zz[k]] = blk[k];
                     }
+                    PutBlock(c, nat, mask == 0, bx, by);
                 }
             }
         }

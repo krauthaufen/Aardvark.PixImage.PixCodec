@@ -21,6 +21,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
             public JpegComponent C = null!;
             public byte[] LineArr = null!;
             public ushort[] SumArr = null!;
+            public byte* Line;
+            public ushort* Sum;
             public int CachedRow = -1;
         }
 
@@ -29,32 +31,141 @@ namespace Aardvark.ImageCodecs.JpegImpl
         /// <summary>Writes the top left w x h pixels (at most the output size of the frame) in the given color handling.</summary>
         public static void Assemble(JpegDecoder d, Span<byte> output, int w, int h, JpegColorSpace cs)
         {
-            int nc = d.Comps.Length;
-            var ups = new Upsampler[nc];
-            for (int i = 0; i < nc; i++)
+            fixed (byte* outp = output) new Assembler(d, outp, w, h, cs).Advance(int.MaxValue);
+        }
+
+        /// <summary>
+        /// Converts rows to the output as the component rows they depend on become available: all at once after a full
+        /// decode, or band by band while a streaming decode (<see cref="JpegDecoder.OnStream"/>) fills its ring planes.
+        /// The output must stay pinned while rows are emitted.
+        /// </summary>
+        public sealed class Assembler
+        {
+            readonly JpegDecoder _d;
+            readonly byte* _out;
+            readonly int _w, _h, _outChannels;
+            readonly JpegColorSpace _cs;
+            readonly Upsampler[] _ups;
+            readonly byte[]? _tmpArr, _rowArr;
+            readonly byte* _tmp, _row;
+            readonly int _orientation;
+            int _y;
+
+            /// <param name="orientation">EXIF orientation 1..8: rows are written where they belong in the upright image
+            /// (h x w for 5..8), the way <see cref="ImageOps.ApplyOrientation"/> would turn them.</param>
+            public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1)
             {
-                var c = d.Comps[i];
-                // generous slack: vector loops store whole vectors
-                ups[i] = new Upsampler { C = c, LineArr = new byte[Math.Max(d.OutWidth, c.SampledW * c.HExp) + 128], SumArr = new ushort[c.SampledW + 2 + 64] };
+                _d = d; _out = output; _w = w; _h = h; _cs = cs; _orientation = orientation;
+                int nc = d.Comps.Length;
+                _ups = new Upsampler[nc];
+                for (int i = 0; i < nc; i++)
+                {
+                    var c = d.Comps[i];
+                    // generous slack: vector loops store whole vectors
+                    var u = _ups[i] = new Upsampler { C = c, LineArr = Rent(ref t_lines, i, Math.Max(d.OutWidth, c.SampledW * c.HExp) + 128), SumArr = Rent(ref t_sums, i, c.SampledW + 2 + 64) };
+                    fixed (byte* l = u.LineArr) u.Line = l;
+                    fixed (ushort* s = u.SumArr) u.Sum = s + 1;
+                }
+                if (cs is JpegColorSpace.Ycck or JpegColorSpace.YcckToCmyk)
+                {
+                    _tmpArr = GC.AllocateArray<byte>(w * 3 + 64, pinned: true);
+                    fixed (byte* t = _tmpArr) _tmp = t;
+                }
+                _outChannels = cs == JpegColorSpace.Gray ? 1 : cs is JpegColorSpace.Raw or JpegColorSpace.Rgb ? nc : cs == JpegColorSpace.YcckToCmyk ? 4 : 3;
+                if (orientation > 1)
+                {
+                    _rowArr = GC.AllocateUninitializedArray<byte>(w * _outChannels + 64, pinned: true);
+                    fixed (byte* r = _rowArr) _row = r;
+                }
             }
 
-            byte[]? tmpRgb = cs is JpegColorSpace.Ycck or JpegColorSpace.YcckToCmyk ? new byte[w * 3 + 64] : null;
-            byte** lines = stackalloc byte*[4];
-            fixed (byte* outp = output)
-            fixed (byte* l0 = ups[0].LineArr, l1 = ups[nc > 1 ? 1 : 0].LineArr, l2 = ups[nc > 2 ? 2 : 0].LineArr, l3 = ups[nc > 3 ? 3 : 0].LineArr)
-            fixed (ushort* s0 = ups[0].SumArr, s1 = ups[nc > 1 ? 1 : 0].SumArr, s2 = ups[nc > 2 ? 2 : 0].SumArr, s3 = ups[nc > 3 ? 3 : 0].SumArr)
-            fixed (byte* tmp = tmpRgb)
+            /// <summary>Copies a finished row of the stored image to its place in the upright one.</summary>
+            void Place(int y)
             {
-                byte** lineBuf = stackalloc byte*[4];
-                ushort** sumBuf = stackalloc ushort*[4];
-                lineBuf[0] = l0; lineBuf[1] = l1; lineBuf[2] = l2; lineBuf[3] = l3;
-                sumBuf[0] = s0; sumBuf[1] = s1; sumBuf[2] = s2; sumBuf[3] = s3;
-                int outChannels = cs == JpegColorSpace.Gray ? 1 : cs is JpegColorSpace.Raw or JpegColorSpace.Rgb ? nc : cs == JpegColorSpace.YcckToCmyk ? 4 : 3;
-                for (int y = 0; y < h; y++)
+                int w = _w, h = _h, ch = _outChannels;
+                long dw = _orientation >= 5 ? h : w;
+                (long d0, long step) = _orientation switch
                 {
-                    for (int i = 0; i < nc; i++) lines[i] = GetLine(ups[i], y, w, lineBuf[i], sumBuf[i] + 1);
-                    byte* dst = outp + (nint)y * w * outChannels;
-                    switch (cs)
+                    2 => (y * dw + w - 1, -1L),
+                    3 => ((h - 1L - y) * dw + w - 1, -1L),
+                    4 => ((h - 1L - y) * dw, 1L),
+                    5 => ((long)y, dw),
+                    6 => (h - 1L - y, dw),
+                    7 => ((w - 1L) * dw + h - 1 - y, -dw),
+                    _ => ((w - 1L) * dw + y, -dw),
+                };
+                byte* src = _row, dst = _out + d0 * ch;
+                long st = step * ch;
+                switch (ch)
+                {
+                    case 1: for (int x = 0; x < w; x++, dst += st) dst[0] = src[x]; break;
+                    case 3:
+                        for (int x = 0; x < w; x++, dst += st, src += 3) { dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; }
+                        break;
+                    case 4: for (int x = 0; x < w; x++, dst += st) *(uint*)dst = ((uint*)src)[x]; break;
+                    default:
+                        for (int x = 0; x < w; x++, dst += st, src += ch) new Span<byte>(src, ch).CopyTo(new Span<byte>(dst, ch));
+                        break;
+                }
+            }
+
+            /// <summary>Emits every row that the first <paramref name="units"/> unit rows of each component complete (int.MaxValue: all).</summary>
+            public void Advance(int units)
+            {
+                while (_y < _h)
+                {
+                    foreach (var u in _ups)
+                    {
+                        var c = u.C;
+                        if (units != int.MaxValue && LastRow(c, _y) >= Math.Min((long)units * c.UnitRows, c.SampledH)) return;
+                    }
+                    Emit(_y++);
+                }
+                if (units == int.MaxValue) Release();
+            }
+
+            // The line buffers serve the next assembler on the same thread (TIFF strips and tiles are many small JPEG
+            // streams); only small ones are kept. Zeroed when new: vector loops read their slack.
+            [ThreadStatic] static byte[]?[]? t_lines;
+            [ThreadStatic] static ushort[]?[]? t_sums;
+            const int MaxCachedLine = 1 << 16;
+
+            static T[] Rent<T>(ref T[]?[]? cache, int i, int size) where T : unmanaged
+            {
+                if (cache?[i] is { } a && a.Length >= size) { cache[i] = null; return a; }
+                return GC.AllocateArray<T>(size, pinned: true);
+            }
+
+            static void Return<T>(ref T[]?[]? cache, int i, T[] a)
+            {
+                if (a.Length > MaxCachedLine) return;
+                cache ??= new T[4][];
+                if (cache[i] == null || cache[i]!.Length < a.Length) cache[i] = a;
+            }
+
+            bool _released;
+
+            void Release()
+            {
+                if (_released) return;
+                _released = true;
+                for (int i = 0; i < _ups.Length; i++)
+                {
+                    Return(ref t_lines, i, _ups[i].LineArr);
+                    Return(ref t_sums, i, _ups[i].SumArr);
+                }
+            }
+
+            void Emit(int y)
+            {
+                var ups = _ups;
+                int nc = ups.Length, w = _w;
+                byte** lines = stackalloc byte*[4];
+                for (int i = 0; i < nc; i++) lines[i] = GetLine(ups[i], y, w, ups[i].Line, ups[i].Sum);
+                byte* dst = _orientation > 1 ? _row : _out + (nint)y * w * _outChannels;
+                byte* tmp = _tmp;
+                {
+                    switch (_cs)
                     {
                         case JpegColorSpace.Gray:
                             Buffer.MemoryCopy(lines[0], dst, w, w);
@@ -89,8 +200,34 @@ namespace Aardvark.ImageCodecs.JpegImpl
                             break;
                     }
                 }
+                if (_orientation > 1) Place(y);
             }
         }
+
+        /// <summary>The last component sample row that output row <paramref name="y"/> reads.</summary>
+        static int LastRow(JpegComponent c, int y)
+        {
+            int last = c.SampledH - 1;
+            switch (c.Upsample)
+            {
+                case JpegUpsample.Direct:
+                case JpegUpsample.H2V1:
+                    return Math.Min(y, last);
+                case JpegUpsample.Replicate:
+                    return Math.Min(y / c.VExp, last);
+                case JpegUpsample.Fractional:
+                {
+                    int py = Math.Clamp(((2 * y + 1) * c.VNum * 256 / c.VDen - 256) / 2, 0, last * 256);
+                    return Math.Min((py >> 8) + 1, last);
+                }
+                default: // H2V2, H1V2
+                    return Math.Min((y >> 1) + 1, last);
+            }
+        }
+
+        /// <summary>Sample row <paramref name="sy"/> of a component plane, full or ring.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static byte* Row(JpegComponent c, int sy) => c.Plane + (nint)(c.RingRows == 0 ? sy : sy % c.RingRows) * c.Stride;
 
         /// <summary>
         /// 4 component files carry inverted ink values (Adobe convention: 255 = no ink), so the plain
@@ -112,18 +249,16 @@ namespace Aardvark.ImageCodecs.JpegImpl
         static byte* GetLine(Upsampler u, int y, int w, byte* line, ushort* sum)
         {
             var c = u.C;
-            byte* plane = c.Plane;
-            nint stride = c.Stride;
             int n = c.SampledW;
             switch (c.Upsample)
             {
                 case JpegUpsample.Direct:
-                    return plane + y * stride;
+                    return Row(c, y);
 
                 case JpegUpsample.Replicate:
                 {
                     int sy = y / c.VExp;
-                    byte* src = plane + sy * stride;
+                    byte* src = Row(c, sy);
                     if (c.HExp == 1) return src;
                     if (sy != u.CachedRow)
                     {
@@ -144,7 +279,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     // sample centers aligned, positions in 1/256 sample units.
                     int py = Math.Clamp(((2 * y + 1) * c.VNum * 256 / c.VDen - 256) / 2, 0, (c.SampledH - 1) * 256);
                     int y0 = py >> 8, fy = py & 255;
-                    byte* r0 = plane + y0 * stride, r1 = plane + Math.Min(y0 + 1, c.SampledH - 1) * stride;
+                    byte* r0 = Row(c, y0), r1 = Row(c, Math.Min(y0 + 1, c.SampledH - 1));
                     for (int x = 0; x < w; x++)
                     {
                         int px = Math.Clamp(((2 * x + 1) * c.HNum * 256 / c.HDen - 256) / 2, 0, (n - 1) * 256);
@@ -156,7 +291,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 }
 
                 case JpegUpsample.H2V1:
-                    Widen(plane + y * stride, sum, n);
+                    Widen(Row(c, y), sum, n);
                     Horizontal(sum, n, line, 1, 2, 2);
                     return line;
 
@@ -165,7 +300,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     int sy = y >> 1;
                     // the nearer of the two neighbouring rows gets weight 1/4, clamped at the image edge
                     int near = (y & 1) == 0 ? Math.Max(sy - 1, 0) : Math.Min(sy + 1, c.SampledH - 1);
-                    Sum3(plane + sy * stride, plane + near * stride, sum, n);
+                    Sum3(Row(c, sy), Row(c, near), sum, n);
                     Horizontal(sum, n, line, 8, 7, 4);
                     return line;
                 }
@@ -174,7 +309,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 {
                     int sy = y >> 1;
                     int near = (y & 1) == 0 ? Math.Max(sy - 1, 0) : Math.Min(sy + 1, c.SampledH - 1);
-                    Blend(plane + sy * stride, plane + near * stride, line, n, (y & 1) == 0 ? 1 : 2);
+                    Blend(Row(c, sy), Row(c, near), line, n, (y & 1) == 0 ? 1 : 2);
                     return line;
                 }
             }

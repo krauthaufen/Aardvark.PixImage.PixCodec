@@ -367,12 +367,14 @@ namespace Aardvark.Data
         /// faces in: +X, -X, +Y, -Y, +Z, -Z). Faces a legacy file leaves out are null. <paramref name="item"/> selects the cube
         /// of a cube map array.
         /// </summary>
-        public static PixCube LoadCube(string path, int item = 0) => LoadCube(File.ReadAllBytes(path), item);
+        public static PixCube LoadCube(string path, int item = 0) => ImageCodec.WithFile(path, d => LoadCubeCore(d, item));
         /// <inheritdoc cref="LoadCube(string, int)"/>
-        public static PixCube LoadCube(Stream stream, int item = 0) => LoadCube(ImageCodec.ReadAll(stream), item);
+        public static PixCube LoadCube(Stream stream, int item = 0) => ImageCodec.WithData(stream, d => LoadCubeCore(d, item));
 
         /// <summary>A DDS, KTX or PVR cube map as a PixCube (see <see cref="LoadCube(string, int)"/>); <paramref name="item"/> is the cube (array layer).</summary>
-        public static PixCube LoadCube(byte[] data, int item = 0)
+        public static PixCube LoadCube(byte[] data, int item = 0) => LoadCubeCore(data, item);
+
+        static PixCube LoadCubeCore(ReadOnlySpan<byte> data, int item)
         {
             if (Pvr.IsMatch(data))
             {
@@ -403,7 +405,7 @@ namespace Aardvark.Data
             var f = ImageCodec.FormatFromExtension(path);
             if (IsScientific(path))
                 return ToPixVolume(ImageCodec.DecodeVolume(path), item);
-            return LoadVolume(File.ReadAllBytes(path), mip, item);
+            return ImageCodec.WithFile(path, d => LoadVolumeCore(d, mip, item));
         }
 
         static bool IsScientific(string path)
@@ -416,9 +418,11 @@ namespace Aardvark.Data
         }
 
         /// <inheritdoc cref="LoadVolume(string, int, int)"/>
-        public static PixVolume LoadVolume(Stream stream, int mip = 0, int item = 0) => LoadVolume(ImageCodec.ReadAll(stream), mip, item);
+        public static PixVolume LoadVolume(Stream stream, int mip = 0, int item = 0) => ImageCodec.WithData(stream, d => LoadVolumeCore(d, mip, item));
         /// <inheritdoc cref="LoadVolume(string, int, int)"/>
-        public static PixVolume LoadVolume(byte[] data, int mip = 0, int item = 0)
+        public static PixVolume LoadVolume(byte[] data, int mip = 0, int item = 0) => LoadVolumeCore(data, mip, item);
+
+        static PixVolume LoadVolumeCore(ReadOnlySpan<byte> data, int mip, int item)
         {
             var format = ImageCodec.DetectFormat(data);
             if (format is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits)
@@ -730,9 +734,9 @@ namespace Aardvark.Data
         /// <see cref="Load(string)"/> uses the defaults (16 bit sRGB). <see cref="Dng.DecodeRaw(ReadOnlySpan{byte}, DngRawStage, bool)"/>
         /// gives the raw sensor data.
         /// </summary>
-        public static PixImage LoadDng(string path, DngDecodeOptions? options = null) => Convert(Dng.Decode(File.ReadAllBytes(path), options));
+        public static PixImage LoadDng(string path, DngDecodeOptions? options = null) => Convert(ImageCodec.WithFile(path, d => Dng.Decode(d, options)));
         /// <inheritdoc cref="LoadDng(string, DngDecodeOptions?)"/>
-        public static PixImage LoadDng(Stream stream, DngDecodeOptions? options = null) => Convert(Dng.Decode(ImageCodec.ReadAll(stream), options));
+        public static PixImage LoadDng(Stream stream, DngDecodeOptions? options = null) => Convert(ImageCodec.WithData(stream, d => Dng.Decode(d, options)));
 
         /// <summary>Reads only the headers: format, size, channels, sample type, orientation, dpi, ... (see <see cref="ImageInfo"/>).</summary>
         public static ImageInfo GetInfo(string path) => ImageCodec.GetInfo(path);

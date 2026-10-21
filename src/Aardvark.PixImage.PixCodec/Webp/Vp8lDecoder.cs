@@ -74,12 +74,14 @@ namespace Aardvark.ImageCodecs
 
         Vp8lBitReader _br;
         readonly long _maxPixels;
+        readonly int _length;
         readonly TablePool _scratch = new TablePool(256);
 
         Vp8lDecoder(byte* data, int length, long maxPixels)
         {
             _br = new Vp8lBitReader(data, length);
             _maxPixels = maxPixels;
+            _length = length;
         }
 
         public static bool TryReadHeader(ReadOnlySpan<byte> d, out int width, out int height, out bool alpha)
@@ -202,7 +204,8 @@ namespace Aardvark.ImageCodecs
 
             var groups = new int[numGroups * GroupInts];
             var tables = ReadPrefixCodes(groups, mapping, cacheBits);
-            var pixels = DecodePixels(xsize, ysize, groups, tables, meta, prefixBits, metaWidth, cacheBits);
+            // color indexing unpacks in place when the buffer has room for the full width
+            var pixels = DecodePixels(xsize, ysize, groups, tables, meta, prefixBits, metaWidth, cacheBits, level0 ? (long)fullWidth * ysize : 0);
 
             if (level0)
             {
@@ -464,14 +467,16 @@ namespace Aardvark.ImageCodecs
             return e >> 8;
         }
 
-        uint[] DecodePixels(int xsize, int ysize, int[] groups, uint[] tables, uint[]? meta, int prefixBits, int metaWidth, int cacheBits)
+        uint[] DecodePixels(int xsize, int ysize, int[] groups, uint[] tables, uint[]? meta, int prefixBits, int metaWidth, int cacheBits, long room)
         {
             long total = (long)xsize * ysize;
             if (total > _maxPixels) throw new ImageNotSupportedException($"WebP image exceeds WebpDecodeOptions.MaxPixels ({_maxPixels})");
             int end = (int)total;
-            // The buffer grows with the decoded pixels, so that a header lying about the size cannot allocate much.
+            // Sized at once when the data could plausibly hold that many pixels; otherwise the buffer grows with the
+            // decoded pixels, so that a header lying about the size cannot allocate much.
             const int Chunk = 1 << 16;
-            var data = new uint[Math.Min(end, Chunk)];
+            const int PixelsPerByte = 16;
+            var data = end <= Math.Max(Chunk, (long)_length * PixelsPerByte) ? new uint[Math.Max(end, room)] : new uint[Math.Min(end, Chunk)];
             uint[]? cache = cacheBits > 0 ? new uint[1 << cacheBits] : null;
             int cacheShift = 32 - cacheBits;
 
@@ -864,15 +869,16 @@ namespace Aardvark.ImageCodecs
             }
             int pw = SubSize(w, bits);
             if (px.Length < (long)pw * h) throw Bad("size");
-            var res = new uint[w * h];
+            // In place when there is room: from the last pixel backwards, every write lands at or after the packed
+            // pixel it comes from and after all packed pixels still to be read.
+            var res = px.Length == (long)w * h ? px : new uint[w * h];
             int per = 1 << bits, bpp = 8 >> bits;
             uint m = (1u << bpp) - 1;
-            for (int y = 0; y < h; y++)
+            for (int y = h - 1; y >= 0; y--)
             {
-                var src = px.AsSpan(y * pw, pw);
-                var dst = res.AsSpan(y * w, w);
-                for (int x = 0; x < w; x++)
-                    dst[x] = table[(int)(((src[x >> bits] >> 8) & 0xff) >> ((x & (per - 1)) * bpp) & m)];
+                int so = y * pw, d0 = y * w;
+                for (int x = w - 1; x >= 0; x--)
+                    res[d0 + x] = table[(int)(((px[so + (x >> bits)] >> 8) & 0xff) >> ((x & (per - 1)) * bpp) & m)];
             }
             return res;
         }
