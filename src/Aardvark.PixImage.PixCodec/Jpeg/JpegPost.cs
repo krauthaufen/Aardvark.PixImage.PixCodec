@@ -51,8 +51,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
             readonly int _orientation;
             int _y;
 
-            /// <param name="orientation">EXIF orientation 1..8: rows are written where they belong in the upright image
-            /// (h x w for 5..8), the way <see cref="ImageOps.ApplyOrientation"/> would turn them.</param>
+            /// <summary>
+            /// Writes the top left <paramref name="w"/> x <paramref name="h"/> pixels of <paramref name="d"/> to
+            /// <paramref name="output"/> in color handling <paramref name="cs"/>. With an EXIF <paramref name="orientation"/>
+            /// 2..8 rows go where they belong in the upright image (h x w for 5..8), as <see cref="ImageOps.ApplyOrientation"/> turns them.
+            /// </summary>
             public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1)
             {
                 _d = d; _out = output; _w = w; _h = h; _cs = cs; _orientation = orientation;
