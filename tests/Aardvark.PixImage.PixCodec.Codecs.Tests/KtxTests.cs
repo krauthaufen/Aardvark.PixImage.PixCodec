@@ -397,7 +397,7 @@ public class KtxTests
         try
         {
             File.WriteAllBytes(path, ktx2);
-            var output = System.Text.Encoding.UTF8.GetString(MiscFormatTests.RunTool(tool, $"validate \"{path}\""));
+            var output = System.Text.Encoding.UTF8.GetString(MiscFormatTests.RunTool(tool!, $"validate \"{path}\""));
             Assert.True(output.Trim().Length == 0, output);
         }
         finally { File.Delete(path); }

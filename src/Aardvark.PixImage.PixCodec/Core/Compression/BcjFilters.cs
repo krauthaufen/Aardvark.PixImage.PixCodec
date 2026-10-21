@@ -86,11 +86,11 @@ namespace Aardvark.ImageCodecs.Compression
             for (int i = 0; i + 4 <= b.Length; i += 4)
             {
                 if ((b[i] >> 2) != 0x12 || (b[i + 3] & 3) != 1) continue;
-                uint src = (uint)((b[i] & 3) << 24 | b[i + 1] << 16 | b[i + 2] << 8 | (b[i + 3] & ~3));
+                uint src = (uint)((b[i] & 3) << 24 | b[i + 1] << 16 | b[i + 2] << 8 | (b[i + 3] & 0xFC));
                 uint dest = src - (pos + (uint)i);
                 b[i] = (byte)(0x48 | ((dest >> 24) & 3));
                 b[i + 1] = (byte)(dest >> 16); b[i + 2] = (byte)(dest >> 8);
-                b[i + 3] = (byte)((b[i + 3] & 3) | (dest & ~3u));
+                b[i + 3] = (byte)((b[i + 3] & 3) | (int)(dest & 0xFC));
             }
         }
 

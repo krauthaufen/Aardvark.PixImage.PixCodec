@@ -50,7 +50,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>SMPTE timecode of the frame when the animation has timecodes.</summary>
         public uint Timecode { get; internal set; }
         public string Name { get; internal set; } = "";
-        /// <summary>The whole canvas after this frame, as <see cref="Jxl.Decode"/> returns images.</summary>
+        /// <summary>The whole canvas after this frame, as <see cref="Jxl.Decode(ReadOnlySpan{byte}, JxlDecodeOptions)"/> returns images.</summary>
         public RawImage Image { get; internal set; } = null!;
     }
 
@@ -77,7 +77,7 @@ namespace Aardvark.ImageCodecs
         public int BitsPerSample { get; internal set; }
         /// <summary>Whether the samples are floating point in the file.</summary>
         public bool IsFloat { get; internal set; }
-        /// <summary>For alpha: the colour is premultiplied by it in the file (<see cref="Jxl.Decode"/> returns straight alpha).</summary>
+        /// <summary>For alpha: the colour is premultiplied by it in the file (<see cref="Jxl.Decode(ReadOnlySpan{byte}, JxlDecodeOptions)"/> returns straight alpha).</summary>
         public bool AlphaPremultiplied { get; internal set; }
         /// <summary>For spot colours: linear RGB and solidity of the ink; null otherwise.</summary>
         public float[]? SpotColour { get; internal set; }
@@ -292,7 +292,7 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// Every extra channel of the image (for an animation: of the first frame), alpha included, as decoded: depth,
-        /// thermal, selection masks, spot colours, the black channel of CMYK and so on, which <see cref="Decode"/> does not
+        /// thermal, selection masks, spot colours, the black channel of CMYK and so on, which <see cref="Decode(ReadOnlySpan{byte}, JxlDecodeOptions)"/> does not
         /// return (it returns colour and straight alpha).
         /// </summary>
         public static IReadOnlyList<JxlExtraChannelImage> DecodeExtraChannels(ReadOnlySpan<byte> data, JxlDecodeOptions? options = null)

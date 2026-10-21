@@ -61,10 +61,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                     sp.Points.Add((cx, cy));
                 }
                 sp.Manhattan = manhattan;
-                Span<double> sums = stackalloc double[3];
+                double[] sums = new double[3];
                 for (int c = 0; c < 3; c++)
                 {
-                    sums[c] = 0;
                     for (int k = 0; k < 32; k++)
                     {
                         int q = JxlBitReader.UnpackSigned(r.ReadUint(br, 5));
@@ -108,6 +107,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             const int NumPoints = 16;
             Span<double> d = stackalloc double[3];
             Span<double> t = stackalloc double[4];
+            Span<double> ax = stackalloc double[3], ay = stackalloc double[3];
+            Span<double> bx = stackalloc double[2], by = stackalloc double[2];
             for (int start = 0; start + 3 < ext.Count; start++)
             {
                 res.Add(ext[start + 1]);
@@ -121,8 +122,6 @@ namespace Aardvark.ImageCodecs.JpegXl
                 for (int i = 1; i < NumPoints; i++)
                 {
                     double tt = d[0] + (double)i / NumPoints * d[1];
-                    Span<double> ax = stackalloc double[3];
-                    Span<double> ay = stackalloc double[3];
                     for (int k = 0; k < 3; k++)
                     {
                         var p0 = ext[start + k]; var p1 = ext[start + k + 1];
@@ -130,8 +129,6 @@ namespace Aardvark.ImageCodecs.JpegXl
                         ax[k] = p0.X + f * (p1.X - p0.X);
                         ay[k] = p0.Y + f * (p1.Y - p0.Y);
                     }
-                    Span<double> bx = stackalloc double[2];
-                    Span<double> by = stackalloc double[2];
                     for (int k = 0; k < 2; k++)
                     {
                         double f = (tt - t[k]) / (d[k] + d[k + 1]);

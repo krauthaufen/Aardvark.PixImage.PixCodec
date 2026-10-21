@@ -49,7 +49,7 @@ public class ExrFeatureTests
         try
         {
             File.WriteAllBytes(f, exr);
-            var psi = new ProcessStartInfo(OracleTool, arguments.Replace("{in}", $"\"{f}\"").Replace("{out}", $"\"{f}.ref\""))
+            var psi = new ProcessStartInfo(OracleTool!, arguments.Replace("{in}", $"\"{f}\"").Replace("{out}", $"\"{f}.ref\""))
             { RedirectStandardError = true, UseShellExecute = false };
             using var p = Process.Start(psi)!;
             string err = p.StandardError.ReadToEnd();

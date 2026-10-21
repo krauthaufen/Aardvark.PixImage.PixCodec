@@ -7,6 +7,12 @@ namespace Aardvark.ImageCodecs.JpegXl
     /// <summary>Lossless modular frames: transforms (palette, channel palettes, RCT), MA tree, groups and sections.</summary>
     internal static class JxlLosslessEncoder
     {
+        /// <param name="cs">Output writer.</param>
+        /// <param name="chans">The channels of the frame.</param>
+        /// <param name="h">The image header.</param>
+        /// <param name="fh">The frame header.</param>
+        /// <param name="lp">Encoder parameters.</param>
+        /// <param name="parallel">Encode groups in parallel.</param>
         /// <param name="features">writes the patches / splines / noise that start LfGlobal, for the flags of
         /// <paramref name="fh"/> (only tests use it)</param>
         public static void EncodeFrame(JxlBitWriter cs, List<JxlChannel> chans, JxlImageHeader h, JxlFrameHeader fh, JxlLosslessParams lp, bool parallel,

@@ -6,7 +6,7 @@ namespace Aardvark.ImageCodecs
 {
     /// <summary>
     /// The HDR gain map of a JPEG XL file (ISO/IEC 18181-2:2026 jhgm box): ISO 21496-1 metadata, the colour space of the
-    /// alternate image and the gain map itself, a JPEG XL file of its own. The image <see cref="Jxl.Decode"/> returns is
+    /// alternate image and the gain map itself, a JPEG XL file of its own. The image <see cref="Jxl.Decode(ReadOnlySpan{byte}, JxlDecodeOptions)"/> returns is
     /// the baseline; the alternate image is reconstructed from it, the gain map and the metadata as ISO 21496-1 says.
     /// </summary>
     public sealed class JxlGainMap

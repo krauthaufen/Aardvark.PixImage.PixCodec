@@ -341,10 +341,10 @@ namespace Aardvark.ImageCodecs.JpegXl
             f.Dc = new[] { new float[bw * bh], new float[bw * bh], new float[bw * bh] };
             void Row(int by)
             {
+                Span<float> m = stackalloc float[3];
                 for (int bx = 0; bx < bw; bx++)
                 {
                     int b = by * bw + bx;
-                    Span<float> m = stackalloc float[3];
                     for (int c = 0; c < 3; c++) m[c] = dcIn[c][b];
                     int qy = (int)MathF.Round(m[1] / f.DcStep[1]);
                     float dy = qy * f.DcStep[1];

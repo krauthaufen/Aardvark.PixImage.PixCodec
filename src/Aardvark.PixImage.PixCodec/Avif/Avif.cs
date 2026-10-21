@@ -56,7 +56,7 @@ namespace Aardvark.ImageCodecs
 
     /// <summary>
     /// The HDR gain map of an AVIF file: a tone map derived image item ('tmap') holding ISO 21496-1 metadata, whose inputs
-    /// are the base image and the gain map image. <see cref="Avif.Decode"/> returns the base image.
+    /// are the base image and the gain map image. <see cref="Avif.Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/> returns the base image.
     /// </summary>
     public sealed class AvifGainMap
     {

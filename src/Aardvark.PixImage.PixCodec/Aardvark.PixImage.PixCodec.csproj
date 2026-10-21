@@ -5,7 +5,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <RootNamespace>Aardvark.ImageCodecs</RootNamespace>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <NoWarn>$(NoWarn);CS1591;NU1510</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <None Include="paket.references" />

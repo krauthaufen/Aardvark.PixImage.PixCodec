@@ -68,7 +68,7 @@ public class AstcFileTests
         try
         {
             File.WriteAllBytes(tmp + ".astc", astc);
-            var p = Process.Start(new ProcessStartInfo(exe, $"{mode} \"{tmp}.astc\" \"{tmp}.ktx\" -silent") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true })!;
+            var p = Process.Start(new ProcessStartInfo(exe!, $"{mode} \"{tmp}.astc\" \"{tmp}.ktx\" -silent") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true })!;
             p.WaitForExit();
             Assert.Equal(0, p.ExitCode);
             var t = Ktx.DecodeTexture(File.ReadAllBytes(tmp + ".ktx"));

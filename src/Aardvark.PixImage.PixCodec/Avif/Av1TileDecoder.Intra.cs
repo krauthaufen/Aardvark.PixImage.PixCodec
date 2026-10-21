@@ -259,8 +259,6 @@ namespace Aardvark.ImageCodecs.Av1
             }
         }
 
-        int filterTypeCache = -1;
-
         int GetFilterTypeCached(int plane) => GetFilterType(plane) ? 1 : 0;
 
         bool GetFilterType(int plane)

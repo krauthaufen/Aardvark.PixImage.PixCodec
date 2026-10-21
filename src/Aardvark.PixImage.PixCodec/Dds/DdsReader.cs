@@ -148,7 +148,7 @@ namespace Aardvark.ImageCodecs.DdsImpl
 
         /// <summary>
         /// Rejects what would allocate too much: checked arithmetically before anything is laid out, for the whole texture
-        /// (<paramref name="all"/>) or the top surface / first mip chain.
+        /// (<paramref name="which"/> = 2) or the top surface / first mip chain.
         /// </summary>
         static void CheckSize(DdsParsed p, DdsDecodeOptions opt, int which, int dataLength)
         {

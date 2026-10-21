@@ -5,7 +5,7 @@ namespace Aardvark.ImageCodecs.Compression
     /// <summary>
     /// Zstandard (RFC 8878), fully managed. The decoder supports all block types, FSE and Huffman coded literals
     /// and sequences, repeat offsets, multiple and skippable frames, the xxHash64 content checksum and dictionaries
-    /// (structured or raw content). The compressor is a simple fast one with a single setting (see <see cref="Compress"/>).
+    /// (structured or raw content). The compressor is a simple fast one with a single setting (see <see cref="Compress(ReadOnlySpan{byte}, int, bool)"/>).
     /// </summary>
     public static class Zstd
     {

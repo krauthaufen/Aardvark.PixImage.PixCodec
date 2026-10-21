@@ -6,7 +6,7 @@ namespace Aardvark.ImageCodecs.JpegXl
 {
     /// <summary>
     /// Bit reader of the JPEG XL codestream (ISO/IEC 18181-1): bits are read least significant first. Reading past the end
-    /// of the section yields zero bits; <see cref="CheckEnd"/> turns that into an <see cref="ImageFormatException"/>.
+    /// of the section yields zero bits; <see cref="JxlBitReader.CheckEnd"/> turns that into an <see cref="ImageFormatException"/>.
     /// </summary>
     /// <summary>
     /// The state of a <see cref="JxlBitReader"/> as a value (pointer into the pinned codestream) for hot loops (see

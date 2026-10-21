@@ -175,8 +175,7 @@ namespace Aardvark.ImageCodecs.Compression
             if (destination.IsEmpty)
             {
                 // nothing is wanted, but corrupt data should still be reported as with the managed backend
-                Span<byte> probe = stackalloc byte[1];
-                s.Read(probe);
+                s.ReadByte();
                 return 0;
             }
             int total = 0;

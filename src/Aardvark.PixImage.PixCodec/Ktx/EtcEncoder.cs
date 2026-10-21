@@ -242,7 +242,6 @@ namespace Aardvark.ImageCodecs
             public int Refits;      // T / H least squares refits
             public int Rounds;      // T / H rounds of single channel steps
             public int ThSkip;      // skip T / H when the error so far is at most this much per texel (per unit weight)
-            public int PlanarSkip;  // the same for the planar mode
             public bool FlipGuess;  // Fast: one flip, chosen by how tight the sub-blocks are
         }
 
@@ -282,7 +281,7 @@ namespace Aardvark.ImageCodecs
                 SubBlockModes(c, q, fmt != ColorFormat.PunchThrough, bit33);
                 if (fmt != ColorFormat.Etc1 && c.BestErr > 0)
                 {
-                    if (!c.Transparent && c.BestErr > Efforts[(int)q].PlanarSkip * 16 * (c.Wr + c.Wg + c.Wb)) Planar(c, q);
+                    if (!c.Transparent && c.BestErr > 0) Planar(c, q);
                     if (c.BestErr > Efforts[(int)q].ThSkip * BitCount(c.Opaque) * (c.Wr + c.Wg + c.Wb)) TAndH(c, q, bit33);
                 }
             }

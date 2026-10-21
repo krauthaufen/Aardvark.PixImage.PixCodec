@@ -1352,6 +1352,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
         /// <param name="blk">The coefficients, in any storage order.</param>
         /// <param name="order">Zigzag position -> index into blk.</param>
         /// <param name="mask">Nonzero coefficients by zigzag position.</param>
+        /// <param name="c">The component being coded.</param>
+        /// <param name="buf">Output buffer.</param>
+        /// <param name="dc">DC Huffman code table.</param>
+        /// <param name="ac">AC Huffman code table.</param>
+        /// <param name="acx">AC Huffman code per symbol, shifted to leave room for its value bits, with code plus value length in the low byte.</param>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         void EmitBlock(short* blk, byte* order, ulong mask, Comp c, byte* buf, uint* dc, uint* ac, ulong* acx)
         {
@@ -1429,13 +1434,6 @@ namespace Aardvark.ImageCodecs.JpegImpl
             fixed (ushort* p = s_valueBits) s_valueBitsPtr = p;
         }
 
-        /// <summary>
-        /// Block coder of sequential 8 bit scans (coefficients in any order, <paramref name="order"/> maps zigzag positions to them): symbol and value
-        /// bits come from two table lookups. Fewer than 32 bits stay pending between symbols: after each symbol the
-        /// next 32 bits are stored unconditionally and the output pointer moves on only when they are complete, so
-        /// the only branch is the rare one for a 0xFF byte that needs stuffing. Keeps the accumulator under a
-        /// different invariant than <see cref="EmitBlock"/>, so the two must not be mixed within a scan.
-        /// </summary>
         /// <summary>Bit writer state of the single pass coder, handed to <see cref="EmitBlockFast"/> by pointer.</summary>
         struct BitSink
         {
@@ -1444,6 +1442,13 @@ namespace Aardvark.ImageCodecs.JpegImpl
             public int Bits;
         }
 
+        /// <summary>
+        /// Block coder of sequential 8 bit scans (coefficients in any order, <paramref name="order"/> maps zigzag positions to them): symbol and value
+        /// bits come from two table lookups. Fewer than 32 bits stay pending between symbols: after each symbol the
+        /// next 32 bits are stored unconditionally and the output pointer moves on only when they are complete, so
+        /// the only branch is the rare one for a 0xFF byte that needs stuffing. Keeps the accumulator under a
+        /// different invariant than <see cref="EmitBlock"/>, so the two must not be mixed within a scan.
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         static void EmitBlockFast(short* blk, byte* order, ulong mask, int v, uint* dc, ulong* acx, BitSink* sink)
         {

@@ -235,6 +235,8 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>The raw sensor data with its parameters, at the given processing stage.</summary>
+        /// <param name="data">The DNG file.</param>
+        /// <param name="stage">How far the raw data is processed.</param>
         /// <param name="applyOpcodes">For <see cref="DngRawStage.Linear"/>: apply OpcodeList1 and OpcodeList2.</param>
         public static DngRawImage DecodeRaw(ReadOnlySpan<byte> data, DngRawStage stage = DngRawStage.Stored, bool applyOpcodes = true)
         {

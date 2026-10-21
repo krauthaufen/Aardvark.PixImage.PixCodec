@@ -390,6 +390,7 @@ public class EtcEncodeTests
         Span<ushort> du = stackalloc ushort[16];
         Span<short> ds = stackalloc short[16];
         Span<byte> da = stackalloc byte[64];
+        Span<byte> blk2 = stackalloc byte[8];
         foreach (var q in new[] { BcQuality.Fast, BcQuality.Normal, BcQuality.High })
         {
             for (int v = 0; v < 256; v++)
@@ -425,7 +426,6 @@ public class EtcEncodeTests
             EtcBlocks.EacR11Signed(blk, ds, 1);
             for (int i = 0; i < 16; i++) Assert.True(Math.Abs(ds[i] - Math.Max((int)s[i], -32767)) <= 2048, $"{q} {i}: {ds[i]}");
             // floats: the same blocks as the 16 bit values they map to (clamped, NaN as 0)
-            Span<byte> blk2 = stackalloc byte[8];
             for (int i = 0; i < 16; i++) f[i] = i switch { 0 => -2f, 1 => 2f, 2 => float.NaN, 3 => -1f, 4 => 1f, _ => (i - 10) / 6f };
             EtcEncoder.EacR11(f, 1, true, blk, q);
             for (int i = 0; i < 16; i++) s[i] = (short)(i switch { 0 => -32767, 1 => 32767, 2 => 0, _ => (int)MathF.Round(Math.Clamp(f[i], -1f, 1f) * 32767f) });

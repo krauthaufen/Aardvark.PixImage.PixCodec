@@ -81,7 +81,7 @@ namespace Aardvark.ImageCodecs
         public int Photometric { get; init; }
         /// <summary>PreviewColorSpace: 0 unknown, 1 gray gamma 2.2, 2 sRGB, 3 Adobe RGB, 4 ProPhoto RGB.</summary>
         public int ColorSpace { get; init; }
-        /// <summary>The directory holds one complete baseline JPEG stream that <see cref="Dng.ExtractPreviewJpeg(ReadOnlySpan{byte})"/> can return as is.</summary>
+        /// <summary>The directory holds one complete baseline JPEG stream that <see cref="Dng.ExtractPreviewJpeg(ReadOnlySpan{byte}, int)"/> can return as is.</summary>
         public bool IsJpegFile { get; init; }
         internal long JpegOffset, JpegLength, Offset;
     }

@@ -136,7 +136,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>Whether the data starts like a JPEG XR file (II 0xBC) or a bare JPEG XR codestream ("WMPHOTO").</summary>
         public static bool IsMatch(ReadOnlySpan<byte> header) => JxrContainer.IsMatch(header) || JxrContainer.IsCodestream(header);
 
-        /// <summary>Reads header level information without decoding pixel data (what <see cref="Decode"/> returns).</summary>
+        /// <summary>Reads header level information without decoding pixel data (what <see cref="Decode(ReadOnlySpan{byte}, JpegXrDecodeOptions)"/> returns).</summary>
         public static ImageInfo GetInfo(ReadOnlySpan<byte> data) => GetInfo(data, null);
 
         /// <inheritdoc cref="GetInfo(ReadOnlySpan{byte})"/>

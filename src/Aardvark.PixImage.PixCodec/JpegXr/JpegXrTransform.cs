@@ -602,9 +602,8 @@ namespace Aardvark.ImageCodecs.JpegXrImpl
         /// <summary>
         /// The 4x4 / 4-point overlap filters of one region (the image, or a tile with hard tiling) of a sample array with block
         /// size 4 (9.9.6, and 9.9.3.2 for the DC-LP array): every interior block corner, the two outer rows and columns, the
-        /// four corners. <paramref name="forward"/> runs the pre-filters of Annex D instead. Rows <paramref name="rowFrom"/> ..
-        /// <paramref name="rowTo"/> of interior junctions restrict the work for parallel bands (the edges are done when
-        /// <paramref name="edges"/> is set).
+        /// four corners. <paramref name="forward"/> runs the pre-filters of Annex D instead. The interior part (<see cref="Overlap4Interior"/>) can be
+        /// restricted to a band of rows for parallel work; the edges are done by <see cref="Overlap4Edges"/>.
         /// </summary>
         public static void Overlap4(int[] p, int stride, int x0, int y0, int x1, int y1, bool forward)
         {
@@ -630,15 +629,18 @@ namespace Aardvark.ImageCodecs.JpegXrImpl
         public static void Overlap4Edges(int[] p, int s, int x0, int y0, int x1, int y1, bool forward)
         {
             // left and right two columns: vertical 4-point filters across block boundaries
+            Span<int> edge = stackalloc int[4];
+            edge[0] = x0; edge[1] = x0 + 1; edge[2] = x1 - 2; edge[3] = x1 - 1;
             for (int y = y0 + 2; y < y1 - 2; y += 4)
-                foreach (int x in stackalloc int[] { x0, x0 + 1, x1 - 2, x1 - 1 })
+                foreach (int x in edge)
                 {
                     int o = y * s + x;
                     F4(p, o, o + s, o + 2 * s, o + 3 * s, forward);
                 }
             // top and bottom two rows: horizontal
+            edge[0] = y0; edge[1] = y0 + 1; edge[2] = y1 - 2; edge[3] = y1 - 1;
             for (int x = x0 + 2; x < x1 - 2; x += 4)
-                foreach (int y in stackalloc int[] { y0, y0 + 1, y1 - 2, y1 - 1 })
+                foreach (int y in edge)
                 {
                     int o = y * s + x;
                     F4(p, o, o + 1, o + 2, o + 3, forward);
@@ -687,14 +689,17 @@ namespace Aardvark.ImageCodecs.JpegXrImpl
                     if (forward) PreFilter2x2(ref p[o], ref p[o + 1], ref p[o + s], ref p[o + s + 1]);
                     else PostFilter2x2(ref p[o], ref p[o + 1], ref p[o + s], ref p[o + s + 1]);
                 }
+            Span<int> edge = stackalloc int[2];
+            edge[0] = x0; edge[1] = x1 - 1;
             for (int y = y0 + 1; y < y1 - 1; y += 2)
-                foreach (int x in stackalloc int[] { x0, x1 - 1 })
+                foreach (int x in edge)
                 {
                     int o = y * s + x;
                     if (forward) PreFilter2(ref p[o], ref p[o + s]); else PostFilter2(ref p[o], ref p[o + s]);
                 }
+            edge[0] = y0; edge[1] = y1 - 1;
             for (int x = x0 + 1; x < x1 - 1; x += 2)
-                foreach (int y in stackalloc int[] { y0, y1 - 1 })
+                foreach (int y in edge)
                 {
                     int o = y * s + x;
                     if (forward) PreFilter2(ref p[o], ref p[o + 1]); else PostFilter2(ref p[o], ref p[o + 1]);

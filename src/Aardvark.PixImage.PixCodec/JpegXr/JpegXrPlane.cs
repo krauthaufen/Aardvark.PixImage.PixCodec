@@ -449,6 +449,7 @@ namespace Aardvark.ImageCodecs.JpegXrImpl
 
         public void ParseMbLp(JxrBitReader r)
         {
+            Span<int> temp = stackalloc int[14];
             if (_tileStart)
             {
                 _countZeroCbplp = _countMaxCbplp = 1;
@@ -493,7 +494,6 @@ namespace Aardvark.ImageCodecs.JpegXrImpl
                     numNz = DecodeBlock(r, index != 0, rl, 1, location);
                     if (Is42x && n != 0)
                     {
-                        Span<int> temp = stackalloc int[14];
                         temp.Clear();
                         int i = 0;
                         for (int k = 0; k < numNz; k++)

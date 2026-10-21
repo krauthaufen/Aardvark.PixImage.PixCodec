@@ -497,13 +497,13 @@ namespace Aardvark.ImageCodecs
             var cnts = File.Integers(e, Tiled ? 325 : 279) ?? (Tiled ? File.Integers(e, 279) : null);
             long len = File.Src.Length;
             bool noCounts = cnts == null || cnts.Length < total;
-            if (noCounts) cnts = new long[total];
+            if (cnts == null || noCounts) cnts = new long[total];
             long[]? sorted = null;
             long sum = 0; int empty = 0;
             long maxChunk = MaxChunkBytes();
             for (int i = 0; i < total; i++)
             {
-                long c = cnts![i], o = offs[i];
+                long c = cnts[i], o = offs[i];
                 if (o == 0 && !noCounts) { cnts[i] = 0; empty++; continue; } // sparse file (GDAL): the chunk is not stored
                 // a tile without bytes is a tile that is not there, wherever its offset points (GDAL reads its own
                 // files that way); only strips get the recovery below, as in libtiff

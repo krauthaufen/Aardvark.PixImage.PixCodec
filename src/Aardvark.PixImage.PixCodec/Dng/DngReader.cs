@@ -252,7 +252,7 @@ namespace Aardvark.ImageCodecs
                     else if (comp == 6 && f.Integer(pe, 513, 0) > 0) { jo = f.Integer(pe, 513, 0); jl = f.Integer(pe, 514, 0); }
                     if (jo > 0 && jl > 4 && jo + jl <= f.Src.Length)
                     {
-                        Span<byte> sig = stackalloc byte[2];
+                        var sig = new byte[2];
                         f.Src.Read(jo, sig);
                         jpeg = sig[0] == 0xFF && sig[1] == 0xD8;
                     }

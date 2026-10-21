@@ -364,8 +364,6 @@ public class IccTests
     public void HugeClaimsDoNotAllocate()
     {
         // a lut16 claiming 255^15 grid points in a tiny tag
-        var w = new List<byte>();
-        void U32(uint v) { w.Add((byte)(v >> 24)); w.Add((byte)(v >> 16)); w.Add((byte)(v >> 8)); w.Add((byte)v); }
         var p = IccProfile.Srgb.ToBytes().ToList();
         // append an A2B0 tag pointing at a bogus lut16 header
         var lut = new byte[64];

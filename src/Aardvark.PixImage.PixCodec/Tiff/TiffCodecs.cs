@@ -363,7 +363,6 @@ namespace Aardvark.ImageCodecs
     /// <summary>TIFF predictors (tag 317) and small byte level helpers.</summary>
     internal static unsafe class TiffPredict
     {
-        /// <summary>Undoes horizontal differencing on one row of <paramref name="count"/> samples (native byte order).</summary>
         // byte shuffle with run time indices, 0 for indices of 16 and up
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         static Vector128<byte> Shuf(Vector128<byte> v, Vector128<byte> idx)
@@ -414,6 +413,7 @@ namespace Aardvark.ImageCodecs
             for (; i < count; i++) row[i] = (byte)(row[i] + row[i - stride]);
         }
 
+        /// <summary>Undoes horizontal differencing on one row of <paramref name="count"/> samples (native byte order).</summary>
         public static void UndoHorizontal(byte* row, int count, int stride, int bps)
         {
             if (count <= stride) return;

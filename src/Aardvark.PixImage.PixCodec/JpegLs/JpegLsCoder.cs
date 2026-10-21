@@ -977,7 +977,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>Moves the output pointer after the buffer was reallocated.</summary>
         public void Rebase(long delta) => _pos += delta;
 
-        /// <summary>Appends len (0..32) bits; at most 32 bits may be pending before (call <see cref="Flush"/>).</summary>
+        /// <summary>Appends len (0..32) bits; at most 32 bits may be pending before (call <see cref="Flush()"/>).</summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Put(uint v, int len)
         {
