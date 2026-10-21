@@ -1,3 +1,7 @@
+### 1.0.1
+* Loader: EXR saves float32 images as FLOAT, so they round-trip exactly (were rounded to half).
+* Loader: EXR luminance/chroma falls back to plain storage for gray images and odd sizes instead of throwing.
+
 ### 1.0.0
 * AVIF decoder: full AV1 (bit exact with dav1d, passes Argon and the libaom vectors), HEIF grids, overlays, alpha, depth, thumbnails, sequences, gain maps.
 * JPEG XR decode and encode, every pixel format of the standard, bit exact with jxrlib.
