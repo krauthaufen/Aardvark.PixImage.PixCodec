@@ -109,6 +109,31 @@ public class LoaderTests
         AssertSame(gray, RoundTrip<float>(gray, new PixExrSaveParams(compression)));
     }
 
+    [Theory]
+    [InlineData(PixExrCompression.Default), InlineData(PixExrCompression.None), InlineData(PixExrCompression.Zip), InlineData(PixExrCompression.Piz)]
+    public void ExrFloatKeepsFullPrecision(PixExrCompression compression)
+    {
+        // float32 beyond half precision and range (as aardvark.data's loader tests use) must come back unchanged
+        var rnd = new Random(7);
+        foreach (var fmt in new[] { Col.Format.RGBA, Col.Format.BGRA, Col.Format.RGB, Col.Format.BGR, Col.Format.Gray })
+        {
+            var img = Make(fmt, 67, 45, _ => (float)(rnd.NextDouble() * 100000));
+            var back = RoundTrip<float>(img, new PixExrSaveParams(compression));
+            AssertSame(img.ToFormat(back.Format), back);
+        }
+    }
+
+    [Fact]
+    public void ExrLuminanceChromaFallsBack()
+    {
+        // gray images and odd sizes cannot be stored as luminance / chroma: saved losslessly instead of throwing
+        var rnd = new Random(3);
+        var gray = Make(Col.Format.Gray, 32, 16, _ => (float)rnd.NextDouble());
+        AssertSame(gray, RoundTrip<float>(gray, new PixExrSaveParams(PixExrCompression.Zip, luminanceChroma: true)));
+        var odd = Make(Col.Format.RGB, 33, 17, _ => (float)rnd.NextDouble());
+        AssertSame(odd, RoundTrip<float>(odd, new PixExrSaveParams(PixExrCompression.Zip, luminanceChroma: true)));
+    }
+
     [Fact]
     public void ExrLuminanceChroma()
     {

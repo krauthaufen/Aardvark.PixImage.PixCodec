@@ -144,9 +144,18 @@ namespace Aardvark.Data
                     break;
                 case PixFileFormat.Exr:
                     var exr = saveParams as PixExrSaveParams;
+                    // HALF only where it holds every value (8 bit and half images); everything else as FLOAT, so a
+                    // PixImage<float> comes back unchanged
+                    var st = image.PixFormat.Type;
+                    bool half = st == typeof(byte) || st == typeof(sbyte) || st == typeof(Aardvark.Base.Half) || st == typeof(System.Half);
+                    // luminance / chroma needs RGB(A) of even size: gray is stored as Y anyway, odd sizes as RGB
+                    var cf = image.Format;
+                    bool lc = (exr?.LuminanceChroma ?? false) && image.Size.X % 2 == 0 && image.Size.Y % 2 == 0
+                        && cf is Col.Format.RGB or Col.Format.RGBA or Col.Format.BGR or Col.Format.BGRA;
                     Exr.Encode(ToRawImage(image, Target.Float), stream, new ExrEncodeOptions
                     {
-                        LuminanceChroma = exr?.LuminanceChroma ?? false,
+                        PixelType = half ? ExrPixelType.Half : ExrPixelType.Float,
+                        LuminanceChroma = lc,
                         Compression = exr?.Compression switch
                         {
                             null or PixExrCompression.Default or PixExrCompression.Zip => ExrCompression.Zip,

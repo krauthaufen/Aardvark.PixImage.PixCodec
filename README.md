@@ -438,7 +438,9 @@ above.
 RGBP/BGRP are not premultiplied again). Two channel images without colour meaning (BC5 and RG textures, two band
 rasters) load as `Col.Format.RG`.
 
-Half float EXR channels load as `PixImage<float>`. BGR(A) images are saved as RGB(A). The existing `PixSaveParams`
+Half float EXR channels load as `PixImage<float>`. EXR is saved as FLOAT, so float images round-trip exactly; 8 bit and
+half images as HALF. Luminance / chroma applies to RGB(A) of even size; gray and odd sized images are saved without it.
+BGR(A) images are saved as RGB(A). The existing `PixSaveParams`
 classes (JPEG quality, PNG level, TIFF / EXR compression, WebP quality / lossless, JPEG 2000) are honoured.
 
 ## Building and releasing
