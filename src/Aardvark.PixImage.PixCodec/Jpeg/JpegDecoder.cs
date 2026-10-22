@@ -1,6 +1,8 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Aardvark.ImageCodecs.JpegImpl
 {
@@ -29,6 +31,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
         public ushort[]? Plane16Arr;
         public ushort* Plane16;
         public short[]? CoefArr;
+        public GCHandle CoefPin;
         public short* Coefs;
         public int[]? QuantArr;
         public int* Quant;
@@ -196,6 +199,23 @@ namespace Aardvark.ImageCodecs.JpegImpl
         /// <summary>Walks the marker segments. With <paramref name="headerOnly"/> it stops once the frame geometry is known.</summary>
         public void Parse(bool headerOnly)
         {
+            try { ParseSegments(headerOnly); }
+            finally { ReleaseCoefficients(); }
+        }
+
+        void ReleaseCoefficients()
+        {
+            foreach (var c in Comps)
+            {
+                if (c.CoefArr == null) continue;
+                c.CoefPin.Free();
+                ArrayPool<short>.Shared.Return(c.CoefArr);
+                c.CoefArr = null; c.Coefs = null;
+            }
+        }
+
+        void ParseSegments(bool headerOnly)
+        {
             _headerOnly = headerOnly;
             if (_len < 4 || _d[0] != 0xFF || _d[1] != 0xD8) throw Bad("missing SOI marker");
             int pos = 2;
@@ -350,7 +370,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 if (Hierarchical && _frames > 0) throw Bad("frame without image data");
                 return;
             }
-            if (Progressive) IdctAll();
+            if (Progressive)
+            {
+                IdctAll();
+                ReleaseCoefficients();
+            }
             if (Lossless) FinishLossless();
             if (!Hierarchical) return;
 
@@ -537,8 +561,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 }
                 if (Progressive)
                 {
-                    c.CoefArr = GC.AllocateArray<short>((int)coefs, pinned: true);
-                    fixed (short* q = c.CoefArr) c.Coefs = q;
+                    // from the shared pool, pinned until the frame is done (FinishFrame, or Parse on an error)
+                    c.CoefArr = ArrayPool<short>.Shared.Rent((int)coefs);
+                    c.CoefArr.AsSpan(0, (int)coefs).Clear();
+                    c.CoefPin = GCHandle.Alloc(c.CoefArr, GCHandleType.Pinned);
+                    c.Coefs = (short*)c.CoefPin.AddrOfPinnedObject();
                 }
             }
             _allocated = true;

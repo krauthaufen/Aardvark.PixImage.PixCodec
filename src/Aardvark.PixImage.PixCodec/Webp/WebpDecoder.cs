@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.Intrinsics;
 
@@ -55,26 +56,29 @@ namespace Aardvark.ImageCodecs
             var bits = data.Slice(f.DataOffset, f.DataLength);
             if (f.Lossless)
             {
-                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels);
+                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels, out bool rented);
                 var px = GC.AllocateUninitializedArray<byte>(w * h * channels);
-                ArgbToBytes(argb, px, channels);
+                ArgbToBytes(argb, w * h, px, channels);
+                if (rented) ArrayPool<uint>.Shared.Return(argb);
                 return px;
             }
             var frame = Vp8Decoder.Decode(bits, opt.MaxPixels, opt.Multithreaded);
             var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
             WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded);
+            frame.Release();
             if (channels == 4 && f.AlphLength >= 0)
             {
                 var a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height);
-                for (int i = 0; i < a.Length; i++) dst[4 * i + 3] = a[i];
+                for (int i = 0, n = frame.Width * frame.Height; i < n; i++) dst[4 * i + 3] = a[i];
+                ArrayPool<byte>.Shared.Return(a);
             }
             return dst;
         }
 
         /// <summary>0xAARRGGBB pixels to interleaved R, G, B(, A) bytes.</summary>
-        static unsafe void ArgbToBytes(uint[] argb, byte[] px, int channels)
+        static unsafe void ArgbToBytes(uint[] argb, int n, byte[] px, int channels)
         {
-            int i = 0, n = argb.Length;
+            int i = 0;
             fixed (uint* src = argb)
             fixed (byte* dst = px)
             {

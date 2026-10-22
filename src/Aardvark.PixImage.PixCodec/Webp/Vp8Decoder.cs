@@ -144,6 +144,27 @@ namespace Aardvark.ImageCodecs
         public int Width, Height;
         public int YStride, UVStride;
         public byte[] Y = Array.Empty<byte>(), U = Array.Empty<byte>(), V = Array.Empty<byte>();
+        bool _rented;
+
+        /// <summary>Planes from the shared pool (longer than the frame needs); <see cref="Release"/> hands them back.</summary>
+        public static Vp8Frame Rent(int width, int height, int mbW, int mbH)
+        {
+            var pool = System.Buffers.ArrayPool<byte>.Shared;
+            return new Vp8Frame
+            {
+                Width = width, Height = height, YStride = mbW * 16, UVStride = mbW * 8, _rented = true,
+                Y = pool.Rent(mbW * 16 * mbH * 16), U = pool.Rent(mbW * 8 * mbH * 8), V = pool.Rent(mbW * 8 * mbH * 8),
+            };
+        }
+
+        public void Release()
+        {
+            if (!_rented) return;
+            _rented = false;
+            var pool = System.Buffers.ArrayPool<byte>.Shared;
+            pool.Return(Y); pool.Return(U); pool.Return(V);
+            Y = U = V = Array.Empty<byte>();
+        }
     }
 
     /// <summary>Decoder for VP8 key frames (RFC 6386), the lossy bitstream of WebP.</summary>
@@ -238,13 +259,8 @@ namespace Aardvark.ImageCodecs
             }
             if (br.Eof) throw Bad("frame header exceeds the first partition");
 
-            var frame = new Vp8Frame
-            {
-                Width = width, Height = height, YStride = _mbW * 16, UVStride = _mbW * 8,
-                // every macroblock is written before it is read
-                Y = GC.AllocateUninitializedArray<byte>(_mbW * 16 * _mbH * 16), U = GC.AllocateUninitializedArray<byte>(_mbW * 8 * _mbH * 8),
-                V = GC.AllocateUninitializedArray<byte>(_mbW * 8 * _mbH * 8),
-            };
+            // every macroblock is written before it is read
+            var frame = Vp8Frame.Rent(width, height, _mbW, _mbH);
             _br = br; _parts = parts;
             // token probabilities by coefficient position instead of band: one lookup less per token
             var bands = Vp8Tables.Bands;

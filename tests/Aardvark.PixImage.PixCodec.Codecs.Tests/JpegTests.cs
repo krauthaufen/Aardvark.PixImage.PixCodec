@@ -414,8 +414,8 @@ public class JpegTests
         long before = GC.GetAllocatedBytesForCurrentThread();
         var img = Jpeg.Decode(data);
         long used = GC.GetAllocatedBytesForCurrentThread() - before, output = img.Data.Length;
-        // progressive files keep their coefficients (two bytes per sample) until the last scan
-        Assert.True(used < output * (progressive ? 3.2 : 1.2), $"{used} bytes for {output} bytes of pixels");
+        // (the coefficients of a progressive file, kept until the last scan, come from the shared pool)
+        Assert.True(used < output * 1.2, $"{used} bytes for {output} bytes of pixels");
     }
 
     static readonly JpegDecodeOptions Stored = new() { ApplyOrientation = false };

@@ -6,12 +6,13 @@ namespace Aardvark.ImageCodecs
     /// optionally run through one of three prediction filters.</summary>
     internal static class WebpAlpha
     {
+        /// <summary>The alpha plane, in an array from <see cref="System.Buffers.ArrayPool{T}.Shared"/> that may be longer.</summary>
         public static byte[] Decode(ReadOnlySpan<byte> chunk, int width, int height)
         {
             if (chunk.Length < 1) throw new ImageFormatException("empty WebP alpha chunk");
             int method = chunk[0] & 3, filter = (chunk[0] >> 2) & 3;     // the pre-processing bits are informative only
             int n = width * height;
-            var alpha = new byte[n];
+            var alpha = System.Buffers.ArrayPool<byte>.Shared.Rent(n);
             if (method == 0)
             {
                 if (chunk.Length - 1 < n) throw new ImageFormatException("WebP alpha data is too short");
@@ -19,8 +20,9 @@ namespace Aardvark.ImageCodecs
             }
             else if (method == 1)
             {
-                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height);
+                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height, out bool rented);
                 for (int i = 0; i < n; i++) alpha[i] = (byte)(argb[i] >> 8);
+                if (rented) System.Buffers.ArrayPool<uint>.Shared.Return(argb);
             }
             else throw new ImageFormatException("unknown WebP alpha compression method");
             Unfilter(alpha, width, height, filter);

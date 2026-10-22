@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Numerics;
@@ -195,6 +196,31 @@ namespace Aardvark.ImageCodecs
 
         J2kBlockCoder RentCoder() => _coders.TryTake(out var c) ? c : new J2kBlockCoder();
 
+        /// <summary>The zeroed buffer of the output level, from the shared pool.</summary>
+        static void RentTop(J2kTileComp tc)
+        {
+            var top = tc.Res[tc.OutRes];
+            int n = checked(top.W * top.H);
+            Array buf;
+            if (!tc.Cod.Reversible) { var b = ArrayPool<float>.Shared.Rent(n); b.AsSpan(0, n).Clear(); buf = b; }
+            else if (tc.Wide) { var b = ArrayPool<long>.Shared.Rent(n); b.AsSpan(0, n).Clear(); buf = b; }
+            else { var b = ArrayPool<int>.Shared.Rent(n); b.AsSpan(0, n).Clear(); buf = b; }
+            top.Buffer = tc.Pooled = buf;
+            top.Off = 0; top.Stride = top.W;
+        }
+
+        static void ReturnTop(J2kTileComp tc)
+        {
+            switch (tc.Pooled)
+            {
+                case float[] f: ArrayPool<float>.Shared.Return(f); break;
+                case long[] l: ArrayPool<long>.Shared.Return(l); break;
+                case int[] i: ArrayPool<int>.Shared.Return(i); break;
+            }
+            tc.Pooled = null;
+            foreach (var res in tc.Res) res.Buffer = null;
+        }
+
         void DecodeTile(J2kTile tile)
         {
             // code-blocks with data inside the windows
@@ -232,12 +258,28 @@ namespace Aardvark.ImageCodecs
             {
                 var tc = tile.Comps[c];
                 if (!tc.HasData) return;
-                for (int r = 0; r <= tc.OutRes; r++)
+                var top = tc.Res[tc.OutRes];
+                if ((long)top.W * top.H == 0) return;
+                RentTop(tc);
+                // Each level lives in the even rows and low columns of the level above (where the synthesis wants
+                // it), so that one buffer holds them all; a window that does not line up gets a buffer of its own.
+                for (int r = tc.OutRes; r > 0; r--)
                 {
-                    var res = tc.Res[r];
-                    long n = (long)res.W * res.H;
+                    var res = tc.Res[r]; var low = tc.Res[r - 1];
+                    long n = (long)low.W * low.H;
                     if (n == 0) continue;
-                    res.Buffer = !tc.Cod.Reversible ? new float[n] : tc.Wide ? new long[n] : new int[n];
+                    if (res.Buffer != null && low.C.X0 == (res.C.X0 + 1) >> 1 && low.C.Y0 == (res.C.Y0 + 1) >> 1
+                        && low.W == res.NLow && low.H == ((res.C.Y1 + 1) >> 1) - ((res.C.Y0 + 1) >> 1))
+                    {
+                        low.Buffer = res.Buffer;
+                        low.Off = res.Off + (int)(res.C.Y0 & 1) * res.Stride;
+                        low.Stride = 2 * res.Stride;
+                    }
+                    else
+                    {
+                        low.Buffer = !tc.Cod.Reversible ? new float[n] : tc.Wide ? new long[n] : new int[n];
+                        low.Off = 0; low.Stride = low.W;
+                    }
                 }
             }
             if (_parallel && tile.Comps.Length > 1) Parallel.For(0, tile.Comps.Length, Allocate);
@@ -362,11 +404,11 @@ namespace Aardvark.ImageCodecs
                 int sx = (int)(win.X0 - rect.X0), sy = (int)(win.Y0 - rect.Y0);
                 int col = band.ColOff + (int)(win.X0 - band.Win.X0);
                 int roi = tc.Roi;
-                int stride = res.W;
+                int stride = res.Stride;
                 for (int y = 0; y < chh; y++)
                 {
                     long row = band.RowOff + (win.Y0 + y - band.Win.Y0) * band.RowStep;
-                    long di = row * stride + col;
+                    long di = res.Off + row * stride + col;
                     int si = (sy + y) * w + sx;
                     switch (res.Buffer)
                     {
@@ -478,8 +520,7 @@ namespace Aardvark.ImageCodecs
                     foreach (var tc in new[] { a, b, c })
                     {
                         var res = tc.Res[tc.OutRes];
-                        long n = (long)res.W * res.H;
-                        if (res.Buffer == null && n > 0) res.Buffer = !tc.Cod.Reversible ? new float[n] : tc.Wide ? new long[n] : new int[n];
+                        if (res.Buffer == null && (long)res.W * res.H > 0) RentTop(tc);
                         tc.HasData = true;
                     }
                     InverseMct(a.Res[a.OutRes], b.Res[b.OutRes], c.Res[c.OutRes], v);
@@ -502,7 +543,6 @@ namespace Aardvark.ImageCodecs
                 if (_sink != null)
                 {
                     WriteToSink(res, ci, w, h, ox, oy, px, py, plane.Width, (int)shift, (int)hi);
-                    res.Buffer = null;
                     continue;
                 }
                 for (int y = 0; y < h; y++)
@@ -540,8 +580,8 @@ namespace Aardvark.ImageCodecs
                         }
                     }
                 }
-                res.Buffer = null;
             }
+            foreach (var tc in tile.Comps) ReturnTop(tc);
         }
 
         /// <summary>One component of a tile into its channel of the interleaved image: level shift, clamp, narrow.</summary>

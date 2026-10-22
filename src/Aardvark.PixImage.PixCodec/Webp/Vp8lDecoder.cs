@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -95,8 +96,11 @@ namespace Aardvark.ImageCodecs
             return (v >> 29) == 0;
         }
 
-        /// <summary>Decodes a complete VP8L chunk payload to ARGB pixels (0xAARRGGBB).</summary>
-        public static uint[] Decode(ReadOnlySpan<byte> data, out int width, out int height, long maxPixels)
+        /// <summary>
+        /// Decodes a complete VP8L chunk payload to ARGB pixels (0xAARRGGBB). The array may be longer than the image;
+        /// when <paramref name="rented"/> it comes from <see cref="ArrayPool{T}.Shared"/> and goes back there after use.
+        /// </summary>
+        public static uint[] Decode(ReadOnlySpan<byte> data, out int width, out int height, long maxPixels, out bool rented)
         {
             if (!TryReadHeader(data, out width, out height, out _))
                 throw new ImageFormatException("invalid WebP lossless header");
@@ -105,19 +109,25 @@ namespace Aardvark.ImageCodecs
             fixed (byte* p = data)
             {
                 var dec = new Vp8lDecoder(p + 5, data.Length - 5, maxPixels);
-                return dec.DecodeImageStream(width, height, true);
+                var px = dec.DecodeImageStream(width, height, true);
+                rented = px == dec._rented;
+                return px;
             }
         }
 
-        /// <summary>Decodes a header-less image stream of known size (the payload of a compressed ALPH chunk).</summary>
-        public static uint[] DecodeHeaderless(ReadOnlySpan<byte> data, int width, int height)
+        /// <summary>Decodes a header-less image stream of known size (the payload of a compressed ALPH chunk); as <see cref="Decode"/>.</summary>
+        public static uint[] DecodeHeaderless(ReadOnlySpan<byte> data, int width, int height, out bool rented)
         {
             fixed (byte* p = data)
             {
                 var dec = new Vp8lDecoder(p, data.Length, (long)width * height);
-                return dec.DecodeImageStream(width, height, true);
+                var px = dec.DecodeImageStream(width, height, true);
+                rented = px == dec._rented;
+                return px;
             }
         }
+
+        uint[]? _rented;   // the pixel buffer of the main image, when it came from the pool
 
         static ImageFormatException Bad(string what) => new ImageFormatException("invalid WebP lossless data: " + what);
 
@@ -216,11 +226,11 @@ namespace Aardvark.ImageCodecs
                     {
                         case 0: InversePredictor(pixels, t.XSize, ysize, t.Bits, t.Data); break;
                         case 1: InverseColorTransform(pixels, t.XSize, ysize, t.Bits, t.Data); break;
-                        case 2: AddGreen(pixels); break;
+                        case 2: AddGreen(pixels, t.XSize * ysize); break;
                         default: pixels = InverseColorIndexing(pixels, t.XSize, ysize, t.Bits, t.Data); break;
                     }
                 }
-                if (pixels.Length != (long)fullWidth * ysize) throw Bad("size");
+                if (pixels.Length < (long)fullWidth * ysize) throw Bad("size");
             }
             return pixels;
         }
@@ -476,7 +486,9 @@ namespace Aardvark.ImageCodecs
             // decoded pixels, so that a header lying about the size cannot allocate much.
             const int Chunk = 1 << 16;
             const int PixelsPerByte = 16;
-            var data = end <= Math.Max(Chunk, (long)_length * PixelsPerByte) ? new uint[Math.Max(end, room)] : new uint[Math.Min(end, Chunk)];
+            // (the main image's buffer comes from the pool, the small transform images' are kept by the transforms)
+            int first = end > Math.Max(Chunk, (long)_length * PixelsPerByte) ? Math.Min(end, Chunk) : (int)Math.Max(end, room);
+            var data = room > 0 ? _rented = ArrayPool<uint>.Shared.Rent(first) : new uint[first];
             uint[]? cache = cacheBits > 0 ? new uint[1 << cacheBits] : null;
             int cacheShift = 32 - cacheBits;
 
@@ -586,7 +598,15 @@ namespace Aardvark.ImageCodecs
                         if (pendingLength == 0) pos = (int)(dp - d);
                     }
                     if (pos >= end) break;
-                    Array.Resize(ref data, (int)Math.Min(end, Math.Max((long)data.Length * 2, (long)pos + pendingLength)));
+                    int size = (int)Math.Min(end, Math.Max((long)data.Length * 2, (long)pos + pendingLength));
+                    if (room == 0) Array.Resize(ref data, size);
+                    else
+                    {
+                        var bigger = ArrayPool<uint>.Shared.Rent(size == end ? (int)Math.Max(end, room) : size);
+                        data.AsSpan(0, pos).CopyTo(bigger);
+                        ArrayPool<uint>.Shared.Return(data);
+                        data = _rented = bigger;
+                    }
                     if (pendingLength > 0)
                     {
                         if (pendingDist >= pendingLength) data.AsSpan(pos - pendingDist, pendingLength).CopyTo(data.AsSpan(pos));
@@ -838,13 +858,13 @@ namespace Aardvark.ImageCodecs
             }
         }
 
-        static void AddGreen(uint[] px)
+        static void AddGreen(uint[] px, int n)
         {
             int i = 0;
             if (Vector128.IsHardwareAccelerated)
             {
                 fixed (uint* p = px)
-                    for (; i + 4 <= px.Length; i += 4)
+                    for (; i + 4 <= n; i += 4)
                     {
                         var v = Vector128.Load(p + i);
                         var g = Vector128.ShiftRightLogical(v, 8) & Vector128.Create(0xffu);
@@ -852,7 +872,7 @@ namespace Aardvark.ImageCodecs
                         (v.AsByte() + (g | Vector128.ShiftLeft(g, 16)).AsByte()).Store((byte*)(p + i));
                     }
             }
-            for (; i < px.Length; i++)
+            for (; i < n; i++)
             {
                 uint v = px[i], g = (v >> 8) & 0xff;
                 px[i] = (v & 0xff00ff00) | (((v & 0x00ff00ff) + (g << 16 | g)) & 0x00ff00ff);
@@ -864,14 +884,14 @@ namespace Aardvark.ImageCodecs
             if (bits == 0)
             {
                 if (px.Length < (long)w * h) throw Bad("size");
-                for (int i = 0; i < px.Length; i++) px[i] = table[(px[i] >> 8) & 0xff];
+                for (int i = 0; i < w * h; i++) px[i] = table[(px[i] >> 8) & 0xff];
                 return px;
             }
             int pw = SubSize(w, bits);
             if (px.Length < (long)pw * h) throw Bad("size");
             // In place when there is room: from the last pixel backwards, every write lands at or after the packed
             // pixel it comes from and after all packed pixels still to be read.
-            var res = px.Length == (long)w * h ? px : new uint[w * h];
+            var res = px.Length >= (long)w * h ? px : new uint[w * h];
             int per = 1 << bits, bpp = 8 >> bits;
             uint m = (1u << bpp) - 1;
             for (int y = h - 1; y >= 0; y--)

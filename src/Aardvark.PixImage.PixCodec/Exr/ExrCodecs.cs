@@ -1,5 +1,7 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
@@ -17,11 +19,32 @@ namespace Aardvark.ImageCodecs
         public long[] Cursor = Array.Empty<long>();   // per channel positions while (de)interleaving planes
         public ExrPiz.Tables? Piz;
         public float[]? Row;
+        // The buffers come from the shared pool and all go back in Return, also the ones outgrown on the way, which
+        // may still be referenced until the call is done.
+        List<Action>? _rented;
+
+        T[] RentArray<T>(int size)
+        {
+            var a = ArrayPool<T>.Shared.Rent(size);
+            (_rented ??= new List<Action>()).Add(() => ArrayPool<T>.Shared.Return(a));
+            return a;
+        }
+
+        public static ExrScratch Rent() => new ExrScratch();
+
+        /// <summary>Hands the buffers back to the pool; the scratch must not be used afterwards.</summary>
+        public static void Return(ExrScratch s)
+        {
+            if (s._rented != null) foreach (var r in s._rented) r();
+            s._rented = null;
+            Array.Clear(s._bytes); Array.Clear(s._arrays);
+            s._words = null; s.Row = null;
+        }
 
         public byte[] Bytes(int slot, int size)
         {
             var b = _bytes[slot];
-            if (b == null || b.Length < size) _bytes[slot] = b = new byte[Math.Max(size, 256)];
+            if (b == null || b.Length < size) _bytes[slot] = b = RentArray<byte>(Math.Max(size, 256));
             return b;
         }
 
@@ -30,15 +53,21 @@ namespace Aardvark.ImageCodecs
         /// <summary>A zeroed reusable array of at least <paramref name="size"/> elements for the given slot (the rest is not cleared).</summary>
         public T[] Reuse<T>(int slot, int size)
         {
-            if (_arrays[slot] is T[] a && a.Length >= size) a.AsSpan(0, size).Clear();
-            else _arrays[slot] = a = new T[Math.Max(size, 64)];
+            if (_arrays[slot] is not T[] a || a.Length < size) _arrays[slot] = a = RentArray<T>(Math.Max(size, 64));
+            a.AsSpan(0, size).Clear();
             return a;
         }
 
         public ushort[] Words(int size)
         {
-            if (_words == null || _words.Length < size) _words = new ushort[Math.Max(size, 256)];
+            if (_words == null || _words.Length < size) _words = RentArray<ushort>(Math.Max(size, 256));
             return _words;
+        }
+
+        public float[] RowBuffer(int size)
+        {
+            if (Row == null || Row.Length < size) Row = RentArray<float>(size);
+            return Row;
         }
     }
 

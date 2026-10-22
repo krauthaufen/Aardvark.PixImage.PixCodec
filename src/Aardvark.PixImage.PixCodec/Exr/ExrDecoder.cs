@@ -213,8 +213,7 @@ namespace Aardvark.ImageCodecs
                     try
                     {
                         // Parallel.For starts a worker replica (and its local state) many times: their scratch is passed on
-                        var spare = new System.Collections.Concurrent.ConcurrentBag<ExrScratch>();
-                        Parallel.For(0, needed.Length, () => spare.TryTake(out var s) ? s : new ExrScratch(), (i, _, s) => { d.DecodeChunk(needed[i], s); return s; }, spare.Add);
+                        Parallel.For(0, needed.Length, ExrScratch.Rent, (i, _, s) => { d.DecodeChunk(needed[i], s); return s; }, ExrScratch.Return);
                     }
                     catch (AggregateException e) when (e.InnerException != null)
                     {
@@ -223,8 +222,9 @@ namespace Aardvark.ImageCodecs
                 }
                 else
                 {
-                    var s = new ExrScratch();
+                    var s = ExrScratch.Rent();
                     foreach (int i in needed) d.DecodeChunk(i, s);
+                    ExrScratch.Return(s);
                 }
                 if (subsampled) d.FillSubsampled(h);
             }
@@ -293,19 +293,19 @@ namespace Aardvark.ImageCodecs
             if (chunk.Size > int.MaxValue) throw new ImageNotSupportedException("EXR chunk is too large");
             int rawSize = (int)chunk.Size;
             int rowLength = x1 - x0 + 1;
-            if (s.Row == null || s.Row.Length < rowLength) s.Row = new float[rowLength];
+            var row = s.RowBuffer(rowLength);
             if (size > rawSize || (size != rawSize && (_part.Compression == ExrCompression.None || rawSize > size * MaxRatio)))
                 throw new ImageFormatException("EXR chunk has an impossible size");
             var packed = _input.Read(pos, size, s, 4);
             if (size == rawSize)
             {
                 // stored uncompressed (the writer does this whenever compression does not shrink a chunk)
-                fixed (byte* pp = packed) Unpack(pp, chunk, s.Row);
+                fixed (byte* pp = packed) Unpack(pp, chunk, row);
                 return;
             }
             var raw = s.Bytes(2, rawSize);
             ExrCodecs.Decode(_part.Compression, packed, raw.AsSpan(0, rawSize), chunk, s);
-            fixed (byte* pr = raw) Unpack(pr, chunk, s.Row);
+            fixed (byte* pr = raw) Unpack(pr, chunk, row);
         }
 
         /// <summary>Converts the selected channels of an uncompressed chunk into the interleaved output, clipped to the region.</summary>

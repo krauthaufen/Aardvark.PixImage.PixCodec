@@ -193,14 +193,14 @@ namespace Aardvark.ImageCodecs
                 ExrCodecs.Inflate(dcData, tmp);
                 ExrCodecs.Reconstruct(tmp, MemoryMarshal.AsBytes(dc.AsSpan(0, (int)l.DcCount)));
             }
-            var rle = new byte[l.RleBytes];
+            var rle = s.Reuse<byte>(3, (int)l.RleBytes).AsSpan(0, (int)l.RleBytes);
             if (l.RleBytes > 0)
             {
                 var tmp = s.Reuse<byte>(2, (int)rleSize).AsSpan(0, (int)rleSize);
                 ExrCodecs.Inflate(rleData, tmp);
                 ExrCodecs.RleDecode(tmp, rle);
             }
-            var unk = new byte[l.UnknownBytes];
+            var unk = s.Reuse<byte>(4, (int)l.UnknownBytes).AsSpan(0, (int)l.UnknownBytes);
             if (l.UnknownBytes > 0) ExrCodecs.Inflate(unknown, unk);
 
             // build the channel planes, then interleave them into lines
@@ -245,7 +245,7 @@ namespace Aardvark.ImageCodecs
                     }
                     else
                     {
-                        unk.AsSpan(unkPos, n * bytes).CopyTo(new Span<byte>(plane, n * bytes));
+                        unk.Slice(unkPos, n * bytes).CopyTo(new Span<byte>(plane, n * bytes));
                         unkPos += n * bytes;
                     }
                 }

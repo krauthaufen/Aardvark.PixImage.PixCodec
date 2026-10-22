@@ -4,7 +4,8 @@ namespace Aardvark.ImageCodecs.Tests;
 
 /// <summary>
 /// Decoders allocate about their output: no second full copy of the pixels, no per-chunk buffers that add up to one.
-/// Counted on the current thread, so multithreaded decoding is switched off.
+/// Large working buffers come from the shared array pool, so the second decode is measured. Counted on the current
+/// thread, so multithreaded decoding is switched off.
 /// </summary>
 public class AllocationTests
 {
@@ -68,25 +69,43 @@ public class AllocationTests
         AssertAboutOutput(() => ImageCodecs.Tiff.Decode(data, new TiffDecodeOptions { Parallel = false }), 1.15);
     }
 
-    // the ARGB working buffer of the lossless format (4 bytes per pixel) remains
     [Theory]
-    [InlineData(3, 2.5)]
-    [InlineData(4, 2.1)]
-    public void WebpLossless(int channels, double factor)
+    [InlineData(3)]
+    [InlineData(4)]
+    public void WebpLossless(int channels)
     {
         var data = Encode(s => ImageCodecs.Webp.Encode(Photo(channels), s, new WebpEncodeOptions { Lossless = true }));
-        AssertAboutOutput(() => ImageCodecs.Webp.Decode(data, new WebpDecodeOptions { Multithreaded = false }), factor);
+        AssertAboutOutput(() => ImageCodecs.Webp.Decode(data, new WebpDecodeOptions { Multithreaded = false }), 1.15);
     }
 
-    // one chunk's working buffers remain: DWAB chunks are 256 lines, a third of this image
     [Theory]
-    [InlineData(ExrCompression.Piz, 1.3)]
-    [InlineData(ExrCompression.Dwaa, 1.3)]
-    [InlineData(ExrCompression.Dwab, 2.1)]
-    public void Exr(ExrCompression compression, double factor)
+    [InlineData(3)]
+    [InlineData(4)]
+    public void WebpLossy(int channels)
+    {
+        var data = Encode(s => ImageCodecs.Webp.Encode(Photo(channels), s, new WebpEncodeOptions { Quality = 80 }));
+        AssertAboutOutput(() => ImageCodecs.Webp.Decode(data, new WebpDecodeOptions { Multithreaded = false }), 1.15);
+    }
+
+    // all resolution levels of a component share one buffer
+    [Theory]
+    [InlineData(true, 0)]
+    [InlineData(false, 0)]
+    [InlineData(false, 256)]
+    public void Jp2(bool lossless, int tile)
+    {
+        var data = Encode(s => ImageCodecs.Jp2.Encode(Photo(3), s, new Jp2EncodeOptions { Lossless = lossless, TileWidth = tile, TileHeight = tile }));
+        AssertAboutOutput(() => ImageCodecs.Jp2.Decode(data, new Jp2DecodeOptions { Parallel = false }), 1.3);
+    }
+
+    [Theory]
+    [InlineData(ExrCompression.Piz)]
+    [InlineData(ExrCompression.Dwaa)]
+    [InlineData(ExrCompression.Dwab)]
+    public void Exr(ExrCompression compression)
     {
         var data = Encode(s => ImageCodecs.Exr.Encode(Photo(3, SampleType.Float32), s, new ExrEncodeOptions { Compression = compression, PixelType = ExrPixelType.Half }));
-        AssertAboutOutput(() => ImageCodecs.Exr.Decode(data, new ExrDecodeOptions { Parallel = false }), factor);
+        AssertAboutOutput(() => ImageCodecs.Exr.Decode(data, new ExrDecodeOptions { Parallel = false }), 1.1);
     }
 
     // a MemoryStream is decoded from its own buffer, from the current position on

@@ -157,6 +157,7 @@ namespace Aardvark.ImageCodecs
         public J2kRect C, V;
         public int W, H, NLow;
         public Array? Buffer;
+        public int Off, Stride;              // decoder: where the window starts in Buffer, and its row pitch
     }
 
     internal sealed class J2kTileComp
@@ -173,6 +174,7 @@ namespace Aardvark.ImageCodecs
         public int OutRes;                   // highest resolution level to decode
         public bool Wide;                    // 64 bit samples
         public bool HasData;
+        public Array? Pooled;                // decoder: the rented level buffer, returned once the tile is written out
     }
 
     internal sealed class J2kTile

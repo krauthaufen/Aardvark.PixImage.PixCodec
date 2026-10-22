@@ -32,6 +32,10 @@ namespace Aardvark.ImageCodecs
             int nL = res.NLow;
             long lx0 = (res.C.X0 + 1) >> 1;
             int srcCol = (int)(lx0 - low.C.X0);
+            int o = res.Off, st = res.Stride;
+            // the level below usually lives in this buffer already, in place (J2kDecoder); else its rows are copied in
+            bool copy = low.Buffer != res.Buffer;
+            long lo = low.Off - low.C.Y0 * (long)low.Stride + srcCol;
             switch (res.Buffer)
             {
                 case int[] buf:
@@ -43,17 +47,17 @@ namespace Aardvark.ImageCodecs
                         fixed (int* s = src)
                             for (int j = y0; j < y1; j++)
                             {
-                                int* row = p + (long)j * w;
-                                if (((j + b) & 1) == 0 && nL > 0)
+                                int* row = p + o + (long)j * st;
+                                if (((j + b) & 1) == 0 && nL > 0 && copy)
                                 {
                                     long v = (res.C.Y0 + j) >> 1;
-                                    if (s != null) Buffer.MemoryCopy(s + (v - low.C.Y0) * low.W + srcCol, row, nL * 4L, nL * 4L);
+                                    if (s != null) Buffer.MemoryCopy(s + lo + v * low.Stride, row, nL * 4L, nL * 4L);
                                     else new Span<int>(row, nL).Clear();
                                 }
                                 Synth53Row(row, nL, w - nL, a, t);
                             }
                     });
-                    fixed (int* p = buf) Vertical53(p, w, h, b, parallel);
+                    fixed (int* p = buf) Vertical53(p + o, w, st, h, b, parallel);
                     break;
                 }
                 case long[] buf:
@@ -65,16 +69,16 @@ namespace Aardvark.ImageCodecs
                     {
                         for (int j = 0; j < h; j++)
                         {
-                            long* row = p + (long)j * w;
-                            if (((j + b) & 1) == 0 && nL > 0)
+                            long* row = p + o + (long)j * st;
+                            if (((j + b) & 1) == 0 && nL > 0 && copy)
                             {
                                 long v = (res.C.Y0 + j) >> 1;
-                                if (s != null) Buffer.MemoryCopy(s + (v - low.C.Y0) * low.W + srcCol, row, nL * 8L, nL * 8L);
+                                if (s != null) Buffer.MemoryCopy(s + lo + v * low.Stride, row, nL * 8L, nL * 8L);
                                 else new Span<long>(row, nL).Clear();
                             }
                             Synth53Row(row, nL, w - nL, a, t);
                         }
-                        Vertical53(p, w, h, b);
+                        Vertical53(p + o, w, st, h, b);
                     }
                     break;
                 }
@@ -88,17 +92,17 @@ namespace Aardvark.ImageCodecs
                         fixed (float* s = src)
                             for (int j = y0; j < y1; j++)
                             {
-                                float* row = p + (long)j * w;
-                                if (((j + b) & 1) == 0 && nL > 0)
+                                float* row = p + o + (long)j * st;
+                                if (((j + b) & 1) == 0 && nL > 0 && copy)
                                 {
                                     long v = (res.C.Y0 + j) >> 1;
-                                    if (s != null) Buffer.MemoryCopy(s + (v - low.C.Y0) * low.W + srcCol, row, nL * 4L, nL * 4L);
+                                    if (s != null) Buffer.MemoryCopy(s + lo + v * low.Stride, row, nL * 4L, nL * 4L);
                                     else new Span<float>(row, nL).Clear();
                                 }
                                 Synth97Row(row, nL, w - nL, a, (float*)ti);
                             }
                     });
-                    fixed (float* p = buf) Vertical97(p, w, h, b, parallel);
+                    fixed (float* p = buf) Vertical97(p + o, w, st, h, b, parallel);
                     break;
                 }
             }
@@ -207,7 +211,7 @@ namespace Aardvark.ImageCodecs
 
         // ---- 5/3, columns (whole rows at a time) ----
 
-        static void Vertical53(int* p, int w, int h, int b, bool parallel)
+        static void Vertical53(int* p, int w, int st, int h, int b, bool parallel)
         {
             if (h == 1)
             {
@@ -225,11 +229,11 @@ namespace Aardvark.ImageCodecs
                 int last = -1;
                 for (int j = b; j < h; j += 2)
                 {
-                    Lift53(q + (long)j * w, q + (long)(j > 0 ? j - 1 : j + 1) * w, q + (long)(j + 1 < h ? j + 1 : j - 1) * w, n, true);
-                    if (j > 0) Lift53(q + (long)(j - 1) * w, q + (long)(j > 1 ? j - 2 : j) * w, q + (long)j * w, n, false);
+                    Lift53(q + (long)j * st, q + (long)(j > 0 ? j - 1 : j + 1) * st, q + (long)(j + 1 < h ? j + 1 : j - 1) * st, n, true);
+                    if (j > 0) Lift53(q + (long)(j - 1) * st, q + (long)(j > 1 ? j - 2 : j) * st, q + (long)j * st, n, false);
                     last = j;
                 }
-                if (last + 1 < h) Lift53(q + (long)(last + 1) * w, q + (long)last * w, q + (long)last * w, n, false);
+                if (last + 1 < h) Lift53(q + (long)(last + 1) * st, q + (long)last * st, q + (long)last * st, n, false);
             }
             if (parallel && bands > 1 && (long)w * h > 1 << 16) Parallel.For(0, bands, Band);
             else for (int i = 0; i < bands; i++) Band(i);
@@ -259,7 +263,7 @@ namespace Aardvark.ImageCodecs
             else for (; i < n; i++) d[i] += (a[i] + b[i]) >> 1;
         }
 
-        static void Vertical53(long* p, int w, int h, int b)
+        static void Vertical53(long* p, int w, int st, int h, int b)
         {
             if (h == 1)
             {
@@ -268,12 +272,12 @@ namespace Aardvark.ImageCodecs
             }
             for (int j = b; j < h; j += 2)
             {
-                long* d = p + (long)j * w, u = p + (long)(j > 0 ? j - 1 : j + 1) * w, v = p + (long)(j + 1 < h ? j + 1 : j - 1) * w;
+                long* d = p + (long)j * st, u = p + (long)(j > 0 ? j - 1 : j + 1) * st, v = p + (long)(j + 1 < h ? j + 1 : j - 1) * st;
                 for (int x = 0; x < w; x++) d[x] -= (u[x] + v[x] + 2) >> 2;
             }
             for (int j = 1 - b; j < h; j += 2)
             {
-                long* d = p + (long)j * w, u = p + (long)(j > 0 ? j - 1 : j + 1) * w, v = p + (long)(j + 1 < h ? j + 1 : j - 1) * w;
+                long* d = p + (long)j * st, u = p + (long)(j > 0 ? j - 1 : j + 1) * st, v = p + (long)(j + 1 < h ? j + 1 : j - 1) * st;
                 for (int x = 0; x < w; x++) d[x] += (u[x] + v[x]) >> 1;
             }
         }
@@ -324,7 +328,7 @@ namespace Aardvark.ImageCodecs
             for (; i < n; i++) d[i] = c0 * d[i] + c1 * (a[i] + b[i]);
         }
 
-        static void Vertical97(float* p, int w, int h, int b, bool parallel)
+        static void Vertical97(float* p, int w, int st, int h, int b, bool parallel)
         {
             if (h == 1)
             {
@@ -343,7 +347,7 @@ namespace Aardvark.ImageCodecs
                     float c0 = step == 0 ? K : step == 1 ? InvK : 1f;
                     float c1 = step == 0 ? -Delta * InvK : step == 1 ? -Gamma : step == 2 ? -Beta : -Alpha;
                     for (int j = (step & 1) == 0 ? b : 1 - b; j < h; j += 2)
-                        Lift97(q + (long)j * w, q + (long)(j > 0 ? j - 1 : j + 1) * w, q + (long)(j + 1 < h ? j + 1 : j - 1) * w, n, c0, c1);
+                        Lift97(q + (long)j * st, q + (long)(j > 0 ? j - 1 : j + 1) * st, q + (long)(j + 1 < h ? j + 1 : j - 1) * st, n, c0, c1);
                 }
             }
             if (parallel && bands > 1 && (long)w * h > 1 << 16) Parallel.For(0, bands, Band);
