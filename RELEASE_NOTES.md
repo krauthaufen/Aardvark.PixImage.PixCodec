@@ -1,3 +1,6 @@
+### 1.0.3
+* Encoding allocates next to nothing: JPEG is converted per MCU row with compact blocks between the two passes, deflate stream buffers are reused, TIFF strips are pooled.
+
 ### 1.0.2
 * Decoding allocates about the size of the output: streamed JPEG rows and rotation, pooled working buffers for JPEG 2000, progressive JPEG, WebP and EXR.
 * Files and streams are decoded without copying them into a new array first.
