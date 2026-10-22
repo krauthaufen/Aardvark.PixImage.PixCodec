@@ -108,6 +108,48 @@ public class AllocationTests
         AssertAboutOutput(() => ImageCodecs.Exr.Decode(data, new ExrDecodeOptions { Parallel = false }), 1.1);
     }
 
+    /// <summary>Encoding allocates next to nothing once the pools are warm (the output stream is sized beforehand).</summary>
+    static void AssertSmallEncode(RawImage img, Action<Stream> encode)
+    {
+        var first = new MemoryStream();
+        encode(first);
+        var target = new MemoryStream((int)first.Length + 4096);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        encode(target);
+        long used = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.Equal(first.Length, target.Length);
+        long input = (long)img.Data.Length * RawImage.BytesPerSample(img.SampleType);
+        Assert.True(used < input / 20, $"{used} bytes allocated to encode {input} bytes of pixels");
+    }
+
+    [Theory]
+    [InlineData(3, true, JpegSubsampling.Chroma444, 0)]
+    [InlineData(3, true, JpegSubsampling.Chroma420, 0)]
+    [InlineData(4, true, JpegSubsampling.Chroma422, 7)]
+    [InlineData(3, false, JpegSubsampling.Chroma420, 0)]
+    [InlineData(4, false, JpegSubsampling.Chroma444, 5)]
+    public void JpegEncode(int channels, bool optimize, JpegSubsampling subsampling, int restart)
+    {
+        var img = Photo(channels);
+        AssertSmallEncode(img, s => ImageCodecs.Jpeg.Encode(img, s, new JpegEncodeOptions { OptimizeHuffman = optimize, Subsampling = subsampling, RestartInterval = restart }));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void PngEncode(int channels)
+    {
+        var img = Photo(channels);
+        AssertSmallEncode(img, s => Png.Encode(img, s));
+    }
+
+    [Fact]
+    public void TiffEncode()
+    {
+        var img = Photo(3);
+        AssertSmallEncode(img, s => ImageCodecs.Tiff.Encode(img, s, new TiffEncodeOptions { Parallel = false }));
+    }
+
     // a MemoryStream is decoded from its own buffer, from the current position on
     [Fact]
     public void StreamFromMemoryStreamPosition()

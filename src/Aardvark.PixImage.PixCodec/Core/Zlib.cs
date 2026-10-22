@@ -129,6 +129,17 @@ namespace Aardvark.ImageCodecs.Compression
             return o.ToArray();
         }
 
+        /// <summary><see cref="Compress"/> into an array rented from the shared pool (the caller returns it): the data is its first <paramref name="length"/> bytes.</summary>
+        internal static byte[] CompressRented(ReadOnlySpan<byte> source, int level, out int length)
+        {
+            if (Backend == ZlibBackend.Managed || source.IsEmpty) return Deflater.CompressRented(source, level, true, out length);
+            var z = Compress(source, level);
+            length = z.Length;
+            var r = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+            z.CopyTo(r, 0);
+            return r;
+        }
+
         /// <summary>Compresses to raw deflate data (no zlib header or checksum). Level 0..9.</summary>
         public static byte[] CompressRaw(ReadOnlySpan<byte> source, int level = 6)
         {

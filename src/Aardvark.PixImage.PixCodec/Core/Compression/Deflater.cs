@@ -765,6 +765,26 @@ namespace Aardvark.ImageCodecs.Compression
 
         public static byte[] Compress(ReadOnlySpan<byte> source, int level, bool zlibWrapper)
         {
+            var d = Run(source, level, zlibWrapper);
+            var result = d.outBuf.AsSpan(0, d.outPos).ToArray();
+            if (d.outBuf.Length > 4 << 20) d.outBuf = new byte[256]; // do not keep a large buffer alive in the cache
+            return result;
+        }
+
+        /// <summary><see cref="Compress"/> into an array rented from the shared pool: the data is its first <paramref name="length"/> bytes.</summary>
+        public static byte[] CompressRented(ReadOnlySpan<byte> source, int level, bool zlibWrapper, out int length)
+        {
+            var d = Run(source, level, zlibWrapper);
+            length = d.outPos;
+            var result = System.Buffers.ArrayPool<byte>.Shared.Rent(length);
+            d.outBuf.AsSpan(0, length).CopyTo(result);
+            if (d.outBuf.Length > 4 << 20) d.outBuf = new byte[256];
+            return result;
+        }
+
+        /// <summary>Compresses with this thread's cached instance and leaves the result in its output buffer.</summary>
+        static Deflater Run(ReadOnlySpan<byte> source, int level, bool zlibWrapper)
+        {
             // The tables are a few hundred kilobytes: codecs that compress many strips or chunks reuse them.
             level = Math.Clamp(level, 0, 9);
             int hint = (int)Math.Min(level == 0 ? (long)source.Length + source.Length / 65535 * 5 + 32 : source.Length / 2 + 64, Array.MaxLength);
@@ -777,9 +797,27 @@ namespace Aardvark.ImageCodecs.Compression
                 d.EndBlock(s, true);
             }
             d.Finish(zlibWrapper ? Checksums.Adler32(source, 1) : 0);
-            var result = d.outBuf.AsSpan(0, d.outPos).ToArray();
-            if (d.outBuf.Length > 4 << 20) d.outBuf = new byte[256]; // do not keep a large buffer alive in the cache
-            return result;
+            return d;
+        }
+
+        [ThreadStatic] static Deflater? spare;
+
+        /// <summary>A deflater for a new stream: the one <see cref="Return"/> kept on this thread if it matches, else a new one.</summary>
+        public static Deflater Rent(int level, bool zlibWrapper, int capacityHint)
+        {
+            level = Math.Clamp(level, 0, 9);
+            var d = spare;
+            if (d == null || d.level != level || d.zlib != zlibWrapper) return new Deflater(level, zlibWrapper, capacityHint);
+            spare = null;
+            d.Reset(capacityHint);
+            return d;
+        }
+
+        /// <summary>Keeps a deflater whose stream is finished for the next <see cref="Rent"/> on this thread.</summary>
+        public static void Return(Deflater d)
+        {
+            if (d.outBuf.Length > 4 << 20) d.outBuf = new byte[256];
+            spare = d;
         }
     }
 
@@ -791,7 +829,8 @@ namespace Aardvark.ImageCodecs.Compression
         readonly Stream output;
         readonly Deflater deflater;
         readonly bool zlib;
-        readonly byte[] buffer = new byte[Size];
+        byte[] buffer;
+        [ThreadStatic] static byte[]? spareBuffer; // the buffer of the last stream finished on this thread
         int fill;
         uint adler = 1;
         bool finished;
@@ -800,7 +839,10 @@ namespace Aardvark.ImageCodecs.Compression
         {
             this.output = output ?? throw new ArgumentNullException(nameof(output));
             zlib = zlibWrapper;
-            deflater = new Deflater(level, zlibWrapper, 1 << 16);
+            // the tables and buffers are about a megabyte: streams created one after the other reuse them
+            deflater = Deflater.Rent(level, zlibWrapper, 1 << 16);
+            buffer = spareBuffer ?? new byte[Size];
+            spareBuffer = null;
         }
 
         public override bool CanRead => false;
@@ -884,6 +926,9 @@ namespace Aardvark.ImageCodecs.Compression
                 }
                 deflater.Finish(adler);
                 WriteOut();
+                Deflater.Return(deflater);
+                spareBuffer = buffer;
+                buffer = Array.Empty<byte>();
             }
             base.Dispose(disposing);
         }

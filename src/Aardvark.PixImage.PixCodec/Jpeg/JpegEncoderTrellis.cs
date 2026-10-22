@@ -63,24 +63,25 @@ namespace Aardvark.ImageCodecs.JpegImpl
             }
         }
 
-        /// <summary>Forward DCT of every block without quantization (what <see cref="Transform"/> does in trellis mode).</summary>
+        /// <summary>Forward DCT without quantization (what <see cref="Transform"/> does in trellis mode), of one MCU row or of every block for -1.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
-        void TransformRaw()
+        void TransformRaw(int my)
         {
             float* one = stackalloc float[64];
             for (int i = 0; i < 64; i++) one[i] = 1f;
-            _raw = new short[_comps.Length][];
             for (int ci = 0; ci < _comps.Length; ci++)
             {
                 var c = _comps[ci];
-                var raw = _raw[ci] = GC.AllocateUninitializedArray<short>(c.Coefs.Length);
+                var raw = _raw![ci] ??= GC.AllocateUninitializedArray<short>(c.BlocksW * c.BlocksH * 64);
                 fixed (byte* plane = c.Plane)
                 fixed (short* r = raw)
                 {
-                    short* o = r;
-                    for (int by = 0; by < c.BlocksH; by++)
+                    int by0 = my < 0 ? 0 : my * c.V, by1 = my < 0 ? c.BlocksH : by0 + c.V;
+                    int top = StripPlanes ? by0 : 0;
+                    short* o = r + (nint)by0 * c.BlocksW * 64;
+                    for (int by = by0; by < by1; by++)
                     {
-                        byte* row = plane + (nint)by * 8 * c.Stride;
+                        byte* row = plane + (nint)(by - top) * 8 * c.Stride;
                         for (int bx = 0; bx < c.BlocksW; bx++, o += 64)
                         {
                             if (IsDummy(c, bx, by)) new Span<short>(o, 64).Clear(); // its DC is set by FillDummyDc
@@ -177,7 +178,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
         void TrellisComponent(int ci, float[] invq, float[] weight, float dcWeight, RateModel model, float lambda, int[] order, bool[] reset)
         {
             var c = _comps[ci];
-            int nBlocks = c.Coefs.Length / 64;
+            int nBlocks = c.BlocksW * c.BlocksH;
             // the rate model with lambda folded in
             float* lbits = stackalloc float[256];
             for (int i = 0; i < 256; i++) lbits[i] = lambda * model.Ac[i];

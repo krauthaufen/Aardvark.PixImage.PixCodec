@@ -1,8 +1,11 @@
 using System;
+using System.Buffers;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using System.Runtime.Intrinsics.X86;
@@ -10,8 +13,11 @@ using System.Runtime.Intrinsics.X86;
 namespace Aardvark.ImageCodecs.JpegImpl
 {
     /// <summary>
-    /// Baseline / progressive Huffman JPEG encoder. All quantized coefficients are kept in memory (zigzag order),
-    /// which makes optimized Huffman tables and multi scan output a matter of walking them more than once.
+    /// Baseline / progressive Huffman JPEG encoder. Sequential 8 bit output is converted and transformed one MCU row
+    /// at a time: with the standard tables each block is coded right away, for optimized tables the quantized blocks
+    /// are kept in compact form (<see cref="BlockStore"/>) until the statistics are complete. The other modes keep all
+    /// quantized coefficients (zigzag order) and walk them as often as they need. Working buffers come from the
+    /// shared array pool.
     /// </summary>
     internal sealed unsafe partial class JpegEncoder
     {
@@ -130,7 +136,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
         // ---------------------------------------------------------------- output
 
         readonly Stream _out;
-        readonly byte[] _buf = GC.AllocateArray<byte>(1 << 16, pinned: true);
+        readonly byte[] _buf = ArrayPool<byte>.Shared.Rent(1 << 16);
         int _pos;
         ulong _acc;
         int _accBits;
@@ -198,13 +204,13 @@ namespace Aardvark.ImageCodecs.JpegImpl
         // Huffman tables are known the tokens are replayed into the bit stream.
         //   bits 0-7 symbol, 8-12 number of extra bits, 13-28 extra bits, 29 table slot, 30 restart marker, 31 raw bits only
         const uint TokenRestart = 1u << 30, TokenRaw = 1u << 31;
-        uint[] _tokens = new uint[1 << 16];
+        uint[] _tokens = Array.Empty<uint>();
         int _tokenCount;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         void Push(uint token)
         {
-            if (_tokenCount == _tokens.Length) Array.Resize(ref _tokens, _tokens.Length * 2);
+            if (_tokenCount == _tokens.Length) Array.Resize(ref _tokens, Math.Max(_tokens.Length * 2, 1 << 16));
             _tokens[_tokenCount++] = token;
         }
 
@@ -352,7 +358,9 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     throw new ImageNotSupportedException("lossless JPEG holds at most 4 components");
                 int precision = options.Precision != 0 ? options.Precision : wide ? 16 : 8;
                 if (precision < 2 || precision > (wide ? 16 : 8)) throw new ArgumentException($"lossless JPEG precision {precision} is not possible for {image.SampleType} samples");
-                new JpegEncoder(output, options).RunLossless(image, precision);
+                var le = new JpegEncoder(output, options);
+                try { le.RunLossless(image, precision); }
+                finally { le.Release(); }
                 return;
             }
             if (image.Color == ColorModel.Other)
@@ -422,11 +430,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 // a lone component is coded without MCU padding
                 c.StatBlocksW = _comps.Length == 1 ? c.ScanBlocksW : c.BlocksW;
                 c.StatBlocksH = _comps.Length == 1 ? c.ScanBlocksH : c.BlocksH;
-                long size = (long)c.Stride * c.BlocksH * 8;
-                if (size > Array.MaxLength) throw new ImageNotSupportedException("image is too large to encode");
-                if (_precision == 8) c.Plane = GC.AllocateUninitializedArray<byte>((int)size);
-                else c.Plane16 = GC.AllocateUninitializedArray<ushort>((int)size);
-                c.Coefs = GC.AllocateUninitializedArray<short>((int)size);
+                if ((long)c.Stride * c.BlocksH * 8 > Array.MaxLength) throw new ImageNotSupportedException("image is too large to encode");
             }
 
             // IJG quality scaling of the base tables (the tuned ones are given in tenths)
@@ -449,94 +453,169 @@ namespace Aardvark.ImageCodecs.JpegImpl
             }
         }
 
+        /// <summary>The fast color conversion fills the planes one MCU row at a time (else: whole planes, <see cref="FillPlanesGeneric"/>).</summary>
+        bool StripPlanes => _precision == 8 && !_genericSampling;
+
+        /// <summary>Optimized sequential tables from a statistics pass over compactly stored blocks (<see cref="EncodeTwoPass"/>).</summary>
+        bool TwoPass => StripPlanes && OptimizedBaseline && !UseTrellis;
+
         void Run(RawImage image)
         {
-            if (_precision != 8 || _genericSampling) FillPlanesGeneric(image);
-            else FillPlanes(image);
-            if (!_opt.Progressive) SetupBaselineTables();
-            if (SinglePass)
+            try
             {
-                // standard tables, sequential: nothing depends on the whole image, so each MCU is transformed and
-                // coded in one go without ever storing the coefficients
-                WriteHeaders(image.Metadata);
-                EncodeSinglePass();
+                Allocate();
+                byte[]? src = StripPlanes ? image.GetData<byte>() : null;
+                int ch = image.Channels;
+                if (!StripPlanes) FillPlanesGeneric(image);
+                if (!_opt.Progressive) SetupBaselineTables();
+                if (SinglePass)
+                {
+                    // standard tables, sequential: nothing depends on the whole image, so each MCU is transformed and
+                    // coded in one go without ever storing the coefficients
+                    WriteHeaders(image.Metadata);
+                    EncodeSinglePass(src, ch);
+                }
+                else if (TwoPass) EncodeTwoPass(src!, ch, image.Metadata);
+                else
+                {
+                    if (UseTrellis && _raw == null) _raw = new short[_comps.Length][];
+                    for (int my = 0; my < (StripPlanes ? _mcusY : 1); my++)
+                    {
+                        if (StripPlanes) FillStrip(src!, ch, my);
+                        int row = StripPlanes ? my : -1;
+                        if (UseTrellis) TransformRaw(row); else Transform(row);
+                    }
+                    if (UseTrellis) RunTrellis();
+                    FillDummyDc();
+                    WriteHeaders(image.Metadata);
+                    if (_opt.Progressive) WriteProgressive();
+                    else WriteBaseline();
+                }
+                Marker(0xD9);
+                _out.Write(_buf, 0, _pos);
+                _pos = 0;
             }
-            else
+            finally { Release(); }
+        }
+
+        byte[]? _cbRows, _crRows; // full resolution chroma rows of FillStrip
+
+        /// <summary>
+        /// Rents the planes (one MCU row of blocks high with <see cref="StripPlanes"/>, else the whole image) and,
+        /// unless the blocks are coded as they are transformed, the coefficients.
+        /// </summary>
+        void Allocate()
+        {
+            bool coefs = !SinglePass && !TwoPass;
+            foreach (var c in _comps)
             {
-                if (UseTrellis) { TransformRaw(); RunTrellis(); }
-                else Transform();
-                FillDummyDc();
-                WriteHeaders(image.Metadata);
-                if (_opt.Progressive) WriteProgressive();
-                else WriteBaseline();
+                int rows = StripPlanes ? 8 * c.V : 8 * c.BlocksH, size = c.Stride * rows;
+                if (_precision == 8) c.Plane = ArrayPool<byte>.Shared.Rent(size);
+                else c.Plane16 = ArrayPool<ushort>.Shared.Rent(size);
+                if (coefs) c.Coefs = ArrayPool<short>.Shared.Rent(c.Stride * c.BlocksH * 8);
             }
-            Marker(0xD9);
-            _out.Write(_buf, 0, _pos);
-            _pos = 0;
+            if (StripPlanes && _comps.Length > 1)
+            {
+                _cbRows = ArrayPool<byte>.Shared.Rent(2 * _comps[0].Stride);
+                _crRows = ArrayPool<byte>.Shared.Rent(2 * _comps[0].Stride);
+            }
+        }
+
+        /// <summary>Gives the rented buffers back.</summary>
+        void Release()
+        {
+            foreach (var c in _comps)
+            {
+                if (c.Plane != null) ArrayPool<byte>.Shared.Return(c.Plane);
+                if (c.Plane16 != null) ArrayPool<ushort>.Shared.Return(c.Plane16);
+                if (c.Coefs != null) ArrayPool<short>.Shared.Return(c.Coefs);
+                c.Plane = null!; c.Plane16 = null; c.Coefs = null!;
+            }
+            if (_cbRows != null) ArrayPool<byte>.Shared.Return(_cbRows);
+            if (_crRows != null) ArrayPool<byte>.Shared.Return(_crRows);
+            _cbRows = _crRows = null;
+            ArrayPool<byte>.Shared.Return(_buf);
         }
 
         // ---------------------------------------------------------------- color conversion and downsampling
 
+        /// <summary>
+        /// Color conversion and chroma downsampling of MCU row <paramref name="my"/> (8 bit samples, 1 x 1 chroma). With
+        /// <see cref="StripPlanes"/> it goes to the top of the planes, else to its place in them. Rows and columns past
+        /// the image repeat the last ones.
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
-        void FillPlanes(RawImage image)
+        void FillStrip(byte[] src, int ch, int my)
         {
-            int ch = image.Channels, w = _w, h = _h;
-            var src = image.GetData<byte>();
+            int w = _w, h = _h, vMax = _vMax;
             var yc = _comps[0];
             int fullW = yc.Stride; // luma plane width: a whole number of MCUs
+            int y0 = my * 8 * vMax; // first luma row of the MCU row (always inside the image)
+            int top = StripPlanes ? 0 : y0;
             if (_comps.Length == 1)
             {
-                for (int y = 0; y < h; y++)
+                for (int r = 0; r < 8; r++)
                 {
-                    var row = yc.Plane.AsSpan(y * fullW, fullW);
+                    var row = yc.Plane.AsSpan((top + r) * fullW, fullW);
+                    int y = y0 + r;
+                    if (y >= h) { yc.Plane.AsSpan((top + r - 1) * fullW, fullW).CopyTo(row); continue; }
                     if (ch == 1) src.AsSpan(y * w, w).CopyTo(row);
                     else for (int x = 0; x < w; x++) row[x] = src[(y * w + x) * ch];
                     row.Slice(w).Fill(row[w - 1]);
                 }
+                return;
             }
-            else
+            var cbc = _comps[1]; var crc = _comps[2];
+            // full resolution chroma rows, two of them when halving vertically
+            byte[] cb = _cbRows!, cr = _crRows!;
+            int ctop = StripPlanes ? 0 : my * 8;
+            for (int g = 0; g < 8; g++)
             {
-                var cbc = _comps[1]; var crc = _comps[2];
-                // full resolution chroma rows, two of them when halving vertically
-                var cb = new byte[fullW * 2]; var cr = new byte[fullW * 2];
-                int rowsPerPass = _vMax;
-                for (int y = 0; y < h; y += rowsPerPass)
+                int y = y0 + g * vMax;
+                var cbDst = cbc.Plane.AsSpan((ctop + g) * cbc.Stride, cbc.Stride);
+                var crDst = crc.Plane.AsSpan((ctop + g) * crc.Stride, crc.Stride);
+                if (y >= h)
                 {
-                    for (int r = 0; r < rowsPerPass; r++)
+                    for (int r = 0; r < vMax; r++)
                     {
-                        int sy = Math.Min(y + r, h - 1); // odd height: the last row counts twice
-                        var yrow = yc.Plane.AsSpan((y + r) * fullW, fullW);
-                        var cbr = cb.AsSpan(r * fullW, fullW); var crr = cr.AsSpan(r * fullW, fullW);
-                        RgbToYcc(src.AsSpan(sy * w * ch, w * ch), ch, yrow, cbr, crr, w);
-                        yrow.Slice(w).Fill(yrow[w - 1]);
-                        cbr.Slice(w).Fill(cbr[w - 1]);
-                        crr.Slice(w).Fill(crr[w - 1]);
+                        int l = top + g * vMax + r;
+                        yc.Plane.AsSpan((l - 1) * fullW, fullW).CopyTo(yc.Plane.AsSpan(l * fullW, fullW));
                     }
-                    int cy = y / rowsPerPass;
-                    Downsample(cb, fullW, cbc.Plane.AsSpan(cy * cbc.Stride, cbc.Stride));
-                    Downsample(cr, fullW, crc.Plane.AsSpan(cy * crc.Stride, crc.Stride));
+                    cbc.Plane.AsSpan((ctop + g - 1) * cbc.Stride, cbc.Stride).CopyTo(cbDst);
+                    crc.Plane.AsSpan((ctop + g - 1) * crc.Stride, crc.Stride).CopyTo(crDst);
+                    continue;
                 }
-            }
-            // pad downwards to whole blocks by repeating the last row
-            foreach (var c in _comps)
-            {
-                int rows = (h * c.V + _vMax - 1) / _vMax;
-                if (_vMax > 1 && c.V == _vMax) rows = (h + 1) / 2 * 2; // luma rows were written in pairs
-                var last = c.Plane.AsSpan((rows - 1) * c.Stride, c.Stride);
-                for (int y = rows; y < c.BlocksH * 8; y++) last.CopyTo(c.Plane.AsSpan(y * c.Stride, c.Stride));
+                for (int r = 0; r < vMax; r++)
+                {
+                    int sy = Math.Min(y + r, h - 1); // odd height: the last row counts twice
+                    var yrow = yc.Plane.AsSpan((top + g * vMax + r) * fullW, fullW);
+                    var cbr = cb.AsSpan(r * fullW, fullW); var crr = cr.AsSpan(r * fullW, fullW);
+                    RgbToYcc(src.AsSpan(sy * w * ch, w * ch), ch, yrow, cbr, crr, w);
+                    yrow.Slice(w).Fill(yrow[w - 1]);
+                    cbr.Slice(w).Fill(cbr[w - 1]);
+                    crr.Slice(w).Fill(crr[w - 1]);
+                }
+                Downsample(cb, fullW, cbDst);
+                Downsample(cr, fullW, crDst);
             }
         }
 
         /// <summary>
-        /// Straightforward version of <see cref="FillPlanes"/> for the cases without a fast path (12 bit samples,
+        /// Straightforward version of <see cref="FillStrip"/> for the cases without a fast path (12 bit samples,
         /// arbitrary sampling factors): full resolution planes first, then an area average down to each component's size.
         /// </summary>
         void FillPlanesGeneric(RawImage image)
         {
+            var full = new ushort[_comps.Length][];
+            for (int i = 0; i < full.Length; i++) full[i] = ArrayPool<ushort>.Shared.Rent(_w * _h);
+            try { FillPlanesFrom(image, full); }
+            finally { foreach (var f in full) ArrayPool<ushort>.Shared.Return(f); }
+        }
+
+        void FillPlanesFrom(RawImage image, ushort[][] full)
+        {
             int w = _w, h = _h, ch = image.Channels, nc = _comps.Length;
             int center = 1 << (_precision - 1), max = (1 << _precision) - 1;
-            var full = new ushort[nc][];
-            for (int i = 0; i < nc; i++) full[i] = new ushort[w * h];
             byte[]? s8 = image.SampleType == SampleType.UInt8 ? image.GetData<byte>() : null;
             ushort[]? s16 = s8 == null ? image.GetData<ushort>() : null;
             for (int i = 0, n = w * h; i < n; i++)
@@ -785,8 +864,9 @@ namespace Aardvark.ImageCodecs.JpegImpl
         /// <summary>The factor the quantizers multiply the DCT output (8 times the coefficient) with.</summary>
         internal static float Reciprocal(int q) => 1f / (8 * q);
 
+        /// <summary>Quantized DCT of MCU row <paramref name="my"/> (at the top of strip planes), or of every block for -1.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
-        void Transform()
+        void Transform(int my)
         {
             float* recip = stackalloc float[64];
             int* m = stackalloc int[64];
@@ -802,12 +882,14 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 fixed (short* coefs = c.Coefs)
                 fixed (int* freq = stats)
                 {
-                    short* o = coefs;
-                    for (int by = 0; by < c.BlocksH; by++)
+                    int by0 = my < 0 ? 0 : my * c.V, by1 = my < 0 ? c.BlocksH : by0 + c.V;
+                    int top = StripPlanes ? by0 : 0; // block row at the top of the plane
+                    short* o = coefs + (nint)by0 * c.BlocksW * 64;
+                    for (int by = by0; by < by1; by++)
                     {
                         if (plane16 == null)
                         {
-                            byte* row = plane + (nint)by * 8 * c.Stride;
+                            byte* row = plane + (nint)(by - top) * 8 * c.Stride;
                             for (int bx = 0; bx < c.BlocksW; bx++, o += 64)
                             {
                                 if (IsDummy(c, bx, by))
@@ -829,7 +911,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                                 if (freq != null) freq[0]++;
                                 continue;
                             }
-                            JpegDct.FdctQuantizeWide(plane16 + ((nint)by * c.Stride + bx) * 8, c.Stride, 1 << (_precision - 1), recip, o);
+                            JpegDct.FdctQuantizeWide(plane16 + ((nint)(by - top) * c.Stride + bx) * 8, c.Stride, 1 << (_precision - 1), recip, o);
                             if (freq != null && bx < c.StatBlocksW && by < c.StatBlocksH) GatherAc(o, freq, _maxAcSize);
                         }
                     }
@@ -943,13 +1025,22 @@ namespace Aardvark.ImageCodecs.JpegImpl
             }
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
-        void EncodeSinglePass()
+        /// <summary>The tables of a sequential scan and its header.</summary>
+        void WriteSequentialHeader()
         {
-            bool color = _comps.Length == 3, single = !color;
+            bool color = _comps.Length == 3;
             WriteHuffmanTable(_comps[0].Dc, 0, 0); WriteHuffmanTable(_comps[0].Ac, 1, 0);
             if (color) { WriteHuffmanTable(_comps[1].Dc, 0, 1); WriteHuffmanTable(_comps[1].Ac, 1, 1); }
             WriteScanHeader(_comps, color ? [0, 1, 1] : [0], color ? [0, 1, 1] : [0], 0, 63, 0, 0);
+        }
+
+        /// <param name="src">The 8 bit samples with <see cref="StripPlanes"/> (each MCU row is converted when it is coded), else null (the planes are complete).</param>
+        /// <param name="ch">Channels of <paramref name="src"/>.</param>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
+        void EncodeSinglePass(byte[]? src, int ch)
+        {
+            bool single = _comps.Length == 1;
+            WriteSequentialHeader();
 
             int nc = _comps.Length;
             float* recips = stackalloc float[2 * 64];
@@ -970,6 +1061,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 sink.Acc = _acc; sink.Bits = _accBits; sink.Out = (nint)(buf + _pos);
                 for (int my = 0; my < mcusY; my++)
                 {
+                    if (src != null) FillStrip(src, ch, my);
                     for (int mx = 0; mx < mcusX; mx++)
                     {
                         // the bit state lives in the sink while blocks are coded; the stream methods see the fields
@@ -993,8 +1085,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
                             var c = _comps[i];
                             int h = single ? 1 : c.H, v = single ? 1 : c.V;
                             nint stride = c.Stride;
-                            byte* src = planes[i] + ((nint)my * v * stride + mx * h) * 8;
-                            for (int by = 0; by < v; by++, src += 8 * stride)
+                            byte* p = planes[i] + ((src != null ? 0 : (nint)my * v * stride) + mx * h) * 8;
+                            for (int by = 0; by < v; by++, p += 8 * stride)
                                 for (int bx = 0; bx < h; bx++)
                                 {
                                     ulong mask;
@@ -1007,7 +1099,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                                     }
                                     else
                                     {
-                                        JpegDct.FdctQuantizeTransposed(src + bx * 8, stride, recips + (i == 0 ? 0 : 64), blk);
+                                        JpegDct.FdctQuantizeTransposed(p + bx * 8, stride, recips + (i == 0 ? 0 : 64), blk);
                                         mask = JpegTables.TransposedMaskToZigZag(JpegTables.NonZeroMask(blk));
                                     }
                                     c.LastDc = blk[0];
@@ -1020,6 +1112,210 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     }
                 }
                 _acc = sink.Acc; _accBits = sink.Bits; _pos = (int)((byte*)sink.Out - buf);
+            }
+            FlushBits();
+        }
+
+        /// <summary>
+        /// Quantized blocks between the two passes of <see cref="EncodeTwoPass"/>, in scan order and compact form: the
+        /// DC value (16 bits), then for each nonzero AC coefficient its zigzag index (bit 7 set: a 16 bit value
+        /// follows, else an 8 bit one) and value, then a 0 byte. The chunks are rented, pinned and twice the size
+        /// of the one before, up to 16 MB; a block never straddles two.
+        /// </summary>
+        sealed class BlockStore : IDisposable
+        {
+            public const int MaxBlock = 2 + 63 * 3 + 1;
+            readonly List<(byte[] Array, GCHandle Pin, int Used)> _chunks = new();
+            byte* _p, _end;
+
+            /// <summary>Room for one more block; <see cref="Commit"/> says how much of it was used.</summary>
+            public byte* Reserve()
+            {
+                if (_end - _p >= MaxBlock) return _p;
+                if (_chunks.Count > 0) Seal();
+                int size = _chunks.Count == 0 ? 1 << 16 : Math.Min(_chunks[^1].Array.Length * 2, 1 << 24);
+                var a = ArrayPool<byte>.Shared.Rent(size);
+                var pin = GCHandle.Alloc(a, GCHandleType.Pinned);
+                _chunks.Add((a, pin, 0));
+                _p = (byte*)pin.AddrOfPinnedObject();
+                _end = _p + a.Length;
+                return _p;
+            }
+
+            public void Commit(byte* p) => _p = p;
+
+            void Seal()
+            {
+                var last = _chunks[^1];
+                _chunks[^1] = (last.Array, last.Pin, (int)(_p - (byte*)last.Pin.AddrOfPinnedObject()));
+            }
+
+            /// <summary>Ends writing.</summary>
+            public void Close() { if (_chunks.Count > 0) Seal(); }
+
+            public int Count => _chunks.Count;
+            public byte* Start(int i) => (byte*)_chunks[i].Pin.AddrOfPinnedObject();
+            public byte* End(int i) => Start(i) + _chunks[i].Used;
+
+            public void Dispose()
+            {
+                foreach (var c in _chunks) { c.Pin.Free(); ArrayPool<byte>.Shared.Return(c.Array); }
+                _chunks.Clear();
+                _p = _end = null;
+            }
+        }
+
+        /// <summary>
+        /// Sequential 8 bit scan with optimized tables: the first pass transforms one MCU row at a time, counts the
+        /// symbols and keeps the quantized blocks in a <see cref="BlockStore"/>; the second codes them.
+        /// </summary>
+        void EncodeTwoPass(byte[] src, int ch, ImageMetadata? meta)
+        {
+            using var store = new BlockStore();
+            GatherBlocks(src, ch, store);
+            store.Close();
+            foreach (var c in _comps.Take(_comps.Length == 1 ? 1 : 2)) { c.Dc.BuildFromFrequencies(); c.Ac.BuildFromFrequencies(); }
+            WriteHeaders(meta);
+            WriteSequentialHeader();
+            WriteStoredBlocks(store);
+        }
+
+        /// <summary>Counts down the restart interval once per MCU: true for the MCU that follows a restart marker.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        bool RestartAt(ref int todo)
+        {
+            if (_restart == 0) return false;
+            bool at = todo == 0;
+            if (at) todo = _restart;
+            todo--;
+            return at;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
+        void GatherBlocks(byte[] src, int ch, BlockStore store)
+        {
+            int nc = _comps.Length;
+            bool single = nc == 1;
+            float* recips = stackalloc float[2 * 64];
+            for (int t = 0; t < 2; t++)
+                for (int i = 0; i < 64; i++) recips[t * 64 + (i & 7) * 8 + (i >> 3)] = Reciprocal(_quant[t][i]);
+            short* blk = stackalloc short[64];
+            int mcusX = single ? _comps[0].ScanBlocksW : _mcusX, mcusY = single ? _comps[0].ScanBlocksH : _mcusY;
+            int todo = _restart, maxAc = _maxAcSize;
+            foreach (var c in _comps) { c.Pred = 0; c.LastDc = 0; }
+            for (int my = 0; my < mcusY; my++)
+            {
+                FillStrip(src, ch, my);
+                for (int mx = 0; mx < mcusX; mx++)
+                {
+                    if (RestartAt(ref todo)) foreach (var c in _comps) c.Pred = 0;
+                    for (int i = 0; i < nc; i++)
+                    {
+                        var c = _comps[i];
+                        int h = single ? 1 : c.H, v = single ? 1 : c.V;
+                        nint stride = c.Stride;
+                        fixed (byte* plane = c.Plane)
+                        fixed (int* dcFreq = c.Dc.Freq, acFreq = c.Ac.Freq)
+                        {
+                            byte* p = plane + (nint)mx * h * 8;
+                            for (int by = 0; by < v; by++, p += 8 * stride)
+                                for (int bx = 0; bx < h; bx++)
+                                {
+                                    if (!single && (mx * h + bx >= c.ScanBlocksW || my * v + by >= c.ScanBlocksH))
+                                    {
+                                        // padding block (see IsDummy)
+                                        new Span<short>(blk, 64).Clear();
+                                        blk[0] = (short)c.LastDc;
+                                    }
+                                    else JpegDct.FdctQuantize(p + bx * 8, stride, recips + (i == 0 ? 0 : 64), blk);
+                                    c.LastDc = blk[0];
+                                    int diff = blk[0] - c.Pred;
+                                    c.Pred = blk[0];
+                                    dcFreq[BitLength(Math.Abs(diff))]++;
+                                    GatherAc(blk, acFreq, maxAc);
+                                    store.Commit(PutBlock(blk, store.Reserve()));
+                                }
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>Writes a zigzag ordered block in the <see cref="BlockStore"/> form; returns the end.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static byte* PutBlock(short* blk, byte* o)
+        {
+            Unsafe.WriteUnaligned(o, blk[0]);
+            o += 2;
+            ulong mask = JpegTables.NonZeroMask(blk) & ~1UL;
+            while (mask != 0)
+            {
+                int k = BitOperations.TrailingZeroCount(mask);
+                mask &= mask - 1;
+                int v = blk[k];
+                if ((uint)(v + 128) < 256) { o[0] = (byte)k; o[1] = (byte)v; o += 2; }
+                else { o[0] = (byte)(k | 0x80); Unsafe.WriteUnaligned(o + 1, (short)v); o += 3; }
+            }
+            *o++ = 0;
+            return o;
+        }
+
+        /// <summary>Second pass of <see cref="EncodeTwoPass"/>: codes the stored blocks with <see cref="EmitBlockFast"/>.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveOptimization)] // runs once per image: no point in starting unoptimized
+        void WriteStoredBlocks(BlockStore store)
+        {
+            int nc = _comps.Length;
+            bool single = nc == 1;
+            int mcusX = single ? _comps[0].ScanBlocksW : _mcusX, mcusY = single ? _comps[0].ScanBlocksH : _mcusY;
+            int todo = _restart, rst = 0;
+            foreach (var c in _comps) c.Pred = 0;
+            short* blk = stackalloc short[64]; // (only the positions in a block's mask are read)
+            int chunk = 0;
+            byte* q = store.Count > 0 ? store.Start(0) : null, end = store.Count > 0 ? store.End(0) : null;
+            var c0 = _comps[0]; var c1 = _comps[nc > 1 ? 1 : 0];
+            BitSink sink = default;
+            fixed (byte* buf = _buf)
+            fixed (uint* dc0 = c0.Dc.Packed, dc1 = c1.Dc.Packed)
+            fixed (ulong* acx0 = c0.Ac.Extended, acx1 = c1.Ac.Extended)
+            {
+                for (int my = 0; my < mcusY; my++)
+                    for (int mx = 0; mx < mcusX; mx++)
+                    {
+                        if (RestartAt(ref todo))
+                        {
+                            FlushBits();
+                            Marker(0xD0 + rst);
+                            rst = (rst + 1) & 7;
+                            foreach (var c in _comps) c.Pred = 0;
+                        }
+                        Reserve(10 * 600);
+                        sink.Acc = _acc; sink.Bits = _accBits; sink.Out = (nint)(buf + _pos);
+                        for (int i = 0; i < nc; i++)
+                        {
+                            var c = _comps[i];
+                            int blocks = single ? 1 : c.H * c.V;
+                            for (int b = 0; b < blocks; b++)
+                            {
+                                if (q == end) { chunk++; q = store.Start(chunk); end = store.End(chunk); }
+                                int dc = Unsafe.ReadUnaligned<short>(q);
+                                q += 2;
+                                ulong mask = 0;
+                                uint t;
+                                while ((t = *q++) != 0)
+                                {
+                                    int k = (int)(t & 63);
+                                    if (t < 0x80) blk[k] = (sbyte)*q++;
+                                    else { blk[k] = Unsafe.ReadUnaligned<short>(q); q += 2; }
+                                    mask |= 1UL << k;
+                                }
+                                int diff = dc - c.Pred;
+                                c.Pred = dc;
+                                if (i == 0) EmitBlockFast(blk, JpegTables.Identity, mask, diff, dc0, acx0, &sink);
+                                else EmitBlockFast(blk, JpegTables.Identity, mask, diff, dc1, acx1, &sink);
+                            }
+                        }
+                        _acc = sink.Acc; _accBits = sink.Bits; _pos = (int)((byte*)sink.Out - buf);
+                    }
             }
             FlushBits();
         }

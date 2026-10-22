@@ -738,8 +738,8 @@ namespace Aardvark.ImageCodecs
                         }
                         case Deflate:
                         {
-                            var z = Zlib.Compress(src, l.Options.CompressionLevel);
-                            return new Chunk { Buf = z, Len = z.Length };
+                            var z = Zlib.CompressRented(src, l.Options.CompressionLevel, out int len);
+                            return new Chunk { Buf = z, Len = len, Pooled = true };
                         }
                         case ZstdComp:
                         {
