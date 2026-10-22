@@ -1,3 +1,8 @@
+### 1.0.2
+* Decoding allocates about the size of the output: streamed JPEG rows and rotation, pooled working buffers for JPEG 2000, progressive JPEG, WebP and EXR.
+* Files and streams are decoded without copying them into a new array first.
+* Fixed all build warnings.
+
 ### 1.0.1
 * Loader: EXR saves float32 images as FLOAT, so they round-trip exactly (were rounded to half).
 * Loader: EXR luminance/chroma falls back to plain storage for gray images and odd sizes instead of throwing.
