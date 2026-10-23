@@ -65,6 +65,7 @@ runs:
         python fetch_jpegls_conformance.py
         python fetch_jxl_conformance.py
         python fetch_dng_samples.py
+        python fetch_dicom_samples.py
         du -sh "$PIXCODEC_TESTDATA/downloads"
 
     - name: Save downloads

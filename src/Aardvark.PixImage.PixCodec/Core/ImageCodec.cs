@@ -41,6 +41,7 @@ namespace Aardvark.ImageCodecs
             if (Pnm.IsMatch(header)) return ImageFormat.Pnm;
             if (Ico.IsMatch(header)) return ImageFormat.Ico;
             if (MetaImage.IsMatch(header)) return ImageFormat.MetaImage; // text header without a signature
+            if (Dicom.IsMatch(header)) return ImageFormat.Dicom;            // "DICM" after a free preamble, or a bare data set
             // no signatures, strict plausibility checks
             if (Pcx.IsMatch(header)) return ImageFormat.Pcx;
             if (Xbm.IsMatch(header)) return ImageFormat.Xbm;
@@ -100,6 +101,7 @@ namespace Aardvark.ImageCodecs
                 ".jxl" => ImageFormat.Jxl,
                 ".jxr" or ".wdp" or ".hdp" => ImageFormat.JpegXr,
                 ".avif" or ".avifs" => ImageFormat.Avif,
+                ".dcm" or ".dicom" or ".dic" => ImageFormat.Dicom,
                 _ => ImageFormat.Unknown,
             };
         }
@@ -149,6 +151,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.Jxl => Jxl.GetInfo(data),
             ImageFormat.JpegXr => JpegXr.GetInfo(data),
             ImageFormat.Avif => Avif.GetInfo(data),
+            ImageFormat.Dicom => Dicom.GetInfo(data),
             _ => throw new ImageFormatException("unknown image format"),
         };
 
@@ -414,6 +417,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.Jxl => Jxl.Decode(data),
             ImageFormat.JpegXr => JpegXr.Decode(data),
             ImageFormat.Avif => Avif.Decode(data),
+            ImageFormat.Dicom => Dicom.Decode(data),
             _ => throw new ImageFormatException("unknown image format"),
         };
 
@@ -444,17 +448,21 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// Decodes the whole sample grid of a volume file: NRRD (.nrrd, .nhdr with its data files), NIfTI (.nii, .nii.gz, .hdr +
-        /// .img), MetaImage (.mha, .mhd with its data files), FITS (the first image HDU), or a DDS / KTX volume texture (top mip
+        /// .img), MetaImage (.mha, .mhd with its data files), FITS (the first image HDU), DICOM (all frames of a file; for a
+        /// DICOMDIR or a folder the largest series, see <see cref="Dicom.FindSeries"/>), or a DDS / KTX volume texture (top mip
         /// level). 2D files give a grid with one slice. Physical metadata is in <see cref="RawVolume.Metadata"/>.
         /// </summary>
         public static RawVolume DecodeVolume(string path, VolumeDecodeOptions? options = null)
         {
+            // a folder: the largest DICOM series in it (a DICOMDIR, or the files below it)
+            if (Directory.Exists(path)) return Dicom.DecodeVolume(path, options);
             switch (SniffFile(path))
             {
                 case ImageFormat.Nrrd: return Nrrd.DecodeVolume(path, options);
                 case ImageFormat.Nifti: return Nifti.DecodeVolume(path, options);
                 case ImageFormat.MetaImage: return MetaImage.DecodeVolume(path, options);
                 case ImageFormat.Fits: return Fits.DecodeVolume(path, options);
+                case ImageFormat.Dicom: return Dicom.DecodeVolume(path, options);
                 default: return WithFile(path, d => DecodeVolume(d, options));
             }
         }
@@ -471,6 +479,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Nifti: return Nifti.DecodeVolume(data, options);
                 case ImageFormat.MetaImage: return MetaImage.DecodeVolume(data, options);
                 case ImageFormat.Fits: return Fits.DecodeVolume(data, options);
+                case ImageFormat.Dicom: return Dicom.DecodeVolume(data, options);
                 case ImageFormat.Dds:
                     {
                         var t = Dds.DecodeTexture(data);
@@ -497,7 +506,8 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// Writes a sample grid in the format given by the extension: .nrrd (gzip), .nhdr (+ .raw.gz), .nii, .nii.gz, .mha,
-        /// .mhd (+ .zraw), .fits / .fit / .fts (also .gz), .dds and .ktx2 (volume textures of the first frame).
+        /// .mhd (+ .zraw), .fits / .fit / .fts (also .gz), .dcm (one multi-frame DICOM file; see <see cref="Dicom.EncodeSeries"/>
+        /// for a series of slices), .dds and .ktx2 (volume textures of the first frame).
         /// </summary>
         public static void EncodeVolume(RawVolume volume, string path)
         {
@@ -514,7 +524,7 @@ namespace Aardvark.ImageCodecs
             EncodeVolume(volume, fs, format, ext == ".gz");
         }
 
-        /// <summary>Writes a sample grid as an attached file of the given format (NRRD, NIfTI-1, MetaImage .mha, FITS, DDS, KTX).</summary>
+        /// <summary>Writes a sample grid as an attached file of the given format (NRRD, NIfTI-1, MetaImage .mha, FITS, DICOM, DDS, KTX).</summary>
         public static void EncodeVolume(RawVolume volume, Stream output, ImageFormat format) => EncodeVolume(volume, output, format, false);
 
         static void EncodeVolume(RawVolume volume, Stream output, ImageFormat format, bool gz)
@@ -532,6 +542,7 @@ namespace Aardvark.ImageCodecs
                     }
                     else Fits.Encode(volume, output);
                     break;
+                case ImageFormat.Dicom: Dicom.Encode(volume, output); break;
                 case ImageFormat.Dds: Dds.EncodeVolume(volume.GetFrame(0).GetSlices(), output); break;
                 case ImageFormat.Ktx: Ktx.EncodeVolume(volume.GetFrame(0).GetSlices(), output); break;
                 default: throw new ArgumentException($"cannot write a volume as {format}", nameof(format));
@@ -585,6 +596,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Nrrd:
                 case ImageFormat.Nifti:
                 case ImageFormat.MetaImage:
+                case ImageFormat.Dicom:
                     {
                         var r = new List<RawImage>();
                         AddSlices(r, DecodeVolume(data));
@@ -702,6 +714,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.JpegLs: JpegLs.Encode(image, output); break;
                 case ImageFormat.Jxl: Jxl.Encode(image, output); break;
                 case ImageFormat.JpegXr: JpegXr.Encode(image, output); break;
+                case ImageFormat.Dicom: Dicom.Encode(image, output); break;
                 default: throw new ArgumentException("unknown image format", nameof(format));
             }
         }

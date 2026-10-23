@@ -9,7 +9,7 @@ namespace Aardvark.Data
     /// <summary>
     /// PixImage loader backed by the fully managed Aardvark.PixImage.PixCodec library (PNG, JPEG, TIFF, GIF, OpenEXR, WebP, JPEG 2000, JPEG XL, AVIF, BMP, TGA,
     /// DDS, KTX, PVR, ASTC, Radiance HDR, PNM / PFM, QOI, ICO / CUR / ANI, ICNS, PCX / DCX, SGI, Sun Raster, XBM, XPM, WBMP, DPX, Cineon, JPEG-LS,
-    /// and the volume formats NRRD, NIfTI, MetaImage, FITS).
+    /// and the volume formats NRRD, NIfTI, MetaImage, FITS, DICOM).
     /// Register with <see cref="PixCodec.Init"/> (done automatically by Aardvark.Init()).
     /// </summary>
     public sealed class PixCodecLoader : IPixMipmapLoader
@@ -394,16 +394,16 @@ namespace Aardvark.Data
 
         /// <summary>
         /// A volume as a PixVolume of the stored sample type (half floats as float) with the dense layout channel, x, y, z: the
-        /// top level of a DDS, KTX or PVR volume (3D) texture or of an .astc volume, or a NRRD / NIfTI / MetaImage / FITS volume (detached data files are
-        /// found next to the header). <paramref name="mip"/> picks a smaller texture level; <paramref name="item"/> a KTX array
+        /// top level of a DDS, KTX or PVR volume (3D) texture or of an .astc volume, a NRRD / NIfTI / MetaImage / FITS volume (detached data files are
+        /// found next to the header), or a DICOM file, DICOMDIR or folder (all frames; the largest series). <paramref name="mip"/>
+        /// picks a smaller texture level; <paramref name="item"/> a KTX array
         /// layer / PVR surface, or the frame (time point, ...) of a scientific volume with more than three axes. The physical metadata
         /// (spacing, origin, orientation, header) of scientific formats comes with
         /// <see cref="LoadVolume(string, out PhysicalMetadata?, int, VolumeDecodeOptions?)"/>.
         /// </summary>
         public static PixVolume LoadVolume(string path, int mip = 0, int item = 0)
         {
-            var f = ImageCodec.FormatFromExtension(path);
-            if (IsScientific(path))
+            if (Directory.Exists(path) || IsScientific(path))
                 return ToPixVolume(ImageCodec.DecodeVolume(path), item);
             return ImageCodec.WithFile(path, d => LoadVolumeCore(d, mip, item));
         }
@@ -414,7 +414,7 @@ namespace Aardvark.Data
             var b = new byte[8192];
             int n = fs.Read(b, 0, b.Length);
             var f = ImageCodec.DetectFormat(b.AsSpan(0, n));
-            return f is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits;
+            return f is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits or ImageFormat.Dicom;
         }
 
         /// <inheritdoc cref="LoadVolume(string, int, int)"/>
@@ -425,7 +425,7 @@ namespace Aardvark.Data
         static PixVolume LoadVolumeCore(ReadOnlySpan<byte> data, int mip, int item)
         {
             var format = ImageCodec.DetectFormat(data);
-            if (format is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits)
+            if (format is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits or ImageFormat.Dicom)
                 return ToPixVolume(ImageCodec.DecodeVolume(data), item);
             RawImage[] slices;
             if (Astc.IsMatch(data))
@@ -490,13 +490,13 @@ namespace Aardvark.Data
         }
 
         /// <summary>
-        /// Saves a PixVolume in the format given by the extension (.nrrd, .nhdr, .nii, .nii.gz, .mha, .mhd, .fits, .dds, .ktx2),
+        /// Saves a PixVolume in the format given by the extension (.nrrd, .nhdr, .nii, .nii.gz, .mha, .mhd, .fits, .dcm, .dds, .ktx2),
         /// with the physical metadata (spacing, origin, direction, ...) where the format can hold it.
         /// </summary>
         public static void SaveVolume(PixVolume volume, string path, PhysicalMetadata? metadata = null)
             => ImageCodec.EncodeVolume(PixCodecRawImageExtensions.ToRawVolume(volume, metadata), path);
 
-        /// <summary>Saves a PixVolume to a stream in the given format (NRRD, NIfTI-1, MetaImage .mha, FITS, DDS, KTX).</summary>
+        /// <summary>Saves a PixVolume to a stream in the given format (NRRD, NIfTI-1, MetaImage .mha, FITS, DICOM, DDS, KTX).</summary>
         public static void SaveVolume(PixVolume volume, Stream stream, ImageFormat format, PhysicalMetadata? metadata = null)
             => ImageCodec.EncodeVolume(PixCodecRawImageExtensions.ToRawVolume(volume, metadata), stream, format);
 
@@ -748,7 +748,7 @@ namespace Aardvark.Data
         {
             // formats without a PixFileFormat
             var codec = ImageCodec.FormatFromExtension(path);
-            if (saveParams == null && codec is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits)
+            if (saveParams == null && codec is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits or ImageFormat.Dicom)
             {
                 ImageCodec.Encode(PixCodecLoader.ToRawImage(image), path);
                 return;

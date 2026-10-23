@@ -11,9 +11,18 @@ namespace Aardvark.ImageCodecs.Tests;
 /// </summary>
 public static class VolumeTestUtil
 {
+    /// <summary>A PXVR sidecar, also gzip compressed (a path ending in .gz).</summary>
     public static RawVolume LoadVref(string path)
     {
-        var b = File.ReadAllBytes(path);
+        byte[] b;
+        if (path.EndsWith(".gz", StringComparison.Ordinal))
+        {
+            using var gz = new System.IO.Compression.GZipStream(File.OpenRead(path), System.IO.Compression.CompressionMode.Decompress);
+            using var ms = new MemoryStream();
+            gz.CopyTo(ms);
+            b = ms.ToArray();
+        }
+        else b = File.ReadAllBytes(path);
         Assert.True(b.AsSpan(0, 4).SequenceEqual("PXVR"u8), "bad vref magic");
         int n = BinaryPrimitives.ReadInt32LittleEndian(b.AsSpan(4));
         var sizes = new int[n];

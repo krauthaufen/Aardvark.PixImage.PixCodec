@@ -88,6 +88,8 @@ namespace Aardvark.ImageCodecs
         JpegXr,
         /// <summary>AV1 Image File Format (HEIF with AV1 images and sequences).</summary>
         Avif,
+        /// <summary>DICOM medical images (.dcm, also files without extension and DICOMDIR media).</summary>
+        Dicom,
     }
 
     /// <summary>

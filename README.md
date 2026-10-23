@@ -61,6 +61,7 @@ code living in any `Aardvark.*` namespace.
 | NIfTI | NIfTI-1 and -2, .nii, .nii.gz, .hdr + .img (also gzipped), Analyze 7.5 headers; every data type but float128 / complex256 (RGB24 / RGBA32 as RGB(A), complex as two channels, vector intents as channels), scl_slope / scl_inter, sform / qform, dim_info, intents, extensions | NIfTI-1 .nii and .nii.gz: every integer and float type, RGB24 / RGBA32, vectors; qform and sform |
 | MetaImage | .mha and .mhd; every MET_ type, ElementNumberOfChannels, zlib (CompressedData), both byte orders, HeaderSize (also -1), ElementDataFile LOCAL / file / LIST / pattern; TransformMatrix, Offset, ElementSpacing | .mha and .mhd + .raw / .zraw, compressed or not, every type, channels |
 | FITS | primary array, IMAGE extensions, tile compressed images (RICE_1, GZIP_1, GZIP_2, PLIO_1, NOCOMPRESS; quantized floats with NO_DITHER / SUBTRACTIVE_DITHER_1 / 2), BITPIX 8 / 16 / 32 / 64 / -32 / -64, BSCALE / BZERO (unsigned conventions exact), BLANK, CONTINUE, linear WCS, .fits.gz | primary image of every BITPIX (unsigned via BZERO), optionally RICE_1 / GZIP_1 / GZIP_2 tile compressed, WCS from the metadata |
+| DICOM | PS3.10 files (also without preamble or file meta), DICOMDIR media and folders; implicit / explicit VR little endian, big endian, deflated; JPEG baseline / extended / lossless, JPEG-LS, JPEG 2000, HTJ2K, JPEG XL and RLE; 1..32 bit integer, float and double pixel data, overlays masked off, MONOCHROME1 / 2, RGB, YBR_FULL / 422 and PALETTE COLOR (also segmented); rescale, modality LUT and RT dose scaling; multi-frame and enhanced files, series stacked by position (4D, per-slice rescale) with LPS geometry; checked against pydicom and GDCM | Secondary Capture, single or multi-frame (per-frame positions) or one file per slice: 8..32 bit integer gray, RGB, float; uncompressed, RLE, lossless JPEG, JPEG-LS, JPEG 2000 and HTJ2K lossless, baseline JPEG; geometry and rescale; read back by pydicom and GDCM |
 | DPX | SMPTE 268M 1.0 / 2.0, both byte orders, 1/8/10/12/16 bit int and 32/64 bit float, packed / filled method A / B, RLE, several image elements, luma, R/G/B/A/depth, RGB, RGBA, ABGR, Cb Y Cr (Y) 4:2:2 / 4:4:4 (+ alpha) to RGB, user defined 2..8 components, orientation, padding, all header fields (time code, film, television) | gray, RGB, RGBA, 2..8 components at 8, 10, 12, 16 bit and 32/64 bit float, packed / filled A / B, either byte order, header fields |
 | Cineon | Kodak 4.5 draft: 1..16 and 32 bit, all packings, pixel / line / channel interleave, both byte orders, orientation, header fields | gray, RGB at 8, 10 (default for 8 bit images), 16 bit |
 
@@ -111,7 +112,7 @@ in R,G,B,A order with straight alpha. Images come back upright: the EXIF/TIFF or
 are applied while decoding, the metadata then says orientation 1 (also inside a kept EXIF blob, so a re-saved image is not
 turned again), and `ImageInfo` reports the upright size. Every format's options have `ApplyOrientation = false` for the
 stored pixels. Each format has its own static class (`Png`, `Jpeg`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Bmp`, `Tga`,
-`Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Pfm`, `Qoi`, `Ico`, `Ani`, `Icns`, `Lerc`, `Jbig`, `Jxl`, `JpegXr`, `Avif`, `JpegLs`, `Dng`, `Pcx`, `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dpx`, `Cineon`) with format specific options and extras: animations (GIF, APNG, WebP, JPEG XL, AVIF), TIFF pages / tags / regions / overviews,
+`Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Pfm`, `Qoi`, `Ico`, `Ani`, `Icns`, `Lerc`, `Jbig`, `Jxl`, `JpegXr`, `Avif`, `JpegLs`, `Dng`, `Pcx`, `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dicom`, `Dpx`, `Cineon`) with format specific options and extras: animations (GIF, APNG, WebP, JPEG XL, AVIF), TIFF pages / tags / regions / overviews,
 EXR headers, named channels, levels and deep data, DPX / Cineon headers (`Dpx.GetHeader`, `Cineon.GetHeader`) and DPX image
 elements. Bit depths that do not fill a sample type keep their stored values: 10 bit DPX and Cineon decode to UInt16 0..1023,
 12 bit to 0..4095 (as 12 bit TIFF and JPEG); 1, 2 and 4 bit samples are stretched to 0..255.
@@ -247,6 +248,32 @@ the samples, so volumes above 2 GB work (up to 2^31 samples per volume).
   Int32); otherwise Float32 for stored types up to 16 bit, Float64 for 32 / 64 bit integers. FITS BLANK samples become
   NaN in float results. `DataScaling.Raw` keeps the stored values (slope and intercept are reported, and written back by
   the NIfTI encoder), `Float32` / `Float64` force a float type.
+
+### DICOM
+
+`ImageCodec.Decode` of a DICOM file gives its first frame, `DecodeVolume` all frames; for a folder or a DICOMDIR (the CD or
+USB stick a hospital hands out) it decodes the largest image series:
+
+```csharp
+foreach (var s in Dicom.FindSeries("/media/usb"))          // DICOMDIR records, else every DICOM file below the folder
+    Console.WriteLine($"{s.PatientName} {s.StudyDate} {s.Modality} {s.SeriesDescription}: {s.Files.Count} files");
+RawVolume ct = Dicom.FindSeries("/media/usb")[0].Decode(); // slices sorted along the normal, Hounsfield units
+RawVolume same = Dicom.DecodeSeries("/media/usb/DICOM/IM000123"); // the series of one of its files
+DicomDataset ds = Dicom.ReadDataset(bytes);                // every element: ds.GetString(0x00100010), sequences, ...
+Dicom.EncodeSeries(volume, "out", new DicomEncodeOptions { Compression = DicomCompression.JpegLsLossless });
+```
+
+- Values: bits above Bits Stored (overlays) are masked off, signed samples sign extended. The rescale slope / intercept,
+  a modality LUT or an RT dose grid scaling are applied like the volume formats' scaling (`DataScaling`): CT comes out as
+  Int32 Hounsfield units, PET with per-slice slopes as Float32; `DataScaling.Raw` keeps the stored values. MONOCHROME1 is
+  left as stored unless `DicomDecodeOptions.InvertMonochrome1`; PALETTE COLOR becomes RGB unless `ApplyPalette = false`.
+- Geometry in LPS: x along the rows (the first vector of Image Orientation), y down the columns, origin at the centre of
+  the first pixel. Series are stacked along row x column direction (as GDCM and ITK do), the slice step taken from the
+  first and last position; positions that repeat give a fourth axis (time points), slices of another size or orientation
+  (localizers) are left out, uneven gaps are reported in the header (`SliceSpacingIrregular`).
+- Writing: Secondary Capture files with the geometry and an unapplied rescale; one multi-frame file
+  (`Dicom.Encode`, positions in the per-frame functional groups) or one file per slice (`Dicom.EncodeSeries`, what most
+  tools expect). No DICOMDIR is written.
 
 ### sRGB and gamma
 

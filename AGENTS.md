@@ -37,7 +37,7 @@ to run the net8.0 tests.
 | Path | Contents |
 |------|----------|
 | `src/Aardvark.PixImage.PixCodec/Core` | `RawImage`, `RawVolume` / `PhysicalMetadata` (volumes), `ImageCodec` (format detection, `Decode`, `GetInfo`, `DecodeVolume`), managed zlib / zstd / xz / gzip / bzip2 / Brotli (decode) |
-| `src/Aardvark.PixImage.PixCodec/<Format>` | one folder per format: `Png`, `Jpeg`, `JpegLs`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Jxl` (JPEG XL; encoder in the JxlEncoder*.cs files), `JpegXr` (JPEG XR), `Jbig`, `Bmp`, `Tga`, `Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Qoi`, `Ico` (with ANI), `Icns`, `Lerc`, `Pcx` (+ DCX), `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dpx`, `Cineon` |
+| `src/Aardvark.PixImage.PixCodec/<Format>` | one folder per format: `Png`, `Jpeg`, `JpegLs`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Jxl` (JPEG XL; encoder in the JxlEncoder*.cs files), `JpegXr` (JPEG XR), `Jbig`, `Bmp`, `Tga`, `Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Qoi`, `Ico` (with ANI), `Icns`, `Lerc`, `Pcx` (+ DCX), `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dicom` (files, DICOMDIR, series), `Dpx`, `Cineon` |
 | `src/Aardvark.PixImage.PixCodec/Metadata` | EXIF / XMP / IPTC / GPS reading without decoding pixels, lossless metadata writing |
 | `src/Aardvark.PixImage.PixCodec/Color` | ICC profiles and colour management |
 | `src/Aardvark.PixImage.PixCodec/Processing` | `ImageOps`: resize filters, warps, orientation, transfer functions |
@@ -86,7 +86,8 @@ to run the net8.0 tests.
   `TestUtil.PythonAvailable`, `MiscFormatTests.ToolAvailable`, `TestUtil.CannotVerify` (exit status 77 of an oracle
   script: `pxref.missing(name)` for a missing tool, `pxref.unverifiable(why)` for a file no reference can read) or
   `[TestDataFact]` / `[TestDataTheory]`.
-- Oracle locations: python (`python3`, else `python`) with `tests/oracle/requirements.txt`; the volume oracles use
+- Oracle locations: python (`python3`, else `python`) with `tests/oracle/requirements.txt` (pydicom with the pylibjpeg
+  plugins and pyjpegls for DICOM); the volume oracles use
   `PIXCODEC_PYTHON` or `.tmp/venv` if present. Tools on the PATH: `magick` (ImageMagick 7), `zstd`, `7z`, `ffmpeg`,
   netpbm (`pamtopnm`, `pngtopam`, `sgitopnm`, `wbmptopbm`), `pngcheck`, `cjxl` / `djxl`. By variable: `ASTCENC`,
   `PIXCODEC_KTX`, `PIXCODEC_BASISU`, `EXIFTOOL`, `PIXCODEC_ULTRAHDR` (libultrahdr's `ultrahdr_app`), `EXR_ORACLE` (`tests/oracle/exr_oracle.cpp`), `PIXCODEC_JBIGKIT` (jbigkit's
