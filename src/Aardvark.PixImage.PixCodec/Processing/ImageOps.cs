@@ -61,6 +61,31 @@ namespace Aardvark.ImageCodecs
             return Resize(image, w, h, options);
         }
 
+        /// <summary>
+        /// Reduces the size by an integer factor on both axes, see <see cref="Downsample(RawImage, int, int, bool)"/>.
+        /// </summary>
+        public static RawImage Downsample(RawImage image, int factor, bool alphaWeighted = false)
+            => Downsample(image, factor, factor, alphaWeighted);
+
+        /// <summary>
+        /// Reduces the size by integer factors: the result has ceil(Width / factorX) x ceil(Height / factorY) pixels, each the
+        /// mean of a factorX x factorY block (the blocks of the last column and row are smaller when the size is no multiple of
+        /// the factor). Every channel, alpha included, is averaged on its own; with <paramref name="alphaWeighted"/> the colour
+        /// is weighted by alpha (premultiplied) and blocks that are fully transparent get colour 0. Integer samples are rounded
+        /// half up and clamped. Where the size is a multiple of the factors the result is that of <see cref="Resize(RawImage,
+        /// int, int, ResizeOptions?)"/> with <see cref="ResampleFilter.Box"/> and <see cref="ResizeOptions.PremultiplyAlpha"/> =
+        /// <paramref name="alphaWeighted"/>, to the bit; UInt8 and UInt16 images are summed in integers. Multi-threaded.
+        /// </summary>
+        public static RawImage Downsample(RawImage image, int factorX, int factorY, bool alphaWeighted = false)
+        {
+            ArgumentNullException.ThrowIfNull(image);
+            if (factorX < 1 || factorY < 1) throw new ArgumentOutOfRangeException(nameof(factorX), "factors must be at least 1");
+            var o = new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = alphaWeighted };
+            var r = Resampler.Resize(image, AxisWeights.Blocks(image.Width, factorX), AxisWeights.Blocks(image.Height, factorY), o);
+            r.Metadata = ScaledMetadata(image.Metadata, (double)r.Width / image.Width, (double)r.Height / image.Height);
+            return r;
+        }
+
         #endregion
 
         #region Lossless rearrangements
