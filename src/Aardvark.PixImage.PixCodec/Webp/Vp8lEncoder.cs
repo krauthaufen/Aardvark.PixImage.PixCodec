@@ -613,8 +613,8 @@ namespace Aardvark.ImageCodecs
             if (_method == 1 && copied * 8 < n) return tokens;
 
             var cost = new float[n + 1];
-            var step = new ushort[n + 1];
-            var via = new byte[n + 1];          // which candidate made the step: 0 longest match, 1 left, 2 above
+            // length of the step that reaches a position | which candidate made it << 16 (0 longest match, 1 left, 2 above)
+            var step = new int[n + 1];
             int passes = _method >= 4 ? 2 : 1;
             for (int pass = 0; pass < passes; pass++)
             {
@@ -633,7 +633,7 @@ namespace Aardvark.ImageCodecs
                     {
                         float c0 = cost[i];
                         float c = c0 + model.LiteralCost(px[i]);
-                        if (c < cost[i + 1]) { cost[i + 1] = c; step[i + 1] = 1; }
+                        if (c < cost[i + 1]) { cost[i + 1] = c; step[i + 1] = 1; }      // (the candidate does not matter here)
                         int maxLen = Math.Min(MaxLength, n - i);
                         runLeft = runLeft > 1 ? Math.Min(runLeft - 1, maxLen) : i >= 1 ? MatchLength(p + i - 1, p + i, maxLen) : 0;
                         runAbove = runAbove > 1 ? Math.Min(runAbove - 1, maxLen) : i >= xsize && xsize > 1 ? MatchLength(p + i - xsize, p + i, maxLen) : 0;
@@ -652,28 +652,47 @@ namespace Aardvark.ImageCodecs
                             else { len = runAbove; cd = c0 + costAbove; }
                             if (len < 2) continue;
                             int upTo = len <= 64 ? len : 16;
-                            for (int l = 2; l <= upTo; l++)
+                            int tag = cand << 16;
+                            int l = 2;
+                            if (Vector128.IsHardwareAccelerated)
+                            {
+                                // the lengths reach different positions, so four of them at a time give the same result
+                                var vcd = Vector128.Create(cd);
+                                var lanes = Vector128.Create(0, 1, 2, 3);
+                                for (; l + 3 <= upTo; l += 4)
+                                {
+                                    var cc = vcd + Vector128.LoadUnsafe(ref lenCost[l]);
+                                    ref float target = ref cost[i + l];
+                                    var old = Vector128.LoadUnsafe(ref target);
+                                    var better = Vector128.LessThan(cc, old);
+                                    if (better == Vector128<float>.Zero) continue;
+                                    Vector128.ConditionalSelect(better, cc, old).StoreUnsafe(ref target);
+                                    ref int st = ref step[i + l];
+                                    Vector128.ConditionalSelect(better.AsInt32(), Vector128.Create(l | tag) + lanes, Vector128.LoadUnsafe(ref st)).StoreUnsafe(ref st);
+                                }
+                            }
+                            for (; l <= upTo; l++)
                             {
                                 c = cd + lenCost[l];
-                                if (c < cost[i + l]) { cost[i + l] = c; step[i + l] = (ushort)l; via[i + l] = (byte)cand; }
+                                if (c < cost[i + l]) { cost[i + l] = c; step[i + l] = l | tag; }
                             }
                             if (upTo < len)
                             {
                                 c = cd + lenCost[len];
-                                if (c < cost[i + len]) { cost[i + len] = c; step[i + len] = (ushort)len; via[i + len] = (byte)cand; }
+                                if (c < cost[i + len]) { cost[i + len] = c; step[i + len] = len | tag; }
                             }
                         }
                     }
                 }
                 // walk back along the cheapest path
                 int count = 0;
-                for (int i = n; i > 0; i -= step[i]) count++;
+                for (int i = n; i > 0; i -= step[i] & 0xffff) count++;
                 var best = new Tokens(count);
                 best.Count = count;
                 for (int i = n, k = count - 1; i > 0; k--)
                 {
-                    int l = step[i];
-                    int v = via[i];
+                    int l = step[i] & 0xffff;
+                    int v = step[i] >> 16;
                     i -= l;
                     if (l == 1) { best.Val[k] = px[i]; best.Len[k] = 0; }
                     else { best.Val[k] = v == 0 ? matches![i] & 0xfffff : v == 1 ? 1u : (uint)xsize; best.Len[k] = (ushort)l; }
