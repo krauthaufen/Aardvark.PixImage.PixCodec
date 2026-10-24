@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- WebP timing benchmark. Not part of the solution and without Paket: it compiles the codec sources directly
+       (the codecs need no package; only the Aardvark loader files are left out), so it builds on any machine with an SDK. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Aardvark.ImageCodecs</RootNamespace>
+    <NoWarn>$(NoWarn);CS1591;CS8632;CS0436</NoWarn>
+    <TieredPGO>true</TieredPGO>
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Aardvark.PixImage.PixCodec/**/*.cs"
+             Exclude="../../src/Aardvark.PixImage.PixCodec/PixCodecLoader.cs;../../src/Aardvark.PixImage.PixCodec/PixCodecProcessor.cs;../../src/Aardvark.PixImage.PixCodec/obj/**;../../src/Aardvark.PixImage.PixCodec/bin/**" />
+    <EmbeddedResource Include="../../src/Aardvark.PixImage.PixCodec/Core/Compression/BrotliDictionary.zlib" LogicalName="Aardvark.ImageCodecs.Compression.BrotliDictionary.zlib" />
+  </ItemGroup>
+</Project>
