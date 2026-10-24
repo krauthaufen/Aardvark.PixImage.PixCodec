@@ -95,7 +95,8 @@ namespace Aardvark.ImageCodecs
         /// searched and matches are chosen by a cost model; higher levels search longer, and 5 / 6 also encode with
         /// alternative transform sets and keep the smallest result.
         /// Lossy: 0 predicts whole macroblocks only; from 1 on 4x4 prediction is tried, with more candidate modes
-        /// run through a full encode-and-measure trial the higher the level.
+        /// run through a full encode-and-measure trial the higher the level. The alpha plane of a lossy image is
+        /// compressed losslessly at the same level, except that 3 and 4 use the lossless level 2 for it.
         /// </summary>
         public int Method { get; set; } = 4;
 

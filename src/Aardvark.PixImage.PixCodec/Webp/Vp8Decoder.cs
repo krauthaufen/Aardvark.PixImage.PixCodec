@@ -123,6 +123,74 @@ namespace Aardvark.ImageCodecs
             return bit;
         }
 
+        /// <summary>
+        /// <see cref="Bit(ref ulong, ref uint, ref int, ref byte*, byte*, int)"/> that looks up the end of the data only
+        /// when it has to refill: one register less in loops that are short of them.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static int Bit(ref ulong value, ref uint range, ref int bits, ref byte* cur, ref Vp8BoolReader br, int prob)
+        {
+            if (bits < 0) Refill(ref value, ref bits, ref cur, br._end);
+            uint r = range;
+            uint split = (r * (uint)prob) >> 8;
+            uint v = (uint)(value >> bits);
+            int bit;
+            if (v > split)
+            {
+                r -= split + 1;
+                value -= (ulong)(split + 1) << bits;
+                bit = 1;
+            }
+            else
+            {
+                r = split;
+                bit = 0;
+            }
+            int shift = BitOperations.LeadingZeroCount(r + 1) - 24;
+            r = ((r + 1) << shift) - 1;
+            bits -= shift;
+            range = r;
+            return bit;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void Refill(ref ulong value, ref int bits, ref byte* cur, byte* end)
+        {
+            if (end - cur >= 8)
+            {
+                value = (value << 56) | (BinaryPrimitives.ReverseEndianness(Unsafe.ReadUnaligned<ulong>(cur)) >> 8);
+                cur += 7;
+                bits += 56;
+            }
+            else
+            {
+                // the last bytes one at a time, then zeros
+                value <<= 8;
+                if (cur < end) value |= *cur++;
+                bits += 8;
+            }
+        }
+
+        /// <summary>
+        /// <paramref name="v"/> negated if the next bit at probability 1/2 is set. The sign of a coefficient is as good as
+        /// random, so a branch here would be mispredicted every other time: this one decides with masks instead.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static int Sign(ref ulong value, ref uint range, ref int bits, ref byte* cur, ref Vp8BoolReader br, int v)
+        {
+            if (bits < 0) Refill(ref value, ref bits, ref cur, br._end);
+            uint r = range;
+            uint split = r >> 1;                    // (r * 128) >> 8
+            uint x = (uint)(value >> bits);         // at most r
+            int m = (int)(split - x) >> 31;         // all ones when the bit is 1 (x > split)
+            r = split + ((r - 2 * split - 1) & (uint)m);
+            value -= ((ulong)(split + 1) << bits) & (ulong)(long)m;
+            int shift = BitOperations.LeadingZeroCount(r + 1) - 24;
+            range = ((r + 1) << shift) - 1;
+            bits -= shift;
+            return (v ^ m) - m;
+        }
+
         /// <summary>An unsigned literal of n bits, most significant bit first.</summary>
         public int GetValue(int n)
         {
@@ -198,16 +266,6 @@ namespace Aardvark.ImageCodecs
             public int Y1Dc, Y1Ac, Y2Dc, Y2Ac, UvDc, UvAc;
         }
 
-        static byte[]? _zigzagKeepAlive;
-        static readonly byte* ZigzagPtr = PinnedZigzag();
-
-        static byte* PinnedZigzag()
-        {
-            var a = _zigzagKeepAlive = GC.AllocateArray<byte>(16, pinned: true);
-            Vp8Tables.Zigzag.CopyTo(a);
-            return (byte*)System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(a, 0);
-        }
-
         int _mbW, _mbH;
         // frame header
         bool _useSegment, _updateMap;
@@ -219,6 +277,9 @@ namespace Aardvark.ImageCodecs
         readonly int[] _refLfDelta = new int[4], _modeLfDelta = new int[4];
         int _numParts;
         readonly Quant[] _quant = new Quant[4];
+        // on the pinned heap: the token loop takes its address without fixing it
+        readonly int[] _zqArray = GC.AllocateArray<int>(4 * 48, pinned: true);
+        int* _zq => (int*)System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(_zqArray, 0);
         readonly byte[] _probs = new byte[4 * 8 * 3 * 11];
         bool _useSkip;
         int _skipProb;
@@ -230,8 +291,29 @@ namespace Aardvark.ImageCodecs
             if (!TryReadHeader(data, out int w, out int h)) throw Bad("frame header");
             if ((long)w * h > maxPixels)
                 throw new ImageNotSupportedException($"WebP image of {w}x{h} exceeds WebpDecodeOptions.MaxPixels ({maxPixels})");
-            fixed (byte* p = data) return new Vp8Decoder().DecodeFrame(p, data.Length, w, h, threaded);
+            // A decoder keeps its tables and line buffers for the next frame decoded on the same thread.
+            var dec = t_cached ?? new Vp8Decoder();
+            t_cached = null;
+            dec.Reset();
+            Vp8Frame frame;
+            fixed (byte* p = data) frame = dec.DecodeFrame(p, data.Length, w, h, threaded);
+            t_cached = dec;
+            return frame;
         }
+
+        [ThreadStatic] static Vp8Decoder? t_cached;
+
+        /// <summary>Back to the state of a new decoder wherever the frame header does not always set it.</summary>
+        void Reset()
+        {
+            _updateMap = false;
+            _segAbsolute = false;
+            Array.Clear(_segQuant); Array.Clear(_segFilter);
+            Array.Clear(_refLfDelta); Array.Clear(_modeLfDelta);
+            _segProbs[0] = _segProbs[1] = _segProbs[2] = 255;
+        }
+
+        static T[] Sized<T>(T[] a, int n) => a.Length >= n ? a : new T[n];
 
         Vp8Frame DecodeFrame(byte* data, int length, int width, int height, bool threaded)
         {
@@ -248,7 +330,7 @@ namespace Aardvark.ImageCodecs
             byte* sizes = data + 10 + part0;
             long left = length - 10 - part0 - 3L * (_numParts - 1);
             if (left < 0) throw Bad("partition table exceeds the data");
-            var parts = new Vp8BoolReader[_numParts];
+            var parts = _parts = Sized(_parts, 8);
             byte* start = sizes + 3 * (_numParts - 1);
             for (int i = 0; i < _numParts; i++)
             {
@@ -261,23 +343,27 @@ namespace Aardvark.ImageCodecs
 
             // every macroblock is written before it is read
             var frame = Vp8Frame.Rent(width, height, _mbW, _mbH);
-            _br = br; _parts = parts;
+            _br = br;
             // token probabilities by coefficient position instead of band: one lookup less per token
             var bands = Vp8Tables.Bands;
             for (int t = 0; t < 4; t++)
                 for (int n = 0; n < 17; n++)
                     Array.Copy(_probs, (t * 8 + bands[n]) * 33, _posProbs, (t * 17 + n) * 33, 33);
-            _topModes = new byte[4 * _mbW];
-            _topNz = new byte[9 * _mbW];
-            _topY = new byte[16 * _mbW + 4];
-            _topU = new byte[8 * _mbW];
-            _topV = new byte[8 * _mbW];
+            // the contexts above the first row are zero (BDc, no coefficients); the pixel rows are written before use
+            _topModes = Sized(_topModes, 4 * _mbW); Array.Clear(_topModes, 0, 4 * _mbW);
+            _topNz = Sized(_topNz, 9 * _mbW); Array.Clear(_topNz, 0, 9 * _mbW);
+            _topY = Sized(_topY, 16 * _mbW + 4);
+            _topU = Sized(_topU, 8 * _mbW);
+            _topV = Sized(_topV, 8 * _mbW);
             // Parsing a macroblock row (modes and tokens) and rebuilding its pixels are separate steps that only meet
             // in the row record, so for large frames the parser runs ahead on a second thread.
             if (threaded && _mbW * _mbH >= 2048 && Environment.ProcessorCount > 1 && !OperatingSystem.IsBrowser()) DecodeRowsThreaded(frame);
             else
             {
-                var row = new MbRow(_mbW);
+                var row = _row;
+                if (row == null || row.Width < _mbW) row = _row = new MbRow(_mbW);
+                // all coefficients are zero after a complete decode, not necessarily after one that failed
+                else Array.Clear(row.Coeffs);
                 for (int y = 0; y < _mbH; y++)
                 {
                     ParseRow(row, y);
@@ -334,6 +420,14 @@ namespace Aardvark.ImageCodecs
                 m.Y2Ac = Math.Max(8, ac[Math.Clamp(q + dqY2Ac, 0, 127)] * 155 / 100);
                 m.UvDc = Math.Min(132, (int)dc[Math.Clamp(q + dqUvDc, 0, 127)]);
                 m.UvAc = ac[Math.Clamp(q + dqUvAc, 0, 127)];
+                // per segment and block type (Y, Y2, chroma): raster position of the n-th coefficient | factor << 8
+                for (int n = 0; n < 16; n++)
+                {
+                    int z = Vp8Tables.Zigzag[n];
+                    _zq[48 * s + n] = z | (n > 0 ? m.Y1Ac : m.Y1Dc) << 8;
+                    _zq[48 * s + 16 + n] = z | (n > 0 ? m.Y2Ac : m.Y2Dc) << 8;
+                    _zq[48 * s + 32 + n] = z | (n > 0 ? m.UvAc : m.UvDc) << 8;
+                }
             }
 
             br.GetBit(128);     // refresh_entropy_probs: meaningless for a lone key frame
@@ -391,8 +485,11 @@ namespace Aardvark.ImageCodecs
             /// non-zero ones, the reconstruction clears every block it consumes.</summary>
             public readonly short[] Coeffs;
 
+            public readonly int Width;
+
             public MbRow(int mbW)
             {
+                Width = mbW;
                 Modes = new byte[ModeBytes * mbW];
                 NzY = new uint[mbW]; NzUv = new uint[mbW]; Filter = new int[mbW];
                 Coeffs = new short[384 * mbW];
@@ -407,6 +504,7 @@ namespace Aardvark.ImageCodecs
         byte[] _topNz = Array.Empty<byte>();        // "block had coefficients" above: 4 Y, 2 U, 2 V, Y2
         byte[] _topY = Array.Empty<byte>(), _topU = Array.Empty<byte>(), _topV = Array.Empty<byte>();
         readonly byte[] _work = new byte[WorkSize];
+        MbRow? _row;
 
         /// <summary>
         /// Three stages on three threads: parsing runs ahead on a pool thread, the calling thread rebuilds the pixels,
@@ -530,7 +628,7 @@ namespace Aardvark.ImageCodecs
 
                     uint nzY = 0, nzUv = 0;
                     byte* tnz = pTopNz + 9 * mbx;
-                    if (!skip) ParseResiduals(ref tr, probs, ref _quant[segment], i4, tnz, leftNz, pCoeffs + 384 * mbx, dc, out nzY, out nzUv);
+                    if (!skip) ParseResiduals(ref tr, probs, _zq + 48 * segment, i4, tnz, leftNz, pCoeffs + 384 * mbx, dc, out nzY, out nzUv);
                     else
                     {
                         Unsafe.WriteUnaligned(tnz, 0UL);
@@ -660,13 +758,13 @@ namespace Aardvark.ImageCodecs
         // ------------------------------------------------------------------ tokens
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        void ParseResiduals(ref Vp8BoolReader br, byte* probs, ref Quant q, bool i4, byte* top, byte* left, short* coeffs, short* dc, out uint nzY, out uint nzUv)
+        void ParseResiduals(ref Vp8BoolReader br, byte* probs, int* zq, bool i4, byte* top, byte* left, short* coeffs, short* dc, out uint nzY, out uint nzUv)
         {
             int first = 0;
             byte* acProbs = probs + 3 * TypeStride;
             if (!i4)
             {
-                int nz = GetBlocks(ref br, probs + TypeStride, 0, q.Y2Dc, q.Y2Ac, dc, top, left, BlockOrder + 48, 1, out _);
+                int nz = GetBlocks(ref br, probs + TypeStride, 0, zq + 16, dc, top, left, BlockOrder + 48, 1, out _);
                 if (nz > 1) InverseWht(dc, coeffs);
                 else
                 {
@@ -677,9 +775,9 @@ namespace Aardvark.ImageCodecs
                 first = 1;
                 acProbs = probs;
             }
-            GetBlocks(ref br, acProbs, first, q.Y1Dc, q.Y1Ac, coeffs, top, left, BlockOrder, 16, out nzY);
-            GetBlocks(ref br, probs + 2 * TypeStride, 0, q.UvDc, q.UvAc, coeffs + 16 * 16, top, left, BlockOrder + 32, 4, out uint nzU);
-            GetBlocks(ref br, probs + 2 * TypeStride, 0, q.UvDc, q.UvAc, coeffs + 20 * 16, top, left, BlockOrder + 40, 4, out uint nzV);
+            GetBlocks(ref br, acProbs, first, zq, coeffs, top, left, BlockOrder, 16, out nzY);
+            GetBlocks(ref br, probs + 2 * TypeStride, 0, zq + 32, coeffs + 16 * 16, top, left, BlockOrder + 32, 4, out uint nzU);
+            GetBlocks(ref br, probs + 2 * TypeStride, 0, zq + 32, coeffs + 20 * 16, top, left, BlockOrder + 40, 4, out uint nzV);
             nzUv = nzU | nzV << 8;
         }
 
@@ -708,14 +806,13 @@ namespace Aardvark.ImageCodecs
         /// One loop for a whole plane of a macroblock keeps the reader state in registers across its blocks.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        static int GetBlocks(ref Vp8BoolReader br, byte* probs, int first, int dqDc, int dqAc, short* dst, byte* top, byte* left, byte* order, int count, out uint kinds)
+        static int GetBlocks(ref Vp8BoolReader br, byte* probs, int first, int* zq, short* dst, byte* top, byte* left, byte* order, int count, out uint kinds)
         {
             // probs: [position][context][11] of one block type
-            byte* zigzag = ZigzagPtr;
             ulong value = br._value;
             uint range = br._range;
             int bits = br._bits;
-            byte* cur = br._cur, end = br._end;
+            byte* cur = br._cur;
             uint k = 0;
             int n = first;
             for (int b = 0; b < count; b++, dst += 16)
@@ -725,45 +822,45 @@ namespace Aardvark.ImageCodecs
                 byte* p = probs + (n * 3 + *ctxTop + *ctxLeft) * 11;
                 for (; n < 16; n++)
                 {
-                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[0]) == 0) break;         // end of block
-                    while (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[1]) == 0)             // zero; no end of block may follow
+                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[0]) == 0) break;         // end of block
+                    while (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[1]) == 0)             // zero; no end of block may follow
                     {
                         if (++n == 16) goto done;
                         p = probs + n * 33;
                     }
-                    byte* next = probs + (n + 1) * 33;
                     int v;
-                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[2]) == 0) { v = 1; p = next + 11; }
+                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[2]) == 0) { v = 1; p = probs + (n + 1) * 33 + 11; }
                     else
                     {
-                        if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[3]) == 0)
+                        if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[3]) == 0)
                         {
-                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[4]) == 0) v = 2;
-                            else v = 3 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[5]);
+                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[4]) == 0) v = 2;
+                            else v = 3 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[5]);
                         }
-                        else if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[6]) == 0)
+                        else if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[6]) == 0)
                         {
-                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[7]) == 0)
-                                v = 5 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 159);
+                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[7]) == 0)
+                                v = 5 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 159);
                             else
                             {
-                                v = 7 + 2 * Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 165);
-                                v += Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 145);
+                                v = 7 + 2 * Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 165);
+                                v += Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 145);
                             }
                         }
                         else
                         {
-                            int b1 = Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[8]);
-                            int cat = 2 * b1 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[9 + b1]);
+                            int b1 = Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[8]);
+                            int cat = 2 * b1 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[9 + b1]);
                             var extra = cat == 0 ? Vp8Tables.Cat3 : cat == 1 ? Vp8Tables.Cat4 : cat == 2 ? Vp8Tables.Cat5 : Vp8Tables.Cat6;
                             v = 0;
-                            for (int i = 0; extra[i] != 0; i++) v += v + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, extra[i]);
+                            for (int i = 0; extra[i] != 0; i++) v += v + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, extra[i]);
                             v += 3 + (8 << cat);
                         }
-                        p = next + 22;
+                        p = probs + (n + 1) * 33 + 22;
                     }
-                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 128) != 0) v = -v;
-                    dst[zigzag[n]] = (short)(v * (n > 0 ? dqAc : dqDc));
+                    // position and dequantization factor in one entry
+                    int z = zq[n];
+                    dst[z & 15] = (short)(Vp8BoolReader.Sign(ref value, ref range, ref bits, ref cur, ref br, v) * (z >> 8));
                 }
             done:
                 *ctxTop = *ctxLeft = (byte)(n > first ? 1 : 0);
@@ -818,6 +915,17 @@ namespace Aardvark.ImageCodecs
             {
                 int dc = (c[0] + 4) >> 3;
                 c[0] = 0;
+                if (Vector128.IsHardwareAccelerated)
+                {
+                    // the four rows in one vector; clamped addition is saturating byte arithmetic
+                    var px = Vector128.Create(Unsafe.ReadUnaligned<uint>(dst), Unsafe.ReadUnaligned<uint>(dst + Bps),
+                        Unsafe.ReadUnaligned<uint>(dst + 2 * Bps), Unsafe.ReadUnaligned<uint>(dst + 3 * Bps)).AsByte();
+                    px = dc >= 0 ? AddSat(px, Vector128.Create((byte)Math.Min(dc, 255))) : SubSat(px, Vector128.Create((byte)Math.Min(-dc, 255)));
+                    var r = px.AsUInt32();
+                    Unsafe.WriteUnaligned(dst, r.GetElement(0)); Unsafe.WriteUnaligned(dst + Bps, r.GetElement(1));
+                    Unsafe.WriteUnaligned(dst + 2 * Bps, r.GetElement(2)); Unsafe.WriteUnaligned(dst + 3 * Bps, r.GetElement(3));
+                    return;
+                }
                 for (int j = 0; j < 4; j++, dst += Bps)
                 {
                     dst[0] = Clip(dst[0] + dc); dst[1] = Clip(dst[1] + dc);
@@ -827,6 +935,23 @@ namespace Aardvark.ImageCodecs
             }
             InverseDctAdd(c, dst, Bps);
             Unsafe.InitBlockUnaligned(c, 0, 32);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector128<byte> AddSat(Vector128<byte> a, Vector128<byte> b)
+        {
+            if (System.Runtime.Intrinsics.X86.Sse2.IsSupported) return System.Runtime.Intrinsics.X86.Sse2.AddSaturate(a, b);
+            if (System.Runtime.Intrinsics.Arm.AdvSimd.IsSupported) return System.Runtime.Intrinsics.Arm.AdvSimd.AddSaturate(a, b);
+            var s = a + b;
+            return s | Vector128.LessThan(s, a);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector128<byte> SubSat(Vector128<byte> a, Vector128<byte> b)
+        {
+            if (System.Runtime.Intrinsics.X86.Sse2.IsSupported) return System.Runtime.Intrinsics.X86.Sse2.SubtractSaturate(a, b);
+            if (System.Runtime.Intrinsics.Arm.AdvSimd.IsSupported) return System.Runtime.Intrinsics.Arm.AdvSimd.SubtractSaturate(a, b);
+            return Vector128.Max(a, b) - b;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -960,6 +1085,32 @@ namespace Aardvark.ImageCodecs
         {
             byte* top = dst - Bps;
             int p = top[-1];
+            if (Vector128.IsHardwareAccelerated)
+            {
+                // top + (left - corner) in 16 bit lanes, clamped to 0..255 before narrowing
+                var max = Vector128.Create((short)255);
+                if (size == 16)
+                {
+                    var (t0, t1) = Vector128.Widen(Vector128.Load(top));
+                    for (int j = 0; j < 16; j++, dst += Bps)
+                    {
+                        var d = Vector128.Create((short)(dst[-1] - p));
+                        var a = Vector128.Min(Vector128.Max(t0.AsInt16() + d, Vector128<short>.Zero), max);
+                        var b = Vector128.Min(Vector128.Max(t1.AsInt16() + d, Vector128<short>.Zero), max);
+                        Vector128.Narrow(a.AsUInt16(), b.AsUInt16()).Store(dst);
+                    }
+                }
+                else
+                {
+                    var t = Vector128.WidenLower(Vector128.CreateScalarUnsafe(Unsafe.ReadUnaligned<ulong>(top)).AsByte()).AsInt16();
+                    for (int j = 0; j < size; j++, dst += Bps)
+                    {
+                        var a = Vector128.Min(Vector128.Max(t + Vector128.Create((short)(dst[-1] - p)), Vector128<short>.Zero), max);
+                        Unsafe.WriteUnaligned(dst, Vector128.Narrow(a.AsUInt16(), a.AsUInt16()).AsUInt64().ToScalar());
+                    }
+                }
+                return;
+            }
             for (int j = 0; j < size; j++, dst += Bps)
             {
                 int d = dst[-1] - p;
@@ -989,6 +1140,17 @@ namespace Aardvark.ImageCodecs
                     break;
                 }
                 case BTm:
+                    if (Vector128.IsHardwareAccelerated)
+                    {
+                        var t = Vector128.WidenLower(Vector128.CreateScalarUnsafe(Unsafe.ReadUnaligned<uint>(a)).AsByte()).AsInt16();
+                        var max = Vector128.Create((short)255);
+                        for (int j = 0; j < 4; j++)
+                        {
+                            var r = Vector128.Min(Vector128.Max(t + Vector128.Create((short)(dst[j * Bps - 1] - p)), Vector128<short>.Zero), max);
+                            Unsafe.WriteUnaligned(dst + j * Bps, Vector128.Narrow(r.AsUInt16(), r.AsUInt16()).AsUInt32().ToScalar());
+                        }
+                        break;
+                    }
                     for (int j = 0; j < 4; j++)
                     {
                         int d = dst[j * Bps - 1] - p;
