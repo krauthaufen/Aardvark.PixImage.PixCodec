@@ -618,6 +618,14 @@ namespace Aardvark.ImageCodecs
         public static void Encode(RawImage image, Stream output, ExrEncodeOptions? options = null)
             => ExrEncoder.Encode(new[] { ExrPart.FromImage(null, image, options) }, output, false);
 
+        /// <summary>Encodes an image as OpenEXR into a byte array.</summary>
+        public static byte[] Encode(RawImage image, ExrEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
+
         /// <summary>
         /// Encodes arbitrary named channels (AOVs, depth, ids, layers such as "diffuse.R") as one part. Every channel
         /// has width * height samples (fewer for subsampled channels); types may be mixed. Custom header attributes go

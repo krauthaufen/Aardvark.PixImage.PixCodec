@@ -26,7 +26,10 @@ namespace Aardvark.ImageCodecs
             {
                 VerifyChecksums = _options.VerifyChecksums,
                 AllowInvalidPaletteIndices = _options.AllowInvalidPaletteIndices,
+                MaxPixels = _options.MaxPixels,
+                CancellationToken = _options.CancellationToken,
             };
+            PngDecoder.CheckMaxPixels(_s.Header.Width, _s.Header.Height, _options.MaxPixels);
             // The canvas is as large as the default image, which the file must be able to hold: a header that
             // lies about the size is rejected before a canvas is allocated for it.
             PngDecoder.InflatedSize(_s.Header, _s.IdatTotal);

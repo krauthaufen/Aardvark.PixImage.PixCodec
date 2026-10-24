@@ -85,6 +85,12 @@ namespace Aardvark.ImageCodecs
         /// frame), or an animation frame, which is a stream of its own with the frame's size that shares everything
         /// else (bit depth, color type, palette, transparency) with the file.
         /// </summary>
+        public static void CheckMaxPixels(int width, int height, long maxPixels)
+        {
+            if (maxPixels > 0 && (long)width * height > maxPixels)
+                throw new ImageNotSupportedException($"PNG image of {width}x{height} exceeds PngDecodeOptions.MaxPixels ({maxPixels})");
+        }
+
         public static RawImage DecodeImage(ReadOnlySpan<byte> data, PngStructure s, PngFrameEntry? frame, PngDecodeOptions options)
         {
             var h = s.Header;
@@ -97,6 +103,7 @@ namespace Aardvark.ImageCodecs
 
             long rawSize = InflatedSize(h, streamTotal);
 
+            CheckMaxPixels(h.Width, h.Height, options.MaxPixels);
             bool keepIndexed = options.KeepIndexed && h.IsPalette;
             OutputFormat(h, !trns.IsEmpty, keepIndexed, out var color, out var sampleType);
             int outChannels = RawImage.ChannelCount(color);
@@ -104,7 +111,7 @@ namespace Aardvark.ImageCodecs
             if (outSamples * (h.BitDepth == 16 ? 2 : 1) > int.MaxValue || outSamples > Array.MaxLength || rawSize >= Array.MaxLength)
                 throw new ImageNotSupportedException("PNG image is too large (more than 2 GB of pixel data)");
 
-            var conv = new RowConverter(h, trns, plte, keepIndexed, outChannels, options.AllowInvalidPaletteIndices);
+            var conv = new RowConverter(h, trns, plte, keepIndexed, outChannels, options.AllowInvalidPaletteIndices) { Cancel = options.CancellationToken };
             return Zlib.Backend == ZlibBackend.Managed
                 ? DecodeStreaming(data, s, frame, h, color, sampleType, conv, options.VerifyChecksums)
                 : DecodeBuffered(data, s, frame, h, color, sampleType, conv, options.VerifyChecksums, (int)rawSize);
@@ -375,6 +382,7 @@ namespace Aardvark.ImageCodecs
                             byte* prev = null, dst = output;
                             for (int y = 0; y < height; y++)
                             {
+                                conv.Cancel.ThrowIfCancellationRequested();
                                 byte* src = rows.Next(rowBytes);
                                 if (!PngFilters.Unfilter(*src, src + 1, prev, dst, rowBytes, filterBpp)) throw BadFilter();
                                 prev = dst;
@@ -387,6 +395,7 @@ namespace Aardvark.ImageCodecs
                             nint outRowBytes = (nint)width * outPixelBytes;
                             for (int y = 0; y < height; y++)
                             {
+                                conv.Cancel.ThrowIfCancellationRequested();
                                 byte* src = rows.Next(rowBytes);
                                 if (!PngFilters.Unfilter(*src, src + 1, prev, cur, rowBytes, filterBpp)) throw BadFilter();
                                 conv.Convert(cur, dst, width);
@@ -406,6 +415,7 @@ namespace Aardvark.ImageCodecs
                         byte* prev = null, cur = scratchA, other = scratchB;
                         for (int r = 0; r < ph; r++)
                         {
+                            conv.Cancel.ThrowIfCancellationRequested();
                             byte* src = rows.Next(passRowBytes);
                             if (!PngFilters.Unfilter(*src, src + 1, prev, cur, passRowBytes, filterBpp)) throw BadFilter();
                             byte* pixels = cur;
@@ -463,6 +473,9 @@ namespace Aardvark.ImageCodecs
             readonly int _indexLimit;    // palette size when indices have to be checked against it, else 0
             readonly byte[]? _palette;   // 256 RGBA entries
             readonly byte[]? _indices;   // unpacked low bit depth samples of one row
+
+            /// <summary>Checked per row (PngDecodeOptions.CancellationToken).</summary>
+            public System.Threading.CancellationToken Cancel;
 
             /// <summary>The reconstructed bytes already are the output samples.</summary>
             public bool IsDirect => _kind == Kind.Direct;

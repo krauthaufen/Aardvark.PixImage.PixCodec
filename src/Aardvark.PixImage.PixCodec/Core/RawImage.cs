@@ -143,6 +143,11 @@ namespace Aardvark.ImageCodecs
         /// scientific formats (NRRD, NIfTI, MetaImage, FITS); null otherwise.
         /// </summary>
         public PhysicalMetadata? Physical;
+        /// <summary>
+        /// The file ended early and was decoded as far as its data goes (only when the format's decode options allow
+        /// that, such as <see cref="JpegDecodeOptions.AllowTruncated"/>): part of the image is missing.
+        /// </summary>
+        public bool Truncated;
     }
 
     /// <summary>
@@ -369,15 +374,25 @@ namespace Aardvark.ImageCodecs
         }
     }
 
+    /// <summary>Base of the exceptions the codecs throw for the data they are given (<see cref="ImageFormatException"/>, <see cref="ImageNotSupportedException"/>).</summary>
+    public abstract class ImageCodecException : Exception
+    {
+        protected ImageCodecException(string message) : base(message) { }
+        protected ImageCodecException(string message, Exception? inner) : base(message, inner) { }
+    }
+
     /// <summary>The encoded data is malformed or truncated.</summary>
-    public class ImageFormatException : Exception
+    public class ImageFormatException : ImageCodecException
     {
         public ImageFormatException(string message) : base(message) { }
         public ImageFormatException(string message, Exception inner) : base(message, inner) { }
     }
 
-    /// <summary>The encoded data is valid but uses a feature this library does not implement.</summary>
-    public class ImageNotSupportedException : NotSupportedException
+    /// <summary>
+    /// The encoded data is valid but uses a feature this library does not implement, or exceeds a limit set in the options
+    /// (MaxPixels).
+    /// </summary>
+    public class ImageNotSupportedException : ImageCodecException
     {
         public ImageNotSupportedException(string message) : base(message) { }
     }

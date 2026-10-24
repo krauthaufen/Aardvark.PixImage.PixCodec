@@ -101,8 +101,12 @@ public class JpegTests
         var data = Load(file);
         // the references hold the stored pixels, Decode turns them upright
         var expected = ImageOps.ApplyOrientation(TestUtil.LoadRef(TestUtil.Fixture(file) + ".ref"), Jpeg.GetInfo(data).Orientation);
-        var actual = Jpeg.Decode(data);
+        // files without EOI are refused unless truncation is allowed, and then flagged
+        bool noEoi = file.Contains("no_eoi");
+        if (noEoi) Assert.Throws<ImageFormatException>(() => Jpeg.Decode(data));
+        var actual = Jpeg.Decode(data, new JpegDecodeOptions { AllowTruncated = noEoi });
         TestUtil.AssertEqual(expected, actual, 0);
+        Assert.Equal(noEoi, actual.Metadata?.Truncated ?? false);
 
         Assert.True(Jpeg.IsMatch(data));
         var info = Jpeg.GetInfo(data);
@@ -191,7 +195,11 @@ public class JpegTests
     public void TruncatedScanDecodesWhatIsThere()
     {
         var full = Jpeg.Decode(Load("jpeg/misc/truncated_444_full.jpg"));
-        var cut = Jpeg.Decode(Load("jpeg/misc/truncated_444.jpg"));
+        Assert.Null(full.Metadata);
+        var ex = Assert.Throws<ImageFormatException>(() => Jpeg.Decode(Load("jpeg/misc/truncated_444.jpg")));
+        Assert.Contains("AllowTruncated", ex.Message);
+        var cut = Jpeg.Decode(Load("jpeg/misc/truncated_444.jpg"), new JpegDecodeOptions { AllowTruncated = true });
+        Assert.True(cut.Metadata!.Truncated);
         Assert.Equal((full.Width, full.Height), (cut.Width, cut.Height));
         var f = full.GetData<byte>(); var c = cut.GetData<byte>();
         // two thirds of the data are present: the top half must be intact, the bottom rows are filled with gray

@@ -379,7 +379,7 @@ namespace Aardvark.ImageCodecs
                 {
                     var ctx = new Context { L = l, Pixels = (byte*)pin.AddrOfPinnedObject(), BigEndian = be };
                     var chunks = data[i] = new Chunk[l.N];
-                    if (l.Options.Parallel && l.N > 1) Parallel.For(0, l.N, k => chunks[k] = ctx.Compress(k));
+                    if (l.Options.Parallel && l.N > 1) Parallel.For(0, l.N, new ParallelOptions { CancellationToken = l.Options.CancellationToken }, k => chunks[k] = ctx.Compress(k));
                     else for (int k = 0; k < l.N; k++) chunks[k] = ctx.Compress(k);
                 }
                 finally { pin.Free(); }
@@ -512,7 +512,7 @@ namespace Aardvark.ImageCodecs
                     if (cnt > 1)
                     {
                         int s0 = s;
-                        Parallel.For(0, cnt, i => results[i] = ctx.Compress(s0 + i));
+                        Parallel.For(0, cnt, new ParallelOptions { CancellationToken = o.CancellationToken }, i => results[i] = ctx.Compress(s0 + i));
                     }
                     else results[0] = ctx.Compress(s);
                     for (int i = 0; i < cnt; i++)
@@ -652,6 +652,7 @@ namespace Aardvark.ImageCodecs
             /// <summary>Gathers, converts, predicts and compresses one strip or tile.</summary>
             public Chunk Compress(int index)
             {
+                L.Options.CancellationToken.ThrowIfCancellationRequested();
                 var l = L;
                 int plane = l.Planar ? index / l.PerPlane : -1, ci = index % l.PerPlane;
                 int x0 = ci % l.Across * l.Cw, y0 = ci / l.Across * l.Ch;

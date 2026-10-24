@@ -154,6 +154,14 @@ namespace Aardvark.ImageCodecs
         public static void Encode(RawImage image, Stream output, JbigEncodeOptions? options = null)
             => JbigEncoder.Encode(image, output, options ?? new JbigEncodeOptions());
 
+        /// <summary>Encodes an image as JBIG into a byte array.</summary>
+        public static byte[] Encode(RawImage image, JbigEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
+
         /// <summary>
         /// Decodes a single plane BIE (one TIFF strip) to packed rows: most significant bit first, (width + 7) / 8 bytes
         /// per row, bits exactly as coded (1 = JBIG foreground), padding bits 0. The height is the final one (after

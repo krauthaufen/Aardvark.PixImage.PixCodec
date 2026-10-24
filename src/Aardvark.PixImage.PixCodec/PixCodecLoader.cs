@@ -326,6 +326,17 @@ namespace Aardvark.Data
         public static PixImage Load(ReadOnlySpan<byte> data) => Convert(ImageCodec.Decode(data));
 
         /// <summary>
+        /// Decodes an image file with format independent settings: <see cref="ImageDecodeOptions.ApplyOrientation"/> off returns
+        /// the pixels as stored, <see cref="ImageDecodeOptions.MaxPixels"/> limits the size, channels and sample type can be
+        /// chosen. See <see cref="ImageCodec.Decode(ReadOnlySpan{byte}, ImageDecodeOptions?)"/>.
+        /// </summary>
+        public static PixImage Load(string path, ImageDecodeOptions? options) => Convert(ImageCodec.Decode(path, options));
+        /// <inheritdoc cref="Load(string, ImageDecodeOptions?)"/>
+        public static PixImage Load(Stream stream, ImageDecodeOptions? options) => Convert(ImageCodec.Decode(stream, options));
+        /// <inheritdoc cref="Load(string, ImageDecodeOptions?)"/>
+        public static PixImage Load(ReadOnlySpan<byte> data, ImageDecodeOptions? options) => Convert(ImageCodec.Decode(data, options));
+
+        /// <summary>
         /// The HDR rendition of a JPEG (Ultra HDR / ISO 21496-1) or JPEG XL file with a gain map as a linear float RGB(A)
         /// image, 1.0 = SDR white, for a display with HDR headroom <paramref name="headroom"/> (log2 of peak over SDR white;
         /// null = the full alternate rendition, 0 = the SDR look). <see cref="Load(string)"/> keeps returning the SDR
@@ -343,6 +354,24 @@ namespace Aardvark.Data
         public static PixImage<T> Load<T>(Stream stream) => As<T>(Load(stream));
         /// <inheritdoc cref="Load{T}(string)"/>
         public static PixImage<T> Load<T>(ReadOnlySpan<byte> data) => As<T>(Load(data));
+        /// <inheritdoc cref="Load{T}(string)"/>
+        public static PixImage<T> Load<T>(string path, ImageDecodeOptions? options) => As<T>(Load(path, options));
+        /// <inheritdoc cref="Load{T}(string)"/>
+        public static PixImage<T> Load<T>(Stream stream, ImageDecodeOptions? options) => As<T>(Load(stream, options));
+        /// <inheritdoc cref="Load{T}(string)"/>
+        public static PixImage<T> Load<T>(ReadOnlySpan<byte> data, ImageDecodeOptions? options) => As<T>(Load(data, options));
+
+        /// <summary>
+        /// Wraps decoded samples in a PixImage without copying (half floats are widened to float), with the dense image layout
+        /// (channel, x, y). Same as <see cref="PixCodecLoader.ToPixImage"/>.
+        /// </summary>
+        public static PixImage ToPixImage(RawImage image) => PixCodecLoader.ToPixImage(image);
+
+        /// <summary>
+        /// <see cref="ToPixImage(RawImage)"/> as a PixImage&lt;T&gt;: no copy when T is the image's sample type, else the samples
+        /// are converted as Aardvark's PixImage.ToPixImage&lt;T&gt; does.
+        /// </summary>
+        public static PixImage<T> ToPixImage<T>(RawImage image) => As<T>(PixCodecLoader.ToPixImage(image));
 
         /// <summary>
         /// Decodes every image in the file: TIFF pages, the frames of animated GIF / PNG / WebP / JPEG XL / AVIF (each the whole canvas as shown), or

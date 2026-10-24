@@ -673,19 +673,19 @@ namespace Aardvark.ImageCodecs
                 {
                     try
                     {
-                        Parallel.For(0, n, new ParallelOptions { MaxDegreeOfParallelism = opts.MaxDegreeOfParallelism > 0 ? opts.MaxDegreeOfParallelism : -1 },
-                            i => DecodeChunk(list[i]));
+                        Parallel.For(0, n, new ParallelOptions { MaxDegreeOfParallelism = opts.MaxDegreeOfParallelism > 0 ? opts.MaxDegreeOfParallelism : -1, CancellationToken = opts.CancellationToken },
+                            i => { opts.CancellationToken.ThrowIfCancellationRequested(); DecodeChunk(list[i]); });
                     }
                     catch (AggregateException ae)
                     {
                         foreach (var inner in ae.Flatten().InnerExceptions)
-                            if (inner is ImageFormatException || inner is ImageNotSupportedException)
+                            if (inner is ImageFormatException || inner is ImageNotSupportedException || inner is OperationCanceledException)
                                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
                         throw new ImageFormatException("TIFF: corrupt image data", ae.InnerException ?? ae);
                     }
                 }
                 else
-                    for (int i = 0; i < n; i++) DecodeChunk(list[i]);
+                    for (int i = 0; i < n; i++) { opts.CancellationToken.ThrowIfCancellationRequested(); DecodeChunk(list[i]); }
                 if (YccPlanar)
                 {
                     if (Bps == 2) YccInPlace16((ushort*)_dst, (long)rw * rh);

@@ -43,6 +43,24 @@ namespace Aardvark.ImageCodecs
         /// first SOI marker (some cameras and container formats prepend data). Set to require the data to start with it.
         /// </summary>
         public bool RequireSoiAtStart { get; set; }
+
+        /// <summary>
+        /// Decode what is there when the file ends before its EOI marker (a cut-off download or copy) instead of throwing
+        /// <see cref="ImageFormatException"/>, which is the default: data units that were never coded come out mid gray, the
+        /// missing scans of a progressive file leave its detail coarse. <see cref="ImageMetadata.Truncated"/> tells such a
+        /// result apart.
+        /// </summary>
+        public bool AllowTruncated { get; set; }
+
+        /// <summary>
+        /// Upper bound for the decoded size (after <see cref="ScaleDenominator"/>) in pixels; larger files are rejected with an
+        /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit beyond
+        /// the format's own (65535 x 65535) and the array size. Lower it when decoding untrusted data with a memory budget.
+        /// </summary>
+        public long MaxPixels { get; set; }
+
+        /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
     }
 
     /// <summary>Chroma resolution of an encoded color JPEG.</summary>
@@ -74,6 +92,9 @@ namespace Aardvark.ImageCodecs
 
     public sealed class JpegEncodeOptions
     {
+        /// <summary>Stops the encode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Quality 1..100.</summary>
         public int Quality { get; set; } = 90;
 
@@ -168,7 +189,7 @@ namespace Aardvark.ImageCodecs
         {
             if (o.ScaleDenominator is not (1 or 2 or 4 or 8)) throw new ArgumentException("ScaleDenominator must be 1, 2, 4 or 8");
             int start = FindStart(data, o);
-            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator, OnStream = stream };
+            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator, OnStream = stream, MaxPixels = o.MaxPixels, Cancel = o.CancellationToken };
             d.Parse(headerOnly);
             return d;
         }
@@ -232,7 +253,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Decodes a complete JPEG file held in memory. 8 bit frames give UInt8 samples, deeper ones (12 bit DCT, lossless
         /// up to 16 bit) UInt16 holding the values as coded, e.g. 0..4095 for 12 bit - they are not scaled to the full
-        /// 16 bit range. Files that end early decode as far as the data goes (the remainder is gray). The EXIF orientation
+        /// 16 bit range. Files that end early throw unless <see cref="JpegDecodeOptions.AllowTruncated"/> is set. The EXIF orientation
         /// is applied unless <see cref="JpegDecodeOptions.ApplyOrientation"/> is off.
         /// </summary>
         public static RawImage Decode(ReadOnlySpan<byte> data, JpegDecodeOptions? options = null)
@@ -254,6 +275,8 @@ namespace Aardvark.ImageCodecs
                     fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation);
                 }
                 var d = Open(p, data, options, headerOnly: false, Stream);
+                if (d.Truncated && !options.AllowTruncated)
+                    throw new ImageFormatException("invalid JPEG: the file ends before its EOI marker (truncated; JpegDecodeOptions.AllowTruncated decodes what is there)");
                 // (as planned when the scan started, should a marker after it change the color space)
                 var (cs, model, channels) = d.Streamed ? streamPlan : Plan(d, options);
                 int w = d.OutWidth, h = d.OutHeight;
@@ -279,7 +302,8 @@ namespace Aardvark.ImageCodecs
                         pixels = bytes;
                     }
                 }
-                var meta = d.HasMetadata ? d.Metadata : null;
+                var meta = d.HasMetadata || d.Truncated ? d.Metadata : null;
+                if (d.Truncated) meta!.Truncated = true;
                 if (d.Streamed && streamOrientation >= 5) (w, h) = (h, w);
                 if (d.Streamed && streamOrientation > 1) ImageOps.MarkUpright(meta, streamOrientation);
                 var img = new RawImage(w, h, model, pixels, channels, meta);
@@ -440,6 +464,14 @@ namespace Aardvark.ImageCodecs
         /// <summary>Encodes an image as JPEG to the stream (which only needs to be writable, not seekable).</summary>
         public static void Encode(RawImage image, Stream output, JpegEncodeOptions? options = null)
             => JpegEncoder.Encode(image, output, options ?? new JpegEncodeOptions());
+
+        /// <summary>Encodes an image as JPEG into a byte array.</summary>
+        public static byte[] Encode(RawImage image, JpegEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
     }
 
     /// <summary>

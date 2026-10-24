@@ -121,6 +121,22 @@ namespace Aardvark.ImageCodecs.JpegImpl
 
         public bool HasMetadata => _hasMetadata;
 
+        bool _sawEoi;
+
+        /// <summary>Checked per MCU row (JpegDecodeOptions.CancellationToken).</summary>
+        public System.Threading.CancellationToken Cancel;
+
+        /// <summary>Upper bound for OutWidth x OutHeight, 0 for none (JpegDecodeOptions.MaxPixels).</summary>
+        public long MaxPixels;
+
+        void CheckMaxPixels()
+        {
+            if (MaxPixels > 0 && (long)OutWidth * OutHeight > MaxPixels)
+                throw new ImageNotSupportedException($"JPEG image of {OutWidth}x{OutHeight} exceeds JpegDecodeOptions.MaxPixels ({MaxPixels})");
+        }
+        /// <summary>After a full parse: the data ended before the EOI marker (cut short somewhere in or after a scan).</summary>
+        public bool Truncated => !_sawEoi;
+
         /// <summary>Samples wider than 8 bit, or lossless: planes are 16 bit.</summary>
         public bool Wide => Precision > 8 || Lossless || Hierarchical;
 
@@ -222,7 +238,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
             while (true)
             {
                 int m = NextMarker(ref pos);
-                if (m < 0 || m == 0xD9) break;
+                if (m == 0xD9) { _sawEoi = true; break; }
+                if (m < 0) break;
                 if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7)) continue; // parameterless
                 if (pos + 2 > _len) { if (_scans > 0) break; throw Bad("truncated header"); }
                 int len = U16(pos);
@@ -531,6 +548,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             // that promise far more than the data can hold. Small images are exempt so that heavily truncated files still decode.
             if (pixels > 1 << 16 && pixels / (Lossless ? 16 : 1024) > remainingBytes) throw Bad("image dimensions do not fit the amount of data");
             if ((long)OutWidth * OutHeight * Comps.Length > Array.MaxLength) throw new ImageNotSupportedException("JPEG image is too large");
+            CheckMaxPixels();
             _sink = OnStream != null && !Wide && (Progressive || scanComponents == Comps.Length) ? OnStream(this) : null;
             foreach (var c in Comps)
             {
@@ -885,6 +903,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             var sink = _sink;
             for (int my = 0; my < mcusY; my++)
             {
+                Cancel.ThrowIfCancellationRequested();
                 if (sink != null)
                 {
                     // emit what the rows so far complete, then reuse the oldest slot; data units that never get decoded come out mid gray
@@ -1093,6 +1112,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             bool skip = false;
             for (int my = 0; my < mcusY; my++)
             {
+                Cancel.ThrowIfCancellationRequested();
                 for (int mx = 0; mx < mcusX; mx++)
                 {
                     if (ri != 0)
@@ -1303,6 +1323,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             int units = Comps.Length == 1 ? Comps[0].ScanBlocksH : _mcusY;
             for (int u = 0; u < units; u++)
             {
+                Cancel.ThrowIfCancellationRequested();
                 if (u > 0) _sink.Advance(u);
                 foreach (var c in Comps)
                 {
@@ -1392,6 +1413,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 int** fast = stackalloc int*[4];
                 for (int my = 0; my < mcusY; my++)
                 {
+                    Cancel.ThrowIfCancellationRequested();
                     bool top = my == 0;
                     if (ri != 0 && my != 0 && (long)my * mcusX % ri == 0)
                     {
@@ -1416,6 +1438,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
 
             for (int my = 0; my < mcusY; my++)
             {
+                Cancel.ThrowIfCancellationRequested();
                 for (int mx = 0; mx < mcusX; mx++)
                 {
                     if (ri != 0)

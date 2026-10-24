@@ -70,6 +70,16 @@ namespace Aardvark.ImageCodecs
         /// Composited animation frames are turned upright too, raw frames (sub-rectangles of the canvas) are always as stored.
         /// </summary>
         public bool ApplyOrientation { get; set; } = true;
+
+        /// <summary>
+        /// Upper bound for the image (and an animation's canvas) in pixels; larger files are rejected with an
+        /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit
+        /// beyond the array size. Lower it when decoding untrusted data with a memory budget.
+        /// </summary>
+        public long MaxPixels { get; set; }
+
+        /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
     }
 
     /// <summary>Row filter used by the PNG encoder.</summary>
@@ -88,6 +98,9 @@ namespace Aardvark.ImageCodecs
 
     public sealed class PngEncodeOptions
     {
+        /// <summary>Stops the encode with an <see cref="OperationCanceledException"/>; checked per row.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>zlib level 0..9.</summary>
         public int CompressionLevel { get; set; } = 6;
 
