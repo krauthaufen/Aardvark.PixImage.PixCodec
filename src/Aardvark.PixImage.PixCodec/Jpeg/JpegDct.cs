@@ -269,9 +269,38 @@ namespace Aardvark.ImageCodecs.JpegImpl
             return t;
         }
 
+        // Other sizes (k/8 scaling, k = 3, 5, 6, 7): output x is the box average of the 8 point inverse transform over
+        // [8x/n, 8(x+1)/n), the samples it covers weighted by their overlap, exactly as for 4 and 2 but with
+        // fractional coverage. Unscaled (DC weight 1.0), so these sizes need no extra shift.
+        static readonly int[]?[] s_reduceN = new int[]?[9];
+
+        static int[] Reduction(int n) => n == 4 ? s_reduce4 : n == 2 ? s_reduce2 : s_reduceN[n] ??= FractionalReductionTable(n);
+
+        static int[] FractionalReductionTable(int n)
+        {
+            var t = GC.AllocateArray<int>(n * 8, pinned: true);
+            for (int x = 0; x < n; x++)
+            {
+                double a = 8.0 * x / n, b = 8.0 * (x + 1) / n;
+                for (int u = 0; u < 8; u++)
+                {
+                    double v = 0;
+                    for (int i = 0; i < 8; i++)
+                    {
+                        double w = Math.Max(0, Math.Min(b, i + 1) - Math.Max(a, i));
+                        v += w * (u == 0 ? 1 : Math.Sqrt(2) * Math.Cos((2 * i + 1) * u * Math.PI / 16));
+                    }
+                    v *= n / 8.0;
+                    int fix = (int)(Math.Abs(v) * (1 << ConstBits) + 0.5);
+                    t[x * 8 + u] = Math.Abs(v) < 1e-9 ? 0 : v < 0 ? -fix : fix;
+                }
+            }
+            return t;
+        }
+
         /// <summary>
         /// Inverse DCT for the cases the fast 8 bit path does not cover: 12 bit samples (one guard bit less in the
-        /// first pass) and DCT domain downscaling to size x size outputs (8, 4, 2 or 1). Writes size * size values,
+        /// first pass) and DCT domain downscaling to size x size outputs (1 to 8; see the tables above). Writes size * size values,
         /// row major, without level shift or clamping.
         /// </summary>
         [SkipLocalsInit]
@@ -291,9 +320,9 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 for (int i = 0; i < 64; i++) output[i] = m[i];
                 return;
             }
-            int extra = size == 4 ? 1 : 2;
+            int extra = size == 4 ? 1 : size == 2 ? 2 : 0;
             int shift1 = ConstBits - pass1Bits + extra, shift2 = ConstBits + pass1Bits + 3 + extra;
-            fixed (int* k = size == 4 ? s_reduce4 : s_reduce2)
+            fixed (int* k = Reduction(size))
             {
                 if (Vector<int>.Count == 8 && Vector.IsHardwareAccelerated && ForceLevel != 0)
                 {

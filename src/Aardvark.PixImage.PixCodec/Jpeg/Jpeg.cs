@@ -20,6 +20,15 @@ namespace Aardvark.ImageCodecs
         public int ScaleDenominator { get; set; } = 1;
 
         /// <summary>
+        /// Decode at k/8 of the size, k = 1..8, by inverse DCTs of size k (0, the default, uses <see cref="ScaleDenominator"/>
+        /// instead). The output is ceil(size * k / 8); each output sample is the area average of the full size decode over
+        /// the part of the block it covers, so the result is close to decoding and shrinking with a box filter, at a
+        /// fraction of the cost. k = 1, 2, 4 give exactly what the matching <see cref="ScaleDenominator"/> gives; 3, 5, 6, 7
+        /// are not bit identical to any other decoder. Ignored for lossless JPEG.
+        /// </summary>
+        public int ScaleEighths { get; set; }
+
+        /// <summary>
         /// Return 4 component (CMYK / YCCK) images as 4 channel <see cref="ColorModel.Other"/> data instead of converting
         /// them to RGB. The samples are C, M, Y, K as stored, which for the usual Adobe files means inverted (255 = no ink);
         /// YCCK is brought to that same form.
@@ -53,7 +62,7 @@ namespace Aardvark.ImageCodecs
         public bool AllowTruncated { get; set; }
 
         /// <summary>
-        /// Upper bound for the decoded size (after <see cref="ScaleDenominator"/>) in pixels; larger files are rejected with an
+        /// Upper bound for the decoded size (after <see cref="ScaleDenominator"/> or <see cref="ScaleEighths"/>) in pixels; larger files are rejected with an
         /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit beyond
         /// the format's own (65535 x 65535) and the array size. Lower it when decoding untrusted data with a memory budget.
         /// </summary>
@@ -188,8 +197,9 @@ namespace Aardvark.ImageCodecs
         static JpegDecoder Open(byte* p, ReadOnlySpan<byte> data, JpegDecodeOptions o, bool headerOnly, Func<JpegDecoder, JpegPost.Assembler?>? stream = null)
         {
             if (o.ScaleDenominator is not (1 or 2 or 4 or 8)) throw new ArgumentException("ScaleDenominator must be 1, 2, 4 or 8");
+            if (o.ScaleEighths is < 0 or > 8) throw new ArgumentException("ScaleEighths must be 1..8 (or 0 to use ScaleDenominator)");
             int start = FindStart(data, o);
-            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator, OnStream = stream, MaxPixels = o.MaxPixels, Cancel = o.CancellationToken };
+            var d = new JpegDecoder(p + start, data.Length - start) { ScaleEighths = o.ScaleEighths != 0 ? o.ScaleEighths : 8 / o.ScaleDenominator, OnStream = stream, MaxPixels = o.MaxPixels, Cancel = o.CancellationToken };
             d.Parse(headerOnly);
             return d;
         }

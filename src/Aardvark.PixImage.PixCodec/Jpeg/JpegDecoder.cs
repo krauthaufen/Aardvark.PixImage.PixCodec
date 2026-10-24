@@ -73,7 +73,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
         public int Precision = 8;
         public bool Progressive, Lossless, Arithmetic;
         /// <summary>1, 2, 4 or 8; set before parsing. Ignored by lossless frames.</summary>
-        public int ScaleDenominator = 1;
+        /// <summary>Output size in eighths of the frame size (1..8): the inverse DCT size of the components at full resolution.</summary>
+        public int ScaleEighths = 8;
         public JpegComponent[] Comps = Array.Empty<JpegComponent>();
         public int HMax, VMax;
         int _minS = 8;
@@ -503,7 +504,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             if (_geometry) return;
             _geometry = true;
             int unit = Lossless ? 1 : 8;
-            _minS = Lossless ? 1 : Hierarchical ? 8 : 8 / ScaleDenominator;
+            _minS = Lossless ? 1 : Hierarchical ? 8 : ScaleEighths;
             _mcusX = (Width + unit * HMax - 1) / (unit * HMax);
             _mcusY = (Height + unit * VMax - 1) / (unit * VMax);
             OutWidth = (Width * _minS + unit - 1) / unit;
@@ -514,7 +515,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 // a subsampled component can make up (part of) its deficit by using a larger inverse DCT than the
                 // others instead of being upsampled afterwards; only while that keeps both ratios whole
                 if (!Lossless)
-                    while (s < 8 && HMax * _minS % (c.H * s * 2) == 0 && VMax * _minS % (c.V * s * 2) == 0) s *= 2;
+                    while (s * 2 <= 8 && HMax * _minS % (c.H * s * 2) == 0 && VMax * _minS % (c.V * s * 2) == 0) s *= 2;
                 c.S = s;
                 c.ScanBlocksW = ((Width * c.H + HMax - 1) / HMax + unit - 1) / unit;
                 c.ScanBlocksH = ((Height * c.V + VMax - 1) / VMax + unit - 1) / unit;
