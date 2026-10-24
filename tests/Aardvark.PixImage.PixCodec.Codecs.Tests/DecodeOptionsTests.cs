@@ -169,6 +169,26 @@ public class DecodeOptionsTests
     }
 
     [Fact]
+    public void GenericChannelsAndSampleType()
+    {
+        var src = RawImage.Create(30, 20, ColorModel.Rgb, SampleType.UInt16);
+        var w = src.GetData<ushort>();
+        for (int i = 0; i < w.Length; i++) w[i] = (ushort)(i * 997);
+        var png = Png.Encode(src);
+        var b = ImageCodec.Decode(png, new ImageDecodeOptions { SampleType = SampleType.UInt8, Channels = ImageChannels.Rgba });
+        Assert.Equal((SampleType.UInt8, ColorModel.Rgba), (b.SampleType, b.Color));
+        var d = b.GetData<byte>();
+        for (int i = 0; i < 600; i++)
+        {
+            for (int c = 0; c < 3; c++) Assert.Equal(Math.Round(w[i * 3 + c] / 257.0, MidpointRounding.AwayFromZero), d[i * 4 + c]);
+            Assert.Equal(255, d[i * 4 + 3]);
+        }
+        var info = ImageCodec.GetInfo(png, new ImageDecodeOptions { SampleType = SampleType.UInt8, Channels = ImageChannels.Gray });
+        Assert.Equal((SampleType.UInt8, ColorModel.Gray, 1), (info.SampleType, info.Color, info.Channels));
+        Assert.Equal(ColorModel.Gray, ImageCodec.Decode(png, new ImageDecodeOptions { Channels = ImageChannels.Gray }).Color);
+    }
+
+    [Fact]
     public void EncodersWriteByteArrays()
     {
         var img = Photo(16, 8);

@@ -1,6 +1,6 @@
 namespace Aardvark.ImageCodecs
 {
-    /// <summary>Channel layout of a decoded image.</summary>
+    /// <summary>Channel layout of a decoded image, see <see cref="ImageDecodeOptions.Channels"/>.</summary>
     public enum ImageChannels
     {
         /// <summary>As the format decodes it (Gray, GrayAlpha, Rgb, Rgba or Other).</summary>
