@@ -68,6 +68,12 @@ namespace Aardvark.ImageCodecs
         /// </summary>
         public long MaxPixels { get; set; }
 
+        /// <summary>
+        /// Return Gray and Rgb images as Rgba with an opaque alpha channel (gray expanded), written straight into the
+        /// output while decoding instead of in a second copy. Other layouts (CMYK and YCbCr kept raw) are not affected.
+        /// </summary>
+        public bool Rgba { get; set; }
+
         /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
         public System.Threading.CancellationToken CancellationToken { get; set; }
     }
@@ -279,10 +285,11 @@ namespace Aardvark.ImageCodecs
                 JpegPost.Assembler? Stream(JpegDecoder dd)
                 {
                     streamPlan = Plan(dd, options);
+                    if (options.Rgba && streamPlan.Item2 is ColorModel.Gray or ColorModel.Rgb) streamPlan = (streamPlan.Item1, ColorModel.Rgba, 4);
                     int o = options.ApplyOrientation && dd.HasMetadata ? dd.Metadata.Orientation : 1;
                     streamOrientation = o is >= 2 and <= 8 ? o : 1;
                     streamed = GC.AllocateUninitializedArray<byte>(checked(dd.OutWidth * dd.OutHeight * streamPlan.Item3), pinned: true);
-                    fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation);
+                    fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation, streamPlan.Item3 == 4 && options.Rgba);
                 }
                 var d = Open(p, data, options, headerOnly: false, Stream);
                 if (d.Truncated && !options.AllowTruncated)
@@ -317,8 +324,23 @@ namespace Aardvark.ImageCodecs
                 if (d.Streamed && streamOrientation >= 5) (w, h) = (h, w);
                 if (d.Streamed && streamOrientation > 1) ImageOps.MarkUpright(meta, streamOrientation);
                 var img = new RawImage(w, h, model, pixels, channels, meta);
+                if (options.Rgba && model is ColorModel.Gray or ColorModel.Rgb)
+                    img = img.Data is byte[] ? ToRgba(img, (byte)255) : ToRgba(img, (ushort)((1 << d.Precision) - 1));
                 return options.ApplyOrientation ? ImageOps.ApplyOrientation(img) : img;
             }
+        }
+
+        /// <summary>Rgba of a Gray / Rgb image that was not assembled as such (12 bit and lossless frames); alpha = <paramref name="opaque"/>.</summary>
+        static RawImage ToRgba<T>(RawImage img, T opaque) where T : unmanaged
+        {
+            int n = img.Width * img.Height, c = img.Channels, g = c == 1 ? 0 : 1;
+            var s = (T[])img.Data;
+            var o = GC.AllocateUninitializedArray<T>(n * 4);
+            for (int i = 0; i < n; i++)
+            {
+                o[4 * i] = s[i * c]; o[4 * i + 1] = s[i * c + g]; o[4 * i + 2] = s[i * c + 2 * g]; o[4 * i + 3] = opaque;
+            }
+            return new RawImage(img.Width, img.Height, ColorModel.Rgba, o, 4, img.Metadata);
         }
 
         // ---------------------------------------------------------------- JPEG inside TIFF

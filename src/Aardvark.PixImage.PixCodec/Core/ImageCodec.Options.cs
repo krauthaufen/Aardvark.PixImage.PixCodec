@@ -13,7 +13,9 @@ namespace Aardvark.ImageCodecs
             options.CancellationToken.ThrowIfCancellationRequested();
             var img = ColorTags.Tag(DecodeCore(data, f, options), data, f);
             options.CancellationToken.ThrowIfCancellationRequested();
-            return Finish(img, options);
+            // UInt16 samples of fewer bits (12 bit JPEG, 10 bit DPX) are rescaled from their own range
+            int bits = img.SampleType == SampleType.UInt16 && options.SampleType is { } t && t != SampleType.UInt16 ? HeaderInfo(data).BitsPerSample : 0;
+            return Finish(img, options, bits);
         }
 
         /// <inheritdoc cref="Decode(ReadOnlySpan{byte}, ImageDecodeOptions?)"/>
@@ -27,7 +29,7 @@ namespace Aardvark.ImageCodecs
             if (IsVolumeFormat(f))
             {
                 CheckMaxPixels(GetInfo(path), options.MaxPixels);
-                return Finish(ColorTags.Tag(DecodeVolume(path).GetSlice(0), default, f), options);
+                return Finish(ColorTags.Tag(DecodeVolume(path).GetSlice(0), default, f), options, 0);
             }
             return WithFile(path, d => Decode(d, options));
         }
@@ -84,7 +86,7 @@ namespace Aardvark.ImageCodecs
             switch (f)
             {
                 case ImageFormat.Png: return Png.Decode(data, new PngDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), CancellationToken = ct });
-                case ImageFormat.Jpeg: return Jpeg.Decode(data, new JpegDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), AllowTruncated = o.AllowTruncated, CancellationToken = ct });
+                case ImageFormat.Jpeg: return Jpeg.Decode(data, new JpegDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), AllowTruncated = o.AllowTruncated, CancellationToken = ct, Rgba = o.Channels == ImageChannels.Rgba });
                 case ImageFormat.Tiff: return Tiff.Decode(data, new TiffDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), CancellationToken = ct });
                 case ImageFormat.Webp: return Webp.Decode(data, new WebpDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(new WebpDecodeOptions().MaxPixels) });
                 case ImageFormat.Gif: return Gif.Decode(data, new GifDecodeOptions { MaxPixels = Mp(new GifDecodeOptions().MaxPixels) });
@@ -121,12 +123,26 @@ namespace Aardvark.ImageCodecs
             };
         }
 
-        /// <summary>The channel layout and sample type the options ask for.</summary>
-        static RawImage Finish(RawImage img, ImageDecodeOptions o)
+        /// <summary>The channel layout and sample type the options ask for; <paramref name="bits"/> is the stored precision of UInt16 samples (0 = 16).</summary>
+        static RawImage Finish(RawImage img, ImageDecodeOptions o, int bits)
         {
-            if (o.SampleType is { } t && t != img.SampleType) throw new NotImplementedException("PENDING-MERGE Retype");
-            if (o.Channels != ImageChannels.AsDecoded) throw new NotImplementedException("PENDING-MERGE ConvertChannels");
+            if (o.SampleType is { } t && t != img.SampleType)
+            {
+                if (img.SampleType == SampleType.UInt16 && bits is > 0 and < 16) img = Widen(img, bits);
+                img = ImageOps.Retype(img, t);
+            }
+            if (o.Channels != ImageChannels.AsDecoded) img = ImageOps.ConvertChannels(img, o.Channels);
             return img;
+        }
+
+        /// <summary>UInt16 samples holding <paramref name="bits"/> bit values, stretched to the full 16 bit range.</summary>
+        static RawImage Widen(RawImage img, int bits)
+        {
+            var s = img.GetData<ushort>();
+            var d = GC.AllocateUninitializedArray<ushort>(s.Length);
+            int max = (1 << bits) - 1;
+            for (int i = 0; i < s.Length; i++) d[i] = (ushort)((Math.Min((int)s[i], max) * 65535 + max / 2) / max);
+            return new RawImage(img.Width, img.Height, img.Color, d, img.Channels, img.Metadata);
         }
     }
 }

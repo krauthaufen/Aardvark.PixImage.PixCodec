@@ -49,6 +49,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
             readonly byte[]? _tmpArr, _rowArr;
             readonly byte* _tmp, _row;
             readonly int _orientation;
+            /// <summary>Gray / RGB rows are expanded to RGBA with opaque alpha (from <see cref="_conv"/>, holding _convChannels).</summary>
+            readonly bool _rgba;
+            readonly int _convChannels;
+            readonly byte[]? _convArr;
+            readonly byte* _conv;
             int _y;
 
             /// <summary>
@@ -56,7 +61,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             /// <paramref name="output"/> in color handling <paramref name="cs"/>. With an EXIF <paramref name="orientation"/>
             /// 2..8 rows go where they belong in the upright image (h x w for 5..8), as <see cref="ImageOps.ApplyOrientation"/> turns them.
             /// </summary>
-            public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1)
+            public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1, bool rgba = false)
             {
                 _d = d; _out = output; _w = w; _h = h; _cs = cs; _orientation = orientation;
                 int nc = d.Comps.Length;
@@ -75,6 +80,14 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     fixed (byte* t = _tmpArr) _tmp = t;
                 }
                 _outChannels = cs == JpegColorSpace.Gray ? 1 : cs is JpegColorSpace.Raw or JpegColorSpace.Rgb ? nc : cs == JpegColorSpace.YcckToCmyk ? 4 : 3;
+                if (rgba && _outChannels is 1 or 3)
+                {
+                    _rgba = true;
+                    _convChannels = _outChannels;
+                    _outChannels = 4;
+                    _convArr = GC.AllocateUninitializedArray<byte>(w * 3 + 64, pinned: true);
+                    fixed (byte* t = _convArr) _conv = t;
+                }
                 if (orientation > 1)
                 {
                     _rowArr = GC.AllocateUninitializedArray<byte>(w * _outChannels + 64, pinned: true);
@@ -165,7 +178,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 int nc = ups.Length, w = _w;
                 byte** lines = stackalloc byte*[4];
                 for (int i = 0; i < nc; i++) lines[i] = GetLine(ups[i], y, w, ups[i].Line, ups[i].Sum);
-                byte* dst = _orientation > 1 ? _row : _out + (nint)y * w * _outChannels;
+                byte* final = _orientation > 1 ? _row : _out + (nint)y * w * _outChannels;
+                byte* dst = _rgba ? _conv : final;
                 byte* tmp = _tmp;
                 {
                     switch (_cs)
@@ -203,8 +217,17 @@ namespace Aardvark.ImageCodecs.JpegImpl
                             break;
                     }
                 }
+                if (_rgba) ExpandToRgba(_conv, _convChannels, final, w);
                 if (_orientation > 1) Place(y);
             }
+        }
+
+        static void ExpandToRgba(byte* src, int channels, byte* dst, int w)
+        {
+            if (channels == 1)
+                for (int x = 0; x < w; x++) ((uint*)dst)[x] = src[x] * 0x010101u | 0xFF000000u;
+            else
+                for (int x = 0; x < w; x++, src += 3) ((uint*)dst)[x] = src[0] | (uint)src[1] << 8 | (uint)src[2] << 16 | 0xFF000000u;
         }
 
         /// <summary>The last component sample row that output row <paramref name="y"/> reads.</summary>

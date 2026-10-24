@@ -131,6 +131,43 @@ public class DecodeOptionsTests
         Assert.Equal(jpeg, Jpeg.Encode(img, new JpegEncodeOptions { CancellationToken = live }));
     }
 
+    [Theory]
+    [InlineData(1, 1, false)]
+    [InlineData(3, 1, false)]
+    [InlineData(3, 6, false)]
+    [InlineData(3, 3, true)]
+    [InlineData(1, 8, true)]
+    public void JpegDecodesStraightToRgba(int channels, int orientation, bool progressive)
+    {
+        var src = Photo(70, 45, channels);
+        src.Metadata = new ImageMetadata { Orientation = orientation };
+        var data = Jpeg.Encode(src, new JpegEncodeOptions { Progressive = progressive });
+        var plain = Jpeg.Decode(data);
+        var rgba = Jpeg.Decode(data, new JpegDecodeOptions { Rgba = true });
+        Assert.Equal((ColorModel.Rgba, 4, plain.Width, plain.Height), (rgba.Color, rgba.Channels, rgba.Width, rgba.Height));
+        var p = plain.GetData<byte>(); var q = rgba.GetData<byte>();
+        for (int i = 0; i < plain.Width * plain.Height; i++)
+        {
+            for (int c = 0; c < 3; c++) Assert.Equal(p[i * channels + (channels == 1 ? 0 : c)], q[i * 4 + c]);
+            Assert.Equal(255, q[i * 4 + 3]);
+        }
+        Assert.Equal(q, ImageCodec.Decode(data, new ImageDecodeOptions { Channels = ImageChannels.Rgba }).GetData<byte>());
+        // 12 bit samples: alpha is the precision's maximum
+        var deep = new RawImage(20, 10, ColorModel.Rgb, Array.ConvertAll(Photo(20, 10, 3).GetData<byte>(), v => (ushort)(v * 16)));
+        var d = Jpeg.Decode(Jpeg.Encode(deep, new JpegEncodeOptions { Precision = 12 }), new JpegDecodeOptions { Rgba = true });
+        Assert.Equal(4095, d.GetData<ushort>()[3]);
+    }
+
+    [Fact]
+    public void TwelveBitJpegTo8BitUsesItsOwnRange()
+    {
+        var deep = new RawImage(20, 10, ColorModel.Gray, Enumerable.Repeat((ushort)4095, 200).ToArray());
+        var data = Jpeg.Encode(deep, new JpegEncodeOptions { Precision = 12, Quality = 100 });
+        var b = ImageCodec.Decode(data, new ImageDecodeOptions { SampleType = SampleType.UInt8 });
+        Assert.Equal(SampleType.UInt8, b.SampleType);
+        Assert.All(b.GetData<byte>(), v => Assert.InRange(v, 254, 255));
+    }
+
     [Fact]
     public void EncodersWriteByteArrays()
     {

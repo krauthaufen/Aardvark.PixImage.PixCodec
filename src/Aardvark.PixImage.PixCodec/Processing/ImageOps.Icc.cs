@@ -161,7 +161,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>The same samples in another type (rescaled between integer ranges, rounded and clamped).</summary>
-        static RawImage Retype(RawImage image, SampleType type)
+        internal static RawImage Retype(RawImage image, SampleType type)
         {
             int n = image.Data.Length;
             double inMax = Processing.Samples.MaxValue(image.SampleType), outMax = Processing.Samples.MaxValue(type);
