@@ -376,13 +376,18 @@ namespace Aardvark.ImageCodecs
         static int Divide(int a, int q)
             => a < 1 << 22 && (uint)q < 1024u ? (int)((ulong)a * Recip[q] >> 32) : a / q;
 
-        static int Quantize(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
+        internal static int Quantize(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
         {
             if (Vector128.IsHardwareAccelerated)
             {
                 int res = QuantizeSimd(coefs, levels, dq, dcq, acq, first);
                 if (res >= 0) return res;
             }
+            return QuantizeScalar(coefs, levels, dq, dcq, acq, first);
+        }
+
+        internal static int QuantizeScalar(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
+        {
             var zigzag = Vp8Tables.Zigzag;
             int last = 0;
             if (first == 1) { levels[0] = 0; dq[0] = 0; }
@@ -412,7 +417,7 @@ namespace Aardvark.ImageCodecs
         /// single precision: below 2^24 its rounding error stays below the distance from a / q to the next integer, so
         /// the truncation is exact. Returns -1 (nothing written) for coefficients beyond that, which do not occur.
         /// </summary>
-        static int QuantizeSimd(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
+        internal static int QuantizeSimd(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
         {
             var c0 = Vector128.Load(coefs); var c1 = Vector128.Load(coefs + 4);
             var c2 = Vector128.Load(coefs + 8); var c3 = Vector128.Load(coefs + 12);
@@ -576,7 +581,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>Cost (1/256 bit) of the tokens of one block of the given type; mirrors <see cref="RecordCoeffs"/>.</summary>
-        static int CoeffCost(int type, int ctx, short* levels, int first, int last)
+        internal static int CoeffCost(int type, int ctx, short* levels, int first, int last)
         {
             var bands = Vp8Tables.Bands;
             ref ushort lc = ref LevelCost[0];
