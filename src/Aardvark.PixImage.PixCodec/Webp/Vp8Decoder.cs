@@ -286,7 +286,10 @@ namespace Aardvark.ImageCodecs
         // filter strength per segment and "uses 4x4 prediction": limit (0 = off), interior limit, hev threshold
         readonly int[] _fLimit = new int[8], _fInner = new int[8], _fHev = new int[8];
 
-        public static Vp8Frame Decode(ReadOnlySpan<byte> data, long maxPixels, bool threaded = false)
+        /// <summary>Checked per macroblock row on the calling thread.</summary>
+        System.Threading.CancellationToken _cancel;
+
+        public static Vp8Frame Decode(ReadOnlySpan<byte> data, long maxPixels, bool threaded = false, System.Threading.CancellationToken cancel = default)
         {
             if (!TryReadHeader(data, out int w, out int h)) throw Bad("frame header");
             if ((long)w * h > maxPixels)
@@ -295,6 +298,7 @@ namespace Aardvark.ImageCodecs
             var dec = t_cached ?? new Vp8Decoder();
             t_cached = null;
             dec.Reset();
+            dec._cancel = cancel;
             Vp8Frame frame;
             fixed (byte* p = data) frame = dec.DecodeFrame(p, data.Length, w, h, threaded);
             t_cached = dec;
@@ -366,6 +370,7 @@ namespace Aardvark.ImageCodecs
                 else Array.Clear(row.Coeffs);
                 for (int y = 0; y < _mbH; y++)
                 {
+                    _cancel.ThrowIfCancellationRequested();
                     ParseRow(row, y);
                     ReconstructRow(row, y, frame, true);
                 }
@@ -550,6 +555,7 @@ namespace Aardvark.ImageCodecs
             {
                 for (int y = 0; y < _mbH; y++)
                 {
+                    _cancel.ThrowIfCancellationRequested();
                     var row = parsed.Take();
                     ReconstructRow(row, y, frame, !filter);
                     if (filter) rebuilt.Add((row, y));

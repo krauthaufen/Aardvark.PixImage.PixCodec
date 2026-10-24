@@ -125,6 +125,12 @@ public class DecodeOptionsTests
         Assert.ThrowsAny<OperationCanceledException>(() => Jpeg.Encode(img, new JpegEncodeOptions { CancellationToken = t, OptimizeHuffman = false }));
         Assert.ThrowsAny<OperationCanceledException>(() => Png.Encode(img, new PngEncodeOptions { CancellationToken = t }));
         Assert.ThrowsAny<OperationCanceledException>(() => Tiff.Encode(img, new TiffEncodeOptions { CancellationToken = t, RowsPerStrip = 16 }));
+        var webp = Webp.Encode(img, new WebpEncodeOptions { Quality = 80 });
+        Assert.ThrowsAny<OperationCanceledException>(() => Webp.Decode(webp, new WebpDecodeOptions { CancellationToken = t }));
+        Assert.ThrowsAny<OperationCanceledException>(() => Webp.Decode(Webp.Encode(img, new WebpEncodeOptions { Lossless = true }), new WebpDecodeOptions { CancellationToken = t }));
+        Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, new WebpEncodeOptions { CancellationToken = t }));
+        Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, new WebpEncodeOptions { CancellationToken = t, Lossless = true }));
+        Assert.ThrowsAny<OperationCanceledException>(() => ImageCodec.Decode(webp, new ImageDecodeOptions { CancellationToken = t }));
         // a token that is not cancelled changes nothing
         var live = new CancellationTokenSource().Token;
         Assert.Equal(Jpeg.Decode(jpeg).GetData<byte>(), Jpeg.Decode(jpeg, new JpegDecodeOptions { CancellationToken = live }).GetData<byte>());
@@ -196,6 +202,7 @@ public class DecodeOptionsTests
         Assert.Equal(16, Tiff.Decode(Tiff.Encode(img)).Width);
         Assert.Equal(16, Gif.Decode(Gif.Encode(img)).Width);
         Assert.Equal(16, Exr.Decode(Exr.Encode(AsFloat(img))).Width);
+        Assert.Equal(16, Webp.Decode(Webp.Encode(img)).Width);
     }
 
     [Fact]

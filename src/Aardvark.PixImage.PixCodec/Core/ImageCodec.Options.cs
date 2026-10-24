@@ -120,7 +120,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Png: return Png.Decode(data, new PngDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), CancellationToken = ct });
                 case ImageFormat.Jpeg: return Jpeg.Decode(data, new JpegDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), AllowTruncated = o.AllowTruncated, CancellationToken = ct, Rgba = o.Channels == ImageChannels.Rgba });
                 case ImageFormat.Tiff: return Tiff.Decode(data, new TiffDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(0), CancellationToken = ct });
-                case ImageFormat.Webp: return Webp.Decode(data, new WebpDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(new WebpDecodeOptions().MaxPixels) });
+                case ImageFormat.Webp: return Webp.Decode(data, new WebpDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(new WebpDecodeOptions().MaxPixels), CancellationToken = ct });
                 case ImageFormat.Gif: return Gif.Decode(data, new GifDecodeOptions { MaxPixels = Mp(new GifDecodeOptions().MaxPixels) });
                 case ImageFormat.Jp2: return Jp2.Decode(data, new Jp2DecodeOptions { ApplyOrientation = up, MaxPixels = Mp(new Jp2DecodeOptions().MaxPixels), AllowTruncated = o.AllowTruncated });
                 case ImageFormat.Bmp: return Bmp.Decode(data, new BmpDecodeOptions { MaxPixels = Mp(new BmpDecodeOptions().MaxPixels) });

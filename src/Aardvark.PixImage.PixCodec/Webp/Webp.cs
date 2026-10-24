@@ -45,6 +45,12 @@ namespace Aardvark.ImageCodecs
 
     public sealed class WebpDecodeOptions
     {
+        /// <summary>
+        /// Stops the decode with an <see cref="OperationCanceledException"/>: checked per macroblock row for lossy data,
+        /// before and after each lossless bitstream.
+        /// </summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Content of the frames returned by the animation API. <see cref="Webp.Decode"/> ignores it.</summary>
         public WebpFrameMode FrameMode { get; set; } = WebpFrameMode.Composited;
 
@@ -83,6 +89,12 @@ namespace Aardvark.ImageCodecs
 
     public sealed class WebpEncodeOptions
     {
+        /// <summary>
+        /// Stops the encode with an <see cref="OperationCanceledException"/>: checked per macroblock row for lossy data,
+        /// before and after each lossless bitstream.
+        /// </summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Quality 0..100 for lossy output.</summary>
         public int Quality { get; set; } = 75;
         /// <summary>Write lossless (VP8L) instead of lossy (VP8).</summary>
@@ -325,6 +337,14 @@ namespace Aardvark.ImageCodecs
             ArgumentNullException.ThrowIfNull(image);
             ArgumentNullException.ThrowIfNull(output);
             WebpEncoder.EncodeStill(image, output, options ?? new WebpEncodeOptions());
+        }
+
+        /// <summary>Encodes an image as WebP into a byte array.</summary>
+        public static byte[] Encode(RawImage image, WebpEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
         }
 
         /// <summary>

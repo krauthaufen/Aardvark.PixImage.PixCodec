@@ -743,6 +743,7 @@ namespace Aardvark.ImageCodecs
                 int ys = _src.YStride, uvs = _src.UVStride;
                 for (int mby = 0; mby < mbH; mby++)
                 {
+                    _opt.CancellationToken.ThrowIfCancellationRequested();
                     var tb = parts[mby & (numParts - 1)];
                     new Span<byte>(leftModes, 4).Clear();
                     new Span<byte>(leftNz, 9).Clear();

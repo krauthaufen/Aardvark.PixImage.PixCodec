@@ -52,7 +52,9 @@ namespace Aardvark.ImageCodecs
                 if (!opt.Exact && hasAlpha)
                     for (int i = 0; i < argb.Length; i++) if (argb[i] >> 24 == 0) argb[i] = 0;
                 if (opt.NearLossless < 100) argb = NearLossless(argb, w, h, 5 - Math.Clamp(opt.NearLossless, 0, 99) / 20);
+                opt.CancellationToken.ThrowIfCancellationRequested();
                 chunks.Add(("VP8L", Vp8lEncoder.Encode(argb, w, h, hasAlpha, opt.Method)));
+                opt.CancellationToken.ThrowIfCancellationRequested();
             }
             else
             {
