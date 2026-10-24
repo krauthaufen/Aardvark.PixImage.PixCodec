@@ -150,6 +150,23 @@ public class AllocationTests
         AssertSmallEncode(img, s => ImageCodecs.Tiff.Encode(img, s, new TiffEncodeOptions { Parallel = false }));
     }
 
+    // resizing keeps a ring of filtered rows per worker (pooled), the box filter at power of two factors only integer rows:
+    // no workspace that grows with the image height
+    [Theory]
+    [InlineData("lanczos3", 4, 1024, 384)]
+    [InlineData("lanczos3", 3, 2048, 1536)]
+    [InlineData("box", 4, 512, 384)]
+    [InlineData("box", 3, 512, 192)]
+    [InlineData("bilinear", 4, 300, 700)]
+    public void Resize(string filter, int channels, int width, int height)
+    {
+        var f = filter switch { "box" => ResampleFilter.Box, "bilinear" => ResampleFilter.Bilinear, _ => ResampleFilter.Lanczos3 };
+        var img = Photo(channels);
+        var o = new ResizeOptions { Filter = f, MaxDegreeOfParallelism = 1 };
+        AssertAboutOutput(() => ImageOps.Resize(img, width, height, o), 1.2);
+        AssertAboutOutput(() => ImageOps.Downsample(img, 2, 4, alphaWeighted: true), 1.2);
+    }
+
     // a MemoryStream is decoded from its own buffer, from the current position on
     [Fact]
     public void StreamFromMemoryStreamPosition()

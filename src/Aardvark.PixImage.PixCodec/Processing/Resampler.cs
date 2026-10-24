@@ -1,7 +1,9 @@
 using System;
+using System.Buffers;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Aardvark.ImageCodecs.Processing
@@ -78,6 +80,26 @@ namespace Aardvark.ImageCodecs.Processing
             return new AxisWeights(start, count, w, maxTaps);
         }
 
+        /// <summary>
+        /// Blocks of <paramref name="factor"/> source pixels with equal weights, the last one shorter when the size is no
+        /// multiple: ceil(srcN / factor) destination pixels.
+        /// </summary>
+        public static AxisWeights Blocks(int srcN, int factor)
+        {
+            // (as many taps as Compute has for the box filter: a resize by factor 1 takes the same path)
+            int dstN = (srcN - 1) / factor + 1, taps = (int)Math.Min(srcN, factor + 2L);
+            var start = new int[dstN];
+            var count = new int[dstN];
+            var w = new double[dstN * taps];
+            for (int j = 0; j < dstN; j++)
+            {
+                start[j] = j * factor;
+                count[j] = Math.Min(factor, srcN - start[j]);
+                for (int k = 0; k < count[j]; k++) w[j * taps + k] = 1.0 / count[j];
+            }
+            return new AxisWeights(start, count, w, taps);
+        }
+
         public TF[] Typed<TF>() where TF : unmanaged, IFloatingPointIeee754<TF>
         {
             var r = new TF[Weights.Length];
@@ -101,14 +123,26 @@ namespace Aardvark.ImageCodecs.Processing
     internal static class Resampler
     {
         public static RawImage Resize(RawImage src, int width, int height, ResizeOptions o)
+            => Resize(src, AxisWeights.Compute(src.Width, width, o.Filter), AxisWeights.Compute(src.Height, height, o.Filter), o);
+
+        public static RawImage Resize(RawImage src, AxisWeights ax, AxisWeights ay, ResizeOptions o)
         {
-            var ax = AxisWeights.Compute(src.Width, width, o.Filter);
-            var ay = AxisWeights.Compute(src.Height, height, o.Filter);
+            int width = ax.Start.Length, height = ay.Start.Length;
+            var ct = o.CancellationToken;
+            ct.ThrowIfCancellationRequested();
             var dst = RawImage.Create(width, height, src.Color, src.SampleType, src.Channels);
             int alpha = o.AlphaChannel ?? (src.HasAlpha ? src.Channels - 1 : -1);
             if (alpha >= src.Channels) throw new ArgumentOutOfRangeException(nameof(o.AlphaChannel));
             var job = new Job(src.Width, src.Height, src.Channels, width, height, ax, ay, o.PremultiplyAlpha ? alpha : -1, alpha,
-                o.LinearLight, o.MaxDegreeOfParallelism);
+                o.LinearLight, o.MaxDegreeOfParallelism, ct);
+            // the box filter at power of two factors: integer block sums that reproduce the float path's result
+            if (src.SampleType is SampleType.UInt8 or SampleType.UInt16 && !o.LinearLight && !o.FloatPathOnly && !o.Filter.IsNearest
+                && IntegerBox.Applies(job, src.SampleType))
+            {
+                if (src.SampleType == SampleType.UInt8) IntegerBox.Run(job, (byte[])src.Data, (byte[])dst.Data);
+                else IntegerBox.Run(job, (ushort[])src.Data, (ushort[])dst.Data);
+                return dst;
+            }
             switch (src.SampleType)
             {
                 // by SampleType, not by array pattern: sbyte[] also matches `byte[]` (CLR array covariance)
@@ -129,7 +163,7 @@ namespace Aardvark.ImageCodecs.Processing
         }
 
         internal sealed record Job(int SW, int SH, int NC, int DW, int DH, AxisWeights AX, AxisWeights AY,
-            int PremulAlpha, int Alpha, bool Linear, int MaxParallel);
+            int PremulAlpha, int Alpha, bool Linear, int MaxParallel, CancellationToken Cancel);
 
         static void Run<TS, TF>(Job j, TS[] src, TS[] dst)
             where TS : unmanaged, INumberBase<TS> where TF : unmanaged, IFloatingPointIeee754<TF>
@@ -138,14 +172,16 @@ namespace Aardvark.ImageCodecs.Processing
             if (j.AX.Count[0] == 1 && j.AX.MaxTaps == 1 && j.AY.MaxTaps == 1)
             {
                 // nearest neighbour: plain copies, exact for every type
-                Parallel.For(0, j.DH, Par(j.MaxParallel), y =>
+                Parallel.For(0, j.DH, Par(j.MaxParallel, j.Cancel), (y, state) =>
                 {
+                    if (j.Cancel.IsCancellationRequested) { state.Stop(); return; }
                     int sy = j.AY.Start[y];
                     var srow = src.AsSpan(sy * j.SW * nc, j.SW * nc);
                     var drow = dst.AsSpan(y * j.DW * nc, j.DW * nc);
                     for (int x = 0; x < j.DW; x++)
                         srow.Slice(j.AX.Start[x] * nc, nc).CopyTo(drow.Slice(x * nc, nc));
                 });
+                j.Cancel.ThrowIfCancellationRequested();
                 return;
             }
 
@@ -165,48 +201,82 @@ namespace Aardvark.ImageCodecs.Processing
                 }
             }
             bool skipH = j.AX.IsIdentity;
+            bool simdH = typeof(TF) == typeof(float) && (nc == 3 || nc == 4) && Vector128.IsHardwareAccelerated;
+            int rowLen = j.DW * nc, srcLen = j.SW * nc;
+            // (+4: the SIMD paths for 3 channels read and write one sample past a pixel)
+            int stride = rowLen + 4;
+            int ringRows = 1;
+            for (int y = 0; y < j.DH; y++) ringRows = Math.Max(ringRows, j.AY.Count[y]);
 
-            // bands of output rows; each band filters the source rows it needs horizontally, then vertically
+            // bands of output rows. Every worker keeps a ring of the most recent horizontally filtered source rows (source row r
+            // in slot r % ringRows), enough for the taps of one output row, so the workspace does not grow with the image
             int procs = j.MaxParallel > 0 ? j.MaxParallel : Environment.ProcessorCount;
             int bandRows = Math.Max(16, (j.DH + procs * 2 - 1) / (procs * 2));
             int bands = (j.DH + bandRows - 1) / bandRows;
-            Parallel.For(0, bands, Par(j.MaxParallel), band =>
+            var ct = j.Cancel;
+            Parallel.For(0, bands, Par(j.MaxParallel, ct), () => new Ring<TF>(ringRows, stride, srcLen + 4, rowLen), (band, _, ring) =>
             {
                 int y0 = band * bandRows, y1 = Math.Min(j.DH, y0 + bandRows);
-                int r0 = int.MaxValue, r1 = 0;
+                var buf = ring.Rows;
                 for (int y = y0; y < y1; y++)
                 {
-                    r0 = Math.Min(r0, j.AY.Start[y]);
-                    r1 = Math.Max(r1, j.AY.Start[y] + j.AY.Count[y]);
-                }
-                int rowLen = j.DW * nc;
-                // (+4: the SIMD paths for 3 channels read and write one sample past a pixel)
-                var tmp = new TF[(r1 - r0) * rowLen + 4];
-                var line = new TF[j.SW * nc + 4];
-                for (int r = r0; r < r1; r++)
-                {
-                    LoadRow<TS, TF>(src.AsSpan(r * j.SW * nc, j.SW * nc), line, nc, j.PremulAlpha, j.Alpha, decode);
-                    var outRow = tmp.AsSpan((r - r0) * rowLen, rowLen);
-                    if (skipH) line.AsSpan(0, rowLen).CopyTo(outRow);
-                    else if (typeof(TF) == typeof(float) && (nc == 3 || nc == 4) && Vector128.IsHardwareAccelerated)
-                        HorizontalSimd((float[])(object)line, (float[])(object)tmp, (r - r0) * rowLen, nc, j.AX, (float[])(object)wx, j.DW);
-                    else Horizontal(line, outRow, nc, j.AX, wx);
-                }
-                var acc = new TF[rowLen];
-                for (int y = y0; y < y1; y++)
-                {
+                    if (ct.IsCancellationRequested) break;
                     int s = j.AY.Start[y], n = j.AY.Count[y], wp = y * j.AY.MaxTaps;
-                    var a = acc.AsSpan();
-                    Scale(tmp.AsSpan((s - r0) * rowLen, rowLen), wy[wp], a);
-                    for (int k = 1; k < n; k++) MulAdd(tmp.AsSpan((s + k - r0) * rowLen, rowLen), wy[wp + k], a);
+                    for (int r = s; r < s + n; r++)
+                    {
+                        int slot = r % ringRows;
+                        if (ring.Tags[slot] == r) continue;
+                        ring.Tags[slot] = r;
+                        var srow = src.AsSpan(r * srcLen, srcLen);
+                        var outRow = buf.AsSpan(slot * stride, rowLen);
+                        if (skipH) LoadRow<TS, TF>(srow, outRow, nc, j.PremulAlpha, j.Alpha, decode);
+                        else
+                        {
+                            LoadRow<TS, TF>(srow, ring.Line, nc, j.PremulAlpha, j.Alpha, decode);
+                            if (simdH) HorizontalSimd((float[])(object)ring.Line, (float[])(object)buf, slot * stride, nc, j.AX, (float[])(object)wx, j.DW);
+                            else Horizontal<TF>(ring.Line.AsSpan(0, srcLen + 4), outRow, nc, j.AX, wx);
+                        }
+                    }
+                    var a = ring.Acc.AsSpan(0, rowLen);
+                    Scale<TF>(buf.AsSpan(s % ringRows * stride, rowLen), wy[wp], a);
+                    for (int k = 1; k < n; k++) MulAdd<TF>(buf.AsSpan((s + k) % ringRows * stride, rowLen), wy[wp + k], a);
                     StoreRow(a, dst.AsSpan(y * rowLen, rowLen), nc, j.PremulAlpha, j.Alpha, decode != null, encode8);
                 }
-            });
+                return ring;
+            }, ring => ring.Return());
+            ct.ThrowIfCancellationRequested();
+        }
+
+        /// <summary>
+        /// A worker's workspace: the ring of horizontally filtered rows with the source row each slot holds, a source line and
+        /// the vertical accumulator, all from the shared array pool (rented arrays can be longer and hold old data).
+        /// </summary>
+        sealed class Ring<TF> where TF : unmanaged
+        {
+            public readonly TF[] Rows, Line, Acc;
+            public readonly int[] Tags;
+
+            public Ring(int rows, int stride, int lineLen, int rowLen)
+            {
+                Rows = ArrayPool<TF>.Shared.Rent(rows * stride);
+                Line = ArrayPool<TF>.Shared.Rent(lineLen);
+                Acc = ArrayPool<TF>.Shared.Rent(rowLen);
+                Tags = new int[rows];
+                Tags.AsSpan().Fill(-1);
+            }
+
+            public void Return()
+            {
+                ArrayPool<TF>.Shared.Return(Rows);
+                ArrayPool<TF>.Shared.Return(Line);
+                ArrayPool<TF>.Shared.Return(Acc);
+            }
         }
 
         const int EncodeTableSize = 1 << 16;
 
-        internal static ParallelOptions Par(int max) => new ParallelOptions { MaxDegreeOfParallelism = max > 0 ? max : -1 };
+        internal static ParallelOptions Par(int max, CancellationToken ct = default)
+            => new ParallelOptions { MaxDegreeOfParallelism = max > 0 ? max : -1, CancellationToken = ct };
 
         static void LoadRow<TS, TF>(ReadOnlySpan<TS> src, Span<TF> dst, int nc, int premul, int alpha, TF[]? decode)
             where TS : unmanaged, INumberBase<TS> where TF : unmanaged, IFloatingPointIeee754<TF>

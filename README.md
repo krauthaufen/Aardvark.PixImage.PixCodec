@@ -413,6 +413,13 @@ var w     = ImageOps.WarpPerspective(img, 800, 600, homography, new WarpOptions 
 - Resizing is separable and widens the filter when downscaling (no aliasing), with pixel areas aligned
   (the same conventions as Pillow, whose float results it reproduces). Alpha is premultiplied while filtering;
   `LinearLight` filters 8 and 16 bit sRGB in linear light. Integer results are rounded and clamped, float results are not.
+- The workspace is a small ring of filtered rows per thread, independent of the image size. The box filter at power of two
+  factors on 8 and 16 bit samples sums in integers, with the same bytes as the float path. `ResizeOptions.CancellationToken`
+  cancels between rows.
+- `Downsample(img, 2)` (or `Downsample(img, fx, fy, alphaWeighted: true)`) averages factor x factor blocks; the size is
+  rounded up, the last blocks are cut. At multiples it equals `Resize` with `Box`.
+- Samples and channels: `Retype` (UInt8 / UInt16 / Float16 / Float32 / Float64, rescaled and rounded), `ConvertChannels`
+  (gray, gray + alpha, RGB, RGBA; Rec. 601 luma for gray), `Premultiply` / `Unpremultiply`.
 - Lossless: `Crop`, `FlipHorizontal`, `FlipVertical`, `Rotate90`, `Rotate180`, `Rotate270`, `Transpose`, `Transverse`,
   `ApplyOrientation`.
 - Warps (`Rotate`, `WarpAffine`, `WarpPerspective`, `Remap`) interpolate with any filter and border mode

@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace Aardvark.ImageCodecs
 {
@@ -153,6 +154,14 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>Upper bound on the number of threads, &lt;= 0 for all cores.</summary>
         public int MaxDegreeOfParallelism { get; set; }
+
+        /// <summary>
+        /// Cancels the resize: checked before every output row, a cancelled resize throws <see cref="OperationCanceledException"/>.
+        /// </summary>
+        public CancellationToken CancellationToken { get; set; }
+
+        /// <summary>Tests: no integer box path, always the float one.</summary>
+        internal bool FloatPathOnly { get; set; }
     }
 
     /// <summary>Options for the warping operations (<see cref="ImageOps.Rotate"/>, <see cref="ImageOps.WarpAffine"/>,
