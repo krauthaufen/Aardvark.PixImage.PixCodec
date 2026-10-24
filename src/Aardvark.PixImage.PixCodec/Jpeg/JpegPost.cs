@@ -57,6 +57,14 @@ namespace Aardvark.ImageCodecs.JpegImpl
             int _y;
 
             /// <summary>
+            /// Band mode: the output holds <see cref="BandRows"/> rows, and <see cref="OnBand"/> (first row, row count) is
+            /// called whenever they are full and after the last row. Only without orientation.
+            /// </summary>
+            public int BandRows;
+            public Action<int, int>? OnBand;
+            int _bandStart;
+
+            /// <summary>
             /// Writes the top left <paramref name="w"/> x <paramref name="h"/> pixels of <paramref name="d"/> to
             /// <paramref name="output"/> in color handling <paramref name="cs"/>. With an EXIF <paramref name="orientation"/>
             /// 2..8 rows go where they belong in the upright image (h x w for 5..8), as <see cref="ImageOps.ApplyOrientation"/> turns them.
@@ -136,6 +144,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
                         if (units != int.MaxValue && LastRow(c, _y) >= Math.Min((long)units * c.UnitRows, c.SampledH)) return;
                     }
                     Emit(_y++);
+                    if (BandRows > 0 && (_y - _bandStart == BandRows || _y == _h))
+                    {
+                        OnBand!(_bandStart, _y - _bandStart);
+                        _bandStart = _y;
+                    }
                 }
                 if (units == int.MaxValue) Release();
             }
@@ -178,7 +191,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 int nc = ups.Length, w = _w;
                 byte** lines = stackalloc byte*[4];
                 for (int i = 0; i < nc; i++) lines[i] = GetLine(ups[i], y, w, ups[i].Line, ups[i].Sum);
-                byte* final = _orientation > 1 ? _row : _out + (nint)y * w * _outChannels;
+                byte* final = _orientation > 1 ? _row : _out + (nint)(BandRows > 0 ? y - _bandStart : y) * w * _outChannels;
                 byte* dst = _rgba ? _conv : final;
                 byte* tmp = _tmp;
                 {

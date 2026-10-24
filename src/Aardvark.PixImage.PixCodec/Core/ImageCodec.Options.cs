@@ -35,6 +35,38 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>
+        /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom: JPEG (8 bit) and PNG (non-interlaced) without
+        /// ever holding the whole image (see <see cref="Jpeg.DecodeBands"/>, <see cref="Png.DecodeBands"/>), every other format
+        /// decoded whole and then cut. <paramref name="onBand"/> gets each band and the index of its first row; the band image
+        /// may be reused for the next band, so copy what has to outlive the call. The pixels are as stored: the orientation is
+        /// not applied, whatever <see cref="ImageDecodeOptions.ApplyOrientation"/> says. The other options apply. Returns the
+        /// image's metadata.
+        /// </summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, ImageDecodeOptions? options = null)
+        {
+            ImageBands.CheckArguments(bandHeight, onBand);
+            var o = options ?? ImageDecodeOptions.Default;
+            var f = DetectFormat(data);
+            int bits = o.SampleType is { } t && t != SampleType.UInt16 ? HeaderInfo(data).BitsPerSample : 0;
+            Action<RawImage, int> cb = o.SampleType == null && o.Channels == ImageChannels.AsDecoded ? onBand : (b, y) => onBand(Finish(b, o, bits), y);
+            var ct = o.CancellationToken;
+            switch (f)
+            {
+                case ImageFormat.Jpeg:
+                    return Jpeg.DecodeBands(data, bandHeight, cb, new JpegDecodeOptions
+                    {
+                        MaxPixels = o.MaxPixels, AllowTruncated = o.AllowTruncated, CancellationToken = ct, Rgba = o.Channels == ImageChannels.Rgba,
+                    });
+                case ImageFormat.Png:
+                    return Png.DecodeBands(data, bandHeight, cb, new PngDecodeOptions { MaxPixels = o.MaxPixels, CancellationToken = ct });
+            }
+            var stored = new ImageDecodeOptions { ApplyOrientation = false, MaxPixels = o.MaxPixels, AllowTruncated = o.AllowTruncated, CancellationToken = ct };
+            var img = ColorTags.Tag(DecodeCore(data, f, stored), data, f);
+            ImageBands.Slice(img, bandHeight, cb);
+            return img.Metadata;
+        }
+
+        /// <summary>
         /// <see cref="GetInfo(ReadOnlySpan{byte})"/> for a decode with these options: with <see cref="ImageDecodeOptions.ApplyOrientation"/>
         /// off it describes the stored pixels; the requested channels and sample type are reflected.
         /// </summary>

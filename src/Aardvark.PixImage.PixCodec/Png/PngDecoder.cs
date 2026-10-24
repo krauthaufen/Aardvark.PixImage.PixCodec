@@ -72,6 +72,17 @@ namespace Aardvark.ImageCodecs
 
         // ------------------------------------------------------------------ decode
 
+        /// <summary>See Png.DecodeBands.</summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, PngDecodeOptions options)
+        {
+            var s = PngChunks.Parse(data, options, PngChunks.ParseFlags.None);
+            var image = DecodeImage(data, s, null, options, bandHeight, onBand);
+            if (image == null) return s.Meta;
+            image.Metadata = s.Meta;
+            ImageBands.Slice(image, bandHeight, onBand);
+            return s.Meta;
+        }
+
         public static RawImage Decode(ReadOnlySpan<byte> data, PngDecodeOptions options)
         {
             var s = PngChunks.Parse(data, options, PngChunks.ParseFlags.None);
@@ -92,6 +103,13 @@ namespace Aardvark.ImageCodecs
         }
 
         public static RawImage DecodeImage(ReadOnlySpan<byte> data, PngStructure s, PngFrameEntry? frame, PngDecodeOptions options)
+            => DecodeImage(data, s, frame, options, 0, null)!;
+
+        /// <summary>
+        /// With <paramref name="bands"/>: decodes a non-interlaced image in bands of <paramref name="bandHeight"/> rows
+        /// (managed zlib backend) and returns null; else the image.
+        /// </summary>
+        public static RawImage? DecodeImage(ReadOnlySpan<byte> data, PngStructure s, PngFrameEntry? frame, PngDecodeOptions options, int bandHeight, Action<RawImage, int>? bands)
         {
             var h = s.Header;
             bool fromIdat = frame == null || frame.UsesIdat;
@@ -112,6 +130,25 @@ namespace Aardvark.ImageCodecs
                 throw new ImageNotSupportedException("PNG image is too large (more than 2 GB of pixel data)");
 
             var conv = new RowConverter(h, trns, plte, keepIndexed, outChannels, options.AllowInvalidPaletteIndices) { Cancel = options.CancellationToken };
+            if (bands != null && !h.Interlaced && Zlib.Backend == ZlibBackend.Managed)
+            {
+                // rows go into one band image, handed on whenever it is full
+                var band = RawImage.Create(h.Width, Math.Min(bandHeight, h.Height), color, sampleType);
+                band.Metadata = s.Meta;
+                int rowBytes = (int)(((long)h.Width * h.BitsPerPixel + 7) >> 3);
+                byte[] row = ArrayPool<byte>.Shared.Rent(rowBytes + 1);
+                try
+                {
+                    fixed (byte* rowP = row)
+                    {
+                        var reader = new RowReader(data, s, frame, rowP, options.VerifyChecksums);
+                        Reconstruct(h, ref reader, band, conv, (y, n) => ImageBands.Deliver(band, y, n, bands));
+                        reader.Finish();
+                    }
+                }
+                finally { ArrayPool<byte>.Shared.Return(row); }
+                return null;
+            }
             return Zlib.Backend == ZlibBackend.Managed
                 ? DecodeStreaming(data, s, frame, h, color, sampleType, conv, options.VerifyChecksums)
                 : DecodeBuffered(data, s, frame, h, color, sampleType, conv, options.VerifyChecksums, (int)rawSize);
@@ -352,7 +389,11 @@ namespace Aardvark.ImageCodecs
             height = (h.Height - PassY0[pass] + PassDy[pass] - 1) / PassDy[pass];
         }
 
-        static void Reconstruct(scoped in PngHeader h, ref RowReader rows, RawImage image, RowConverter conv)
+        /// <summary>
+        /// Reconstructs the rows into <paramref name="image"/>. With <paramref name="flush"/> (non-interlaced only) the image
+        /// is a band: rows wrap around in it, and flush (first row, count) is called whenever it is full and at the end.
+        /// </summary>
+        static void Reconstruct(scoped in PngHeader h, ref RowReader rows, RawImage image, RowConverter conv, Action<int, int>? flush = null)
         {
             int width = h.Width, height = h.Height;
             int bitsPerPixel = h.BitsPerPixel;
@@ -364,7 +405,7 @@ namespace Aardvark.ImageCodecs
             // Two scratch rows (current / previous) for everything that cannot be reconstructed straight into
             // the output, plus one row of converted pixels for interlaced images.
             byte[]? rowA = null, rowB = null, expanded = null;
-            if (!direct || h.Interlaced)
+            if (!direct || h.Interlaced || flush != null)
             {
                 rowA = ArrayPool<byte>.Shared.Rent(rowBytes);
                 rowB = ArrayPool<byte>.Shared.Rent(rowBytes);
@@ -375,6 +416,25 @@ namespace Aardvark.ImageCodecs
             {
                 fixed (byte* output = image.GetBytes(), scratchA = rowA, scratchB = rowB, exp = expanded)
                 {
+                    if (flush != null)
+                    {
+                        // unfiltered in the scratch rows (the band is the caller's between flushes), then copied / converted
+                        byte* prev = null, cur = scratchA, other = scratchB;
+                        nint outRowBytes = (nint)width * outPixelBytes;
+                        int bandRows = image.Height, n = 0;
+                        for (int y = 0; y < height; y++)
+                        {
+                            conv.Cancel.ThrowIfCancellationRequested();
+                            byte* src = rows.Next(rowBytes);
+                            if (!PngFilters.Unfilter(*src, src + 1, prev, cur, rowBytes, filterBpp)) throw BadFilter();
+                            byte* dst = output + n * outRowBytes;
+                            if (direct) Buffer.MemoryCopy(cur, dst, outRowBytes, rowBytes);
+                            else conv.Convert(cur, dst, width);
+                            prev = cur; cur = other; other = prev;
+                            if (++n == bandRows || y == height - 1) { flush(y + 1 - n, n); n = 0; }
+                        }
+                        return;
+                    }
                     if (!h.Interlaced)
                     {
                         if (direct)

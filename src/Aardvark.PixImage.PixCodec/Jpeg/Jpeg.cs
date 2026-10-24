@@ -76,6 +76,8 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
         public System.Threading.CancellationToken CancellationToken { get; set; }
+
+        internal JpegDecodeOptions Clone() => (JpegDecodeOptions)MemberwiseClone();
     }
 
     /// <summary>Chroma resolution of an encoded color JPEG.</summary>
@@ -328,6 +330,49 @@ namespace Aardvark.ImageCodecs
                     img = img.Data is byte[] ? ToRgba(img, (byte)255) : ToRgba(img, (ushort)((1 << d.Precision) - 1));
                 return options.ApplyOrientation ? ImageOps.ApplyOrientation(img) : img;
             }
+        }
+
+        /// <summary>
+        /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom, without ever holding the whole image: 8 bit
+        /// files go through small ring buffers, so memory stays at a few rows of MCUs plus one band, whatever the image size
+        /// (12 bit, lossless and multi-scan sequential files are decoded whole and then cut into bands). <paramref name="onBand"/>
+        /// gets each band and the index of its first row; all bands but the last have <paramref name="bandHeight"/> rows. The
+        /// band image is reused for the next band: copy what has to outlive the call. The pixels are as stored - the
+        /// orientation is not applied (the metadata keeps it) - otherwise the options apply as for <see cref="Decode"/>
+        /// (scaling, Rgba, MaxPixels, cancellation). A truncated file throws after the bands that could be decoded, unless
+        /// <see cref="JpegDecodeOptions.AllowTruncated"/> is set. Returns the image's metadata (null if it has none).
+        /// </summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, JpegDecodeOptions? options = null)
+        {
+            ImageBands.CheckArguments(bandHeight, onBand);
+            options ??= s_defaults;
+            fixed (byte* p = data)
+            {
+                RawImage? band = null;
+                JpegPost.Assembler? Stream(JpegDecoder dd)
+                {
+                    var (cs, model, channels) = Plan(dd, options);
+                    bool rgba = options.Rgba && model is ColorModel.Gray or ColorModel.Rgb;
+                    if (rgba) (model, channels) = (ColorModel.Rgba, 4);
+                    int rows = Math.Min(bandHeight, dd.OutHeight);
+                    var buf = GC.AllocateUninitializedArray<byte>(checked(dd.OutWidth * rows * channels), pinned: true);
+                    var b = band = new RawImage(dd.OutWidth, rows, model, buf, channels, dd.HasMetadata ? dd.Metadata : null);
+                    fixed (byte* q = buf)
+                        return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, cs, 1, rgba) { BandRows = rows, OnBand = (y, n) => ImageBands.Deliver(b, y, n, onBand) };
+                }
+                var d = Open(p, data, options, headerOnly: false, Stream);
+                if (d.Truncated && !options.AllowTruncated)
+                    throw new ImageFormatException("invalid JPEG: the file ends before its EOI marker (truncated; JpegDecodeOptions.AllowTruncated decodes what is there)");
+                var meta = d.HasMetadata || d.Truncated ? d.Metadata : null;
+                if (d.Truncated) meta!.Truncated = true;
+                if (d.Streamed) return meta;
+            }
+            // not decodable in bands: whole, then cut
+            var o = options.Clone();
+            o.ApplyOrientation = false;
+            var img = Decode(data, o);
+            ImageBands.Slice(img, bandHeight, onBand);
+            return img.Metadata;
         }
 
         /// <summary>Rgba of a Gray / Rgb image that was not assembled as such (12 bit and lossless frames); alpha = <paramref name="opaque"/>.</summary>

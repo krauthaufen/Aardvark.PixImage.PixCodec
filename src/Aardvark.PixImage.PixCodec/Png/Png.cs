@@ -372,6 +372,19 @@ namespace Aardvark.ImageCodecs
         /// </summary>
         public static ImageInfo GetInfo(ReadOnlySpan<byte> data) => ColorTags.With(PngDecoder.GetInfo(data), data);
 
+        /// <summary>
+        /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom, without holding the whole image (interlaced
+        /// files, and all files with the BCL zlib backend, are decoded whole and then cut into bands). <paramref name="onBand"/>
+        /// gets each band and the index of its first row; all bands but the last have <paramref name="bandHeight"/> rows. The
+        /// band image is reused for the next band: copy what has to outlive the call. The pixels are as stored (the
+        /// orientation is not applied; the metadata keeps it). For an APNG this is the default image. Returns the metadata.
+        /// </summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, PngDecodeOptions? options = null)
+        {
+            ImageBands.CheckArguments(bandHeight, onBand);
+            return PngDecoder.DecodeBands(data, bandHeight, onBand, options ?? DefaultDecode);
+        }
+
         /// <summary>Decodes a complete PNG file held in memory. For an APNG this is the default image.</summary>
         public static RawImage Decode(ReadOnlySpan<byte> data, PngDecodeOptions? options = null)
             => ColorTags.Tag(PngDecoder.Decode(data, options ?? DefaultDecode), data, ImageFormat.Png);
