@@ -30,8 +30,21 @@ namespace Aardvark.ImageCodecs
         public void Put(int bit, int prob)
         {
             uint split = 1 + (((_range - 1) * (uint)prob) >> 8);
-            if (bit != 0) { _bottom += split; _range -= split; }
-            else _range = split;
+            uint r;
+            if (bit != 0) { _bottom += split; r = _range - split; }
+            else r = split;
+            if (r >= 128) { _range = r; return; }
+            // Normalizing takes s shifts. Without a byte to emit and without a carry among the bits shifted out,
+            // the bit by bit loop below would just do this:
+            int s = System.Numerics.BitOperations.LeadingZeroCount(r) - 24;
+            if (s < _bitCount && _bottom >> (32 - s) == 0)
+            {
+                _range = r << s;
+                _bottom <<= s;
+                _bitCount -= s;
+                return;
+            }
+            _range = r;
             while (_range < 128)
             {
                 _range <<= 1;
@@ -346,8 +359,30 @@ namespace Aardvark.ImageCodecs
         /// Quantizes raster coefficients into levels in zigzag order (from position first) and writes the dequantized
         /// values back in raster order. Returns the position after the last non-zero level.
         /// </summary>
+        /// <summary>
+        /// 2^32 / q + 1: a * Recip[q] >> 32 is a / q for every a below 2^32 / q (the error of the reciprocal stays
+        /// below the distance from a / q to the next integer), far more than coefficients reach.
+        /// </summary>
+        static readonly ulong[] Recip = BuildRecip();
+
+        static ulong[] BuildRecip()
+        {
+            var t = new ulong[1024];
+            for (int q = 1; q < t.Length; q++) t[q] = (1UL << 32) / (ulong)q + 1;
+            return t;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static int Divide(int a, int q)
+            => a < 1 << 22 && (uint)q < 1024u ? (int)((ulong)a * Recip[q] >> 32) : a / q;
+
         static int Quantize(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
         {
+            if (Vector128.IsHardwareAccelerated)
+            {
+                int res = QuantizeSimd(coefs, levels, dq, dcq, acq, first);
+                if (res >= 0) return res;
+            }
             var zigzag = Vp8Tables.Zigzag;
             int last = 0;
             if (first == 1) { levels[0] = 0; dq[0] = 0; }
@@ -362,7 +397,7 @@ namespace Aardvark.ImageCodecs
                     levels[n] = 0; dq[j] = 0;
                     continue;
                 }
-                int l = a / q;
+                int l = Divide(a, q);
                 if (l > MaxLevel) l = MaxLevel;
                 last = n + 1;
                 if (c < 0) l = -l;
@@ -370,6 +405,63 @@ namespace Aardvark.ImageCodecs
                 dq[j] = (short)(l * q);
             }
             return last;
+        }
+
+        /// <summary>
+        /// <see cref="Quantize"/> on four coefficients at a time, in raster order, then reordered. The division is one in
+        /// single precision: below 2^24 its rounding error stays below the distance from a / q to the next integer, so
+        /// the truncation is exact. Returns -1 (nothing written) for coefficients beyond that, which do not occur.
+        /// </summary>
+        static int QuantizeSimd(int* coefs, short* levels, short* dq, int dcq, int acq, int first)
+        {
+            var c0 = Vector128.Load(coefs); var c1 = Vector128.Load(coefs + 4);
+            var c2 = Vector128.Load(coefs + 8); var c3 = Vector128.Load(coefs + 12);
+            var limit = Vector128.Create(1 << 22);
+            if ((Vector128.GreaterThanOrEqual(Vector128.Abs(c0), limit) | Vector128.GreaterThanOrEqual(Vector128.Abs(c1), limit)
+                | Vector128.GreaterThanOrEqual(Vector128.Abs(c2), limit) | Vector128.GreaterThanOrEqual(Vector128.Abs(c3), limit)) != Vector128<int>.Zero) return -1;
+            var qa = Vector128.Create(acq);
+            var q0 = Vector128.Create(dcq, acq, acq, acq);
+            var ba = Vector128.Create((acq * BiasAc) >> 8);
+            var b0 = Vector128.Create((dcq * BiasDc) >> 8, (acq * BiasAc) >> 8, (acq * BiasAc) >> 8, (acq * BiasAc) >> 8);
+            var fa = Vector128.ConvertToSingle(qa);
+            var f0 = Vector128.ConvertToSingle(q0);
+            var l0 = Level(c0, q0, b0, f0, out var d0);
+            var l1 = Level(c1, qa, ba, fa, out var d1);
+            var l2 = Level(c2, qa, ba, fa, out var d2);
+            var l3 = Level(c3, qa, ba, fa, out var d3);
+            if (first == 1)
+            {
+                var keep = Vector128.Create(0, -1, -1, -1);
+                l0 &= keep; d0 &= keep;
+            }
+            var lo = Vector128.Narrow(l0, l1).AsByte();     // raster 0..7
+            var hi = Vector128.Narrow(l2, l3).AsByte();     // raster 8..15
+            Vector128.Narrow(d0, d1).Store(dq);
+            Vector128.Narrow(d2, d3).Store(dq + 8);
+            // zigzag order 0 1 4 8 5 2 3 6 | 9 12 13 10 7 11 14 15, two bytes per level
+            const byte z = 255;
+            var z0 = Vector128.Shuffle(lo, Vector128.Create((byte)0, 1, 2, 3, 8, 9, z, z, 10, 11, 4, 5, 6, 7, 12, 13))
+                   | Vector128.Shuffle(hi, Vector128.Create(z, z, z, z, z, z, 0, 1, z, z, z, z, z, z, z, z));
+            var z1 = Vector128.Shuffle(hi, Vector128.Create((byte)2, 3, 8, 9, 10, 11, 4, 5, z, z, 6, 7, 12, 13, 14, 15))
+                   | Vector128.Shuffle(lo, Vector128.Create(z, z, z, z, z, z, z, z, 14, 15, z, z, z, z, z, z));
+            z0.AsInt16().Store(levels);
+            z1.AsInt16().Store(levels + 8);
+            uint nz = (~Vector128.Equals(z0.AsInt16(), Vector128<short>.Zero)).ExtractMostSignificantBits()
+                    | (~Vector128.Equals(z1.AsInt16(), Vector128<short>.Zero)).ExtractMostSignificantBits() << 8;
+            return 32 - System.Numerics.BitOperations.LeadingZeroCount(nz);
+        }
+
+        /// <summary>Signed levels of four coefficients and their dequantized values.</summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Vector128<int> Level(Vector128<int> c, Vector128<int> q, Vector128<int> bias, Vector128<float> fq, out Vector128<int> dq)
+        {
+            var a = Vector128.Abs(c) + bias;
+            var l = Vector128.ConvertToInt32(Vector128.ConvertToSingle(a) / fq);
+            l = Vector128.Min(l, Vector128.Create(MaxLevel)) & Vector128.GreaterThanOrEqual(a, q);
+            var sign = Vector128.ShiftRightArithmetic(c, 31);
+            l = (l ^ sign) - sign;
+            dq = l * q;
+            return l;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -424,57 +516,85 @@ namespace Aardvark.ImageCodecs
 
         // ------------------------------------------------------------------ token costs and recording
 
-        /// <summary>Cost (1/256 bit) of the tokens of one block; mirrors <see cref="RecordCoeffs"/>.</summary>
-        static int CoeffCost(byte* probs, int ctx, short* levels, int first, int last)
+        // The mode decision prices tokens with the default probabilities (the fitted ones only come in Assemble),
+        // so the price of every coefficient value in every context is fixed: tables instead of walking the tree.
+        const int MaxPriced = 67;       // all larger values cost the same (their extra bits counted as 11)
+        /// <summary>[type, band, context][value 0..67]: the "not zero" decision, the magnitude tree and the sign.</summary>
+        static readonly ushort[] LevelCost = BuildLevelCost(out EobCost);
+        /// <summary>[type, band, context][0 = end of block here, 1 = more]</summary>
+        static readonly ushort[] EobCost;
+
+        static ushort[] BuildLevelCost(out ushort[] eob)
+        {
+            var probs = Vp8Tables.DefaultCoeffProbs;
+            var t = new ushort[4 * 8 * 3 * (MaxPriced + 1)];
+            eob = new ushort[4 * 8 * 3 * 2];
+            for (int k = 0; k < 4 * 8 * 3; k++)
+            {
+                var p = probs.Slice(k * 11, 11);
+                eob[2 * k] = (ushort)Cost(0, p[0]);
+                eob[2 * k + 1] = (ushort)Cost(1, p[0]);
+                for (int v = 0; v <= MaxPriced; v++)
+                {
+                    int cost;
+                    if (v == 0) cost = Cost(0, p[1]);
+                    else
+                    {
+                        cost = Cost(1, p[1]);
+                        if (v == 1) cost += Cost(0, p[2]);
+                        else
+                        {
+                            cost += Cost(1, p[2]);
+                            if (v <= 4)
+                            {
+                                cost += Cost(0, p[3]);
+                                if (v == 2) cost += Cost(0, p[4]);
+                                else cost += Cost(1, p[4]) + Cost(v == 4 ? 1 : 0, p[5]);
+                            }
+                            else if (v <= 10)
+                            {
+                                cost += Cost(1, p[3]) + Cost(0, p[6]);
+                                if (v <= 6) cost += Cost(0, p[7]) + Cost(v == 6 ? 1 : 0, 159);
+                                else cost += Cost(1, p[7]) + Cost(v >= 9 ? 1 : 0, 165) + Cost((v & 1) == 0 ? 1 : 0, 145);
+                            }
+                            else
+                            {
+                                cost += Cost(1, p[3]) + Cost(1, p[6]);
+                                // the extra bits are close to one bit each
+                                if (v < 19) cost += Cost(0, p[8]) + Cost(0, p[9]) + 3 * 256;
+                                else if (v < 35) cost += Cost(0, p[8]) + Cost(1, p[9]) + 4 * 256;
+                                else if (v < 67) cost += Cost(1, p[8]) + Cost(0, p[10]) + 5 * 256;
+                                else cost += Cost(1, p[8]) + Cost(1, p[10]) + 11 * 256;
+                            }
+                        }
+                        cost += 256;        // sign
+                    }
+                    t[k * (MaxPriced + 1) + v] = (ushort)cost;
+                }
+            }
+            return t;
+        }
+
+        /// <summary>Cost (1/256 bit) of the tokens of one block of the given type; mirrors <see cref="RecordCoeffs"/>.</summary>
+        static int CoeffCost(int type, int ctx, short* levels, int first, int last)
         {
             var bands = Vp8Tables.Bands;
+            ref ushort lc = ref LevelCost[0];
+            ref ushort ec = ref EobCost[0];
             int n = first;
-            byte* p = probs + (bands[n] * 3 + ctx) * 11;
-            if (last <= n) return Cost(0, p[0]);
-            int cost = Cost(1, p[0]);
+            int k = (type * 8 + bands[n]) * 3 + ctx;
+            if (last <= n) return Unsafe.Add(ref ec, 2 * k);
+            int cost = Unsafe.Add(ref ec, 2 * k + 1);
             while (n < 16)
             {
                 int v = levels[n++];
                 if (v < 0) v = -v;
-                if (v == 0)
-                {
-                    cost += Cost(0, p[1]);
-                    p = probs + bands[n] * 33;
-                    continue;
-                }
-                cost += Cost(1, p[1]);
-                byte* next = probs + bands[n] * 33;
-                if (v == 1) { cost += Cost(0, p[2]); p = next + 11; }
-                else
-                {
-                    cost += Cost(1, p[2]);
-                    if (v <= 4)
-                    {
-                        cost += Cost(0, p[3]);
-                        if (v == 2) cost += Cost(0, p[4]);
-                        else cost += Cost(1, p[4]) + Cost(v == 4 ? 1 : 0, p[5]);
-                    }
-                    else if (v <= 10)
-                    {
-                        cost += Cost(1, p[3]) + Cost(0, p[6]);
-                        if (v <= 6) cost += Cost(0, p[7]) + Cost(v == 6 ? 1 : 0, 159);
-                        else cost += Cost(1, p[7]) + Cost(v >= 9 ? 1 : 0, 165) + Cost((v & 1) == 0 ? 1 : 0, 145);
-                    }
-                    else
-                    {
-                        cost += Cost(1, p[3]) + Cost(1, p[6]);
-                        // the extra bits are close to one bit each
-                        if (v < 19) cost += Cost(0, p[8]) + Cost(0, p[9]) + 3 * 256;
-                        else if (v < 35) cost += Cost(0, p[8]) + Cost(1, p[9]) + 4 * 256;
-                        else if (v < 67) cost += Cost(1, p[8]) + Cost(0, p[10]) + 5 * 256;
-                        else cost += Cost(1, p[8]) + Cost(1, p[10]) + 11 * 256;
-                    }
-                    p = next + 22;
-                }
-                cost += 256;        // sign
+                cost += Unsafe.Add(ref lc, k * (MaxPriced + 1) + Math.Min(v, MaxPriced));
+                k = (type * 8 + bands[n]) * 3 + (v > 1 ? 2 : v);
+                if (v == 0) continue;
                 if (n == 16) break;
-                if (n >= last) { cost += Cost(0, p[0]); break; }
-                cost += Cost(1, p[0]);
+                if (n >= last) { cost += Unsafe.Add(ref ec, 2 * k); break; }
+                cost += Unsafe.Add(ref ec, 2 * k + 1);
             }
             return cost;
         }
@@ -726,7 +846,7 @@ namespace Aardvark.ImageCodecs
                                     for (int r = 0; r < 4; r++) Unsafe.WriteUnaligned(dst + r * Bps, preds[m * 4 + r]);
                                     ForwardDct(s, ys, dst, Bps, coefs);
                                     int last = Quantize(coefs, bl, dq, q.Y1Dc, q.Y1Ac, 0);
-                                    int rate = CoeffCost(probs + 3 * 264, ctxNz, bl, 0, last) + modeCost[m];
+                                    int rate = CoeffCost(3, ctxNz, bl, 0, last) + modeCost[m];
                                     if (last > 0) Vp8Decoder.InverseDctAdd(dq, dst, Bps);
                                     double j = Sse4(s, ys, dst, Bps) * 256.0 + q.Lambda * rate;
                                     if (j < bestJ)
@@ -876,7 +996,7 @@ namespace Aardvark.ImageCodecs
             ForwardWht(dcs, y2);
             lasts[0] = Quantize(y2, levels, y2dq, q.Y2Dc, q.Y2Ac, 0);
             Vp8Decoder.InverseWht(y2dq, dcRec);
-            int rate = I16ModeCost[mode] + CoeffCost(probs + 264, tnz[8] + leftNz[8], levels, 0, lasts[0]);
+            int rate = I16ModeCost[mode] + CoeffCost(1, tnz[8] + leftNz[8], levels, 0, lasts[0]);
             byte* nzTop = stackalloc byte[4];
             byte* nzLeft = stackalloc byte[4];
             for (int i = 0; i < 4; i++) { nzTop[i] = tnz[i]; nzLeft[i] = leftNz[i]; }
@@ -887,7 +1007,7 @@ namespace Aardvark.ImageCodecs
                 short* d = dq + (n + 1) * 16;
                 int last = Quantize(coefs + (n + 1) * 16, levels + (n + 1) * 16, d, q.Y1Dc, q.Y1Ac, 1);
                 lasts[n + 1] = last;
-                rate += CoeffCost(probs, nzTop[bx] + nzLeft[by], levels + (n + 1) * 16, 1, last);
+                rate += CoeffCost(0, nzTop[bx] + nzLeft[by], levels + (n + 1) * 16, 1, last);
                 nzTop[bx] = nzLeft[by] = (byte)(last > 1 ? 1 : 0);
                 d[0] = dcRec[n * 16];
                 byte* r = recon + by * 4 * 16 + bx * 4;
