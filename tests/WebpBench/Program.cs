@@ -28,6 +28,7 @@ namespace Aardvark.ImageCodecs.Bench
             double loop = 0;
             bool phases = false, alphaMethods = false;
             double encodeLoop = 0;
+            int[] segVariants = null;
             int oneMethod = -1;
             var photos = new List<string>();
             for (int i = 0; i < args.Length; i++)
@@ -41,12 +42,14 @@ namespace Aardvark.ImageCodecs.Bench
                     case "--kind": kindOnly = args[++i]; break;
                     case "--loop": loop = double.Parse(args[++i]); break;
                     case "--phases": phases = true; break;
+                    case "--segments": segVariants = args[++i].Split(',').Select(int.Parse).ToArray(); break;
                     case "--encode-loop": encodeLoop = double.Parse(args[++i]); break;
                     case "--alpha-methods": alphaMethods = true; break;
                     case "--alpha-method": alphaMethods = true; oneMethod = int.Parse(args[++i]); break;
                     default: photos.Add(args[i]); break;
                 }
             }
+            if (segVariants != null) { SegmentsExperiment.Run(photos, segVariants); return 0; }
             Console.WriteLine($"{System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}, {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, {Environment.ProcessorCount} threads");
 
             var tiles = new List<(string kind, RawImage rgba)>();
