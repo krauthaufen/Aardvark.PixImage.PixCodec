@@ -63,16 +63,20 @@ namespace Aardvark.ImageCodecs
                 return px;
             }
             var frame = Vp8Decoder.Decode(bits, opt.MaxPixels, opt.Multithreaded);
-            var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
-            WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded);
-            frame.Release();
-            if (channels == 4 && f.AlphLength >= 0)
+            byte[]? a = null;
+            try
             {
-                var a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height);
-                for (int i = 0, n = frame.Width * frame.Height; i < n; i++) dst[4 * i + 3] = a[i];
-                ArrayPool<byte>.Shared.Return(a);
+                // the alpha plane goes straight into the conversion
+                if (channels == 4 && f.AlphLength >= 0) a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height);
+                var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
+                WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded, a);
+                return dst;
             }
-            return dst;
+            finally
+            {
+                frame.Release();
+                if (a != null) ArrayPool<byte>.Shared.Return(a);
+            }
         }
 
         /// <summary>0xAARRGGBB pixels to interleaved R, G, B(, A) bytes.</summary>
