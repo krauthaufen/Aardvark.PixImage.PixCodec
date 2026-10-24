@@ -741,6 +741,27 @@ namespace Aardvark.ImageCodecs
                             // depend on the pixel just decoded; the costly ones compute their four channels in one vector.
                             switch (mode)
                             {
+                                case 0:
+                                {
+                                    var black = Vector128.Create(0xff000000u).AsByte();
+                                    for (; x + 4 <= xe; x += 4) (Vector128.Load((byte*)(cur + x)) + black).Store((byte*)(cur + x));
+                                    break;
+                                }
+                                case 1:
+                                {
+                                    // a running sum per channel: prefix sums of four pixels in two steps, plus the left pixel
+                                    var l = Vector128.Create(cur[x - 1]).AsByte();
+                                    for (; x + 4 <= xe; x += 4)
+                                    {
+                                        var v = Vector128.Load((byte*)(cur + x));
+                                        v += Vector128.Shuffle(v, Vector128.Create((byte)255, 255, 255, 255, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11));
+                                        v += Vector128.Shuffle(v, Vector128.Create((byte)255, 255, 255, 255, 255, 255, 255, 255, 0, 1, 2, 3, 4, 5, 6, 7));
+                                        v += l;
+                                        v.Store((byte*)(cur + x));
+                                        l = Vector128.Shuffle(v, Vector128.Create((byte)12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15, 12, 13, 14, 15));
+                                    }
+                                    break;
+                                }
                                 case 2: for (; x + 4 <= xe; x += 4) (Vector128.Load((byte*)(cur + x)) + Vector128.Load((byte*)(up + x))).Store((byte*)(cur + x)); break;
                                 case 3: for (; x + 4 <= xe; x += 4) (Vector128.Load((byte*)(cur + x)) + Vector128.Load((byte*)(up + x + 1))).Store((byte*)(cur + x)); break;
                                 case 4: for (; x + 4 <= xe; x += 4) (Vector128.Load((byte*)(cur + x)) + Vector128.Load((byte*)(up + x - 1))).Store((byte*)(cur + x)); break;

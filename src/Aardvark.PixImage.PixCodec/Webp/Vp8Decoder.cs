@@ -124,27 +124,61 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>
+        /// <see cref="Bit(ref ulong, ref uint, ref int, ref byte*, byte*, int)"/> that looks up the end of the data only
+        /// when it has to refill: one register less in loops that are short of them.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static int Bit(ref ulong value, ref uint range, ref int bits, ref byte* cur, ref Vp8BoolReader br, int prob)
+        {
+            if (bits < 0) Refill(ref value, ref bits, ref cur, br._end);
+            uint r = range;
+            uint split = (r * (uint)prob) >> 8;
+            uint v = (uint)(value >> bits);
+            int bit;
+            if (v > split)
+            {
+                r -= split + 1;
+                value -= (ulong)(split + 1) << bits;
+                bit = 1;
+            }
+            else
+            {
+                r = split;
+                bit = 0;
+            }
+            int shift = BitOperations.LeadingZeroCount(r + 1) - 24;
+            r = ((r + 1) << shift) - 1;
+            bits -= shift;
+            range = r;
+            return bit;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void Refill(ref ulong value, ref int bits, ref byte* cur, byte* end)
+        {
+            if (end - cur >= 8)
+            {
+                value = (value << 56) | (BinaryPrimitives.ReverseEndianness(Unsafe.ReadUnaligned<ulong>(cur)) >> 8);
+                cur += 7;
+                bits += 56;
+            }
+            else
+            {
+                // the last bytes one at a time, then zeros
+                value <<= 8;
+                if (cur < end) value |= *cur++;
+                bits += 8;
+            }
+        }
+
+        /// <summary>
         /// <paramref name="v"/> negated if the next bit at probability 1/2 is set. The sign of a coefficient is as good as
         /// random, so a branch here would be mispredicted every other time: this one decides with masks instead.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal static int Sign(ref ulong value, ref uint range, ref int bits, ref byte* cur, byte* end, int v)
+        internal static int Sign(ref ulong value, ref uint range, ref int bits, ref byte* cur, ref Vp8BoolReader br, int v)
         {
-            if (bits < 0)
-            {
-                if (end - cur >= 8)
-                {
-                    value = (value << 56) | (BinaryPrimitives.ReverseEndianness(Unsafe.ReadUnaligned<ulong>(cur)) >> 8);
-                    cur += 7;
-                    bits += 56;
-                }
-                else
-                {
-                    value <<= 8;
-                    if (cur < end) value |= *cur++;
-                    bits += 8;
-                }
-            }
+            if (bits < 0) Refill(ref value, ref bits, ref cur, br._end);
             uint r = range;
             uint split = r >> 1;                    // (r * 128) >> 8
             uint x = (uint)(value >> bits);         // at most r
@@ -232,16 +266,6 @@ namespace Aardvark.ImageCodecs
             public int Y1Dc, Y1Ac, Y2Dc, Y2Ac, UvDc, UvAc;
         }
 
-        static byte[]? _zigzagKeepAlive;
-        static readonly byte* ZigzagPtr = PinnedZigzag();
-
-        static byte* PinnedZigzag()
-        {
-            var a = _zigzagKeepAlive = GC.AllocateArray<byte>(16, pinned: true);
-            Vp8Tables.Zigzag.CopyTo(a);
-            return (byte*)System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(a, 0);
-        }
-
         int _mbW, _mbH;
         // frame header
         bool _useSegment, _updateMap;
@@ -253,6 +277,9 @@ namespace Aardvark.ImageCodecs
         readonly int[] _refLfDelta = new int[4], _modeLfDelta = new int[4];
         int _numParts;
         readonly Quant[] _quant = new Quant[4];
+        // on the pinned heap: the token loop takes its address without fixing it
+        readonly int[] _zqArray = GC.AllocateArray<int>(4 * 48, pinned: true);
+        int* _zq => (int*)System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(_zqArray, 0);
         readonly byte[] _probs = new byte[4 * 8 * 3 * 11];
         bool _useSkip;
         int _skipProb;
@@ -393,6 +420,14 @@ namespace Aardvark.ImageCodecs
                 m.Y2Ac = Math.Max(8, ac[Math.Clamp(q + dqY2Ac, 0, 127)] * 155 / 100);
                 m.UvDc = Math.Min(132, (int)dc[Math.Clamp(q + dqUvDc, 0, 127)]);
                 m.UvAc = ac[Math.Clamp(q + dqUvAc, 0, 127)];
+                // per segment and block type (Y, Y2, chroma): raster position of the n-th coefficient | factor << 8
+                for (int n = 0; n < 16; n++)
+                {
+                    int z = Vp8Tables.Zigzag[n];
+                    _zq[48 * s + n] = z | (n > 0 ? m.Y1Ac : m.Y1Dc) << 8;
+                    _zq[48 * s + 16 + n] = z | (n > 0 ? m.Y2Ac : m.Y2Dc) << 8;
+                    _zq[48 * s + 32 + n] = z | (n > 0 ? m.UvAc : m.UvDc) << 8;
+                }
             }
 
             br.GetBit(128);     // refresh_entropy_probs: meaningless for a lone key frame
@@ -593,7 +628,7 @@ namespace Aardvark.ImageCodecs
 
                     uint nzY = 0, nzUv = 0;
                     byte* tnz = pTopNz + 9 * mbx;
-                    if (!skip) ParseResiduals(ref tr, probs, ref _quant[segment], i4, tnz, leftNz, pCoeffs + 384 * mbx, dc, out nzY, out nzUv);
+                    if (!skip) ParseResiduals(ref tr, probs, _zq + 48 * segment, i4, tnz, leftNz, pCoeffs + 384 * mbx, dc, out nzY, out nzUv);
                     else
                     {
                         Unsafe.WriteUnaligned(tnz, 0UL);
@@ -723,13 +758,13 @@ namespace Aardvark.ImageCodecs
         // ------------------------------------------------------------------ tokens
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        void ParseResiduals(ref Vp8BoolReader br, byte* probs, ref Quant q, bool i4, byte* top, byte* left, short* coeffs, short* dc, out uint nzY, out uint nzUv)
+        void ParseResiduals(ref Vp8BoolReader br, byte* probs, int* zq, bool i4, byte* top, byte* left, short* coeffs, short* dc, out uint nzY, out uint nzUv)
         {
             int first = 0;
             byte* acProbs = probs + 3 * TypeStride;
             if (!i4)
             {
-                int nz = GetBlocks(ref br, probs + TypeStride, 0, q.Y2Dc, q.Y2Ac, dc, top, left, BlockOrder + 48, 1, out _);
+                int nz = GetBlocks(ref br, probs + TypeStride, 0, zq + 16, dc, top, left, BlockOrder + 48, 1, out _);
                 if (nz > 1) InverseWht(dc, coeffs);
                 else
                 {
@@ -740,9 +775,9 @@ namespace Aardvark.ImageCodecs
                 first = 1;
                 acProbs = probs;
             }
-            GetBlocks(ref br, acProbs, first, q.Y1Dc, q.Y1Ac, coeffs, top, left, BlockOrder, 16, out nzY);
-            GetBlocks(ref br, probs + 2 * TypeStride, 0, q.UvDc, q.UvAc, coeffs + 16 * 16, top, left, BlockOrder + 32, 4, out uint nzU);
-            GetBlocks(ref br, probs + 2 * TypeStride, 0, q.UvDc, q.UvAc, coeffs + 20 * 16, top, left, BlockOrder + 40, 4, out uint nzV);
+            GetBlocks(ref br, acProbs, first, zq, coeffs, top, left, BlockOrder, 16, out nzY);
+            GetBlocks(ref br, probs + 2 * TypeStride, 0, zq + 32, coeffs + 16 * 16, top, left, BlockOrder + 32, 4, out uint nzU);
+            GetBlocks(ref br, probs + 2 * TypeStride, 0, zq + 32, coeffs + 20 * 16, top, left, BlockOrder + 40, 4, out uint nzV);
             nzUv = nzU | nzV << 8;
         }
 
@@ -771,14 +806,13 @@ namespace Aardvark.ImageCodecs
         /// One loop for a whole plane of a macroblock keeps the reader state in registers across its blocks.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        static int GetBlocks(ref Vp8BoolReader br, byte* probs, int first, int dqDc, int dqAc, short* dst, byte* top, byte* left, byte* order, int count, out uint kinds)
+        static int GetBlocks(ref Vp8BoolReader br, byte* probs, int first, int* zq, short* dst, byte* top, byte* left, byte* order, int count, out uint kinds)
         {
             // probs: [position][context][11] of one block type
-            byte* zigzag = ZigzagPtr;
             ulong value = br._value;
             uint range = br._range;
             int bits = br._bits;
-            byte* cur = br._cur, end = br._end;
+            byte* cur = br._cur;
             uint k = 0;
             int n = first;
             for (int b = 0; b < count; b++, dst += 16)
@@ -788,44 +822,45 @@ namespace Aardvark.ImageCodecs
                 byte* p = probs + (n * 3 + *ctxTop + *ctxLeft) * 11;
                 for (; n < 16; n++)
                 {
-                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[0]) == 0) break;         // end of block
-                    while (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[1]) == 0)             // zero; no end of block may follow
+                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[0]) == 0) break;         // end of block
+                    while (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[1]) == 0)             // zero; no end of block may follow
                     {
                         if (++n == 16) goto done;
                         p = probs + n * 33;
                     }
-                    byte* next = probs + (n + 1) * 33;
                     int v;
-                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[2]) == 0) { v = 1; p = next + 11; }
+                    if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[2]) == 0) { v = 1; p = probs + (n + 1) * 33 + 11; }
                     else
                     {
-                        if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[3]) == 0)
+                        if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[3]) == 0)
                         {
-                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[4]) == 0) v = 2;
-                            else v = 3 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[5]);
+                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[4]) == 0) v = 2;
+                            else v = 3 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[5]);
                         }
-                        else if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[6]) == 0)
+                        else if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[6]) == 0)
                         {
-                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[7]) == 0)
-                                v = 5 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 159);
+                            if (Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[7]) == 0)
+                                v = 5 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 159);
                             else
                             {
-                                v = 7 + 2 * Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 165);
-                                v += Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, 145);
+                                v = 7 + 2 * Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 165);
+                                v += Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, 145);
                             }
                         }
                         else
                         {
-                            int b1 = Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[8]);
-                            int cat = 2 * b1 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, p[9 + b1]);
+                            int b1 = Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[8]);
+                            int cat = 2 * b1 + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, p[9 + b1]);
                             var extra = cat == 0 ? Vp8Tables.Cat3 : cat == 1 ? Vp8Tables.Cat4 : cat == 2 ? Vp8Tables.Cat5 : Vp8Tables.Cat6;
                             v = 0;
-                            for (int i = 0; extra[i] != 0; i++) v += v + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, end, extra[i]);
+                            for (int i = 0; extra[i] != 0; i++) v += v + Vp8BoolReader.Bit(ref value, ref range, ref bits, ref cur, ref br, extra[i]);
                             v += 3 + (8 << cat);
                         }
-                        p = next + 22;
+                        p = probs + (n + 1) * 33 + 22;
                     }
-                    dst[zigzag[n]] = (short)(Vp8BoolReader.Sign(ref value, ref range, ref bits, ref cur, end, v) * (n > 0 ? dqAc : dqDc));
+                    // position and dequantization factor in one entry
+                    int z = zq[n];
+                    dst[z & 15] = (short)(Vp8BoolReader.Sign(ref value, ref range, ref bits, ref cur, ref br, v) * (z >> 8));
                 }
             done:
                 *ctxTop = *ctxLeft = (byte)(n > first ? 1 : 0);
