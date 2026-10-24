@@ -26,7 +26,9 @@ namespace Aardvark.ImageCodecs.Bench
             bool encode = true;
             string only = null, kindOnly = null;
             double loop = 0;
-            bool phases = false;
+            bool phases = false, alphaMethods = false;
+            double encodeLoop = 0;
+            int oneMethod = -1;
             var photos = new List<string>();
             for (int i = 0; i < args.Length; i++)
             {
@@ -39,6 +41,9 @@ namespace Aardvark.ImageCodecs.Bench
                     case "--kind": kindOnly = args[++i]; break;
                     case "--loop": loop = double.Parse(args[++i]); break;
                     case "--phases": phases = true; break;
+                    case "--encode-loop": encodeLoop = double.Parse(args[++i]); break;
+                    case "--alpha-methods": alphaMethods = true; break;
+                    case "--alpha-method": alphaMethods = true; oneMethod = int.Parse(args[++i]); break;
                     default: photos.Add(args[i]); break;
                 }
             }
@@ -55,6 +60,36 @@ namespace Aardvark.ImageCodecs.Bench
                         tiles.Add(("photo", Crop(img, x, y, n)));
             }
             Console.WriteLine($"{tiles.Count} tiles of {Size}x{Size}");
+
+            if (alphaMethods)
+            {
+                // size and time of the ALPH payload by lossless effort
+                foreach (var kind in new[] { "synthetic", "photo" })
+                foreach (var shape in new[] { "soft", "hard", "luma" })
+                    for (int m = Math.Max(0, oneMethod); m <= (oneMethod < 0 ? 6 : oneMethod); m++)
+                    for (int rep = 0; rep < (oneMethod < 0 ? 1 : 10); rep++)
+                    {
+                        long bytes = 0; var ts = new List<double>();
+                        foreach (var (k, t) in tiles)
+                        {
+                            if (k != kind) continue;
+                            var d = (byte[])t.Data;
+                            var plane = new uint[Size * Size];
+                            for (int i = 0; i < plane.Length; i++)
+                            {
+                                // the tile's mask, the same as a hard 0 / 255 mask, or the green channel as a detailed matte
+                                int a = shape == "soft" ? d[4 * i + 3] : shape == "hard" ? (d[4 * i + 3] >= 128 ? 255 : 0) : d[4 * i + 1];
+                                plane[i] = 0xff000000 | (uint)a << 8;
+                            }
+                            long t0 = Stopwatch.GetTimestamp();
+                            bytes += Vp8lEncoder.EncodeHeaderless(plane, Size, Size, m).Length;
+                            ts.Add(Ms(t0));
+                        }
+                        ts.Sort();
+                        Console.WriteLine($"alpha {kind,-9} {shape} method {m}: {bytes / ts.Count,7} bytes, {P(ts, 0.5),7:F2} ms");
+                    }
+                return 0;
+            }
 
             var sets = new (string name, Func<RawImage, byte[]> enc)[]
             {
@@ -83,6 +118,15 @@ namespace Aardvark.ImageCodecs.Bench
                     foreach (var f in files) { hash.AppendData(f); hash.AppendData(dec(f).GetBytes()); }
                     string sum = Convert.ToHexString(hash.GetHashAndReset())[..16];
 
+                    if (encodeLoop > 0)
+                    {
+                        // for a profiler: encode for that many seconds and stop
+                        var lw = Stopwatch.StartNew();
+                        int count = 0;
+                        while (lw.Elapsed.TotalSeconds < encodeLoop) foreach (var t in src) { enc(t); count++; }
+                        Console.WriteLine($"{name} {kind}: {count} encodes, {lw.Elapsed.TotalMilliseconds / count:F3} ms each");
+                        return 0;
+                    }
                     if (phases && name.StartsWith("webp")) Phases(files);
                     if (loop > 0)
                     {
