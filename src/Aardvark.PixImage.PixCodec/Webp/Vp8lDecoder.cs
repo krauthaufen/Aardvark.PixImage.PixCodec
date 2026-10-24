@@ -76,14 +76,30 @@ namespace Aardvark.ImageCodecs
         Vp8lBitReader _br;
         readonly long _maxPixels;
         readonly int _length;
-        readonly TablePool _scratch = new TablePool(256);
+        readonly Workspace _ws;
+
+        /// <summary>Buffers that one decode after the other on a thread can share: the streams of an image (transform
+        /// images first, then the pixels) are read one at a time, so one set serves them all.</summary>
+        sealed class Workspace
+        {
+            public readonly TablePool Scratch = new TablePool(256), Tables = new TablePool();
+            public byte[] Lengths = new byte[NumLiteral + NumLength + (1 << 11)];
+            public uint[] Cache = new uint[1 << 11];
+        }
+
+        [ThreadStatic] static Workspace? t_workspace;
 
         Vp8lDecoder(byte* data, int length, long maxPixels)
         {
             _br = new Vp8lBitReader(data, length);
             _maxPixels = maxPixels;
             _length = length;
+            _ws = t_workspace ?? new Workspace();
+            t_workspace = null;
         }
+
+        /// <summary>Hands the buffers to the next decode on this thread (after a failure they are simply dropped).</summary>
+        void Done() => t_workspace = _ws;
 
         public static bool TryReadHeader(ReadOnlySpan<byte> d, out int width, out int height, out bool alpha)
         {
@@ -111,6 +127,7 @@ namespace Aardvark.ImageCodecs
                 var dec = new Vp8lDecoder(p + 5, data.Length - 5, maxPixels);
                 var px = dec.DecodeImageStream(width, height, true);
                 rented = px == dec._rented;
+                dec.Done();
                 return px;
             }
         }
@@ -123,6 +140,7 @@ namespace Aardvark.ImageCodecs
                 var dec = new Vp8lDecoder(p, data.Length, (long)width * height);
                 var px = dec.DecodeImageStream(width, height, true);
                 rented = px == dec._rented;
+                dec.Done();
                 return px;
             }
         }
@@ -243,8 +261,9 @@ namespace Aardvark.ImageCodecs
         {
             int numCoded = mapping?.Length ?? 1;
             int greenSize = NumLiteral + NumLength + (cacheBits > 0 ? 1 << cacheBits : 0);
-            var lengths = new byte[greenSize];
-            var pool = new TablePool();
+            var lengths = _ws.Lengths;
+            var pool = _ws.Tables;
+            pool.Count = 0;
             for (int gi = 0; gi < numCoded; gi++)
             {
                 int target = mapping == null ? 0 : mapping[gi];
@@ -305,9 +324,10 @@ namespace Aardvark.ImageCodecs
             clLens.Clear();
             int numCodes = 4 + (int)_br.ReadBits(4);
             for (int i = 0; i < numCodes; i++) clLens[CodeLengthOrder[i]] = (byte)_br.ReadBits(3);
-            _scratch.Count = 0;
-            BuildTable(clLens, _scratch, out int off, out int mask);
-            var table = _scratch.Data;
+            var scratch = _ws.Scratch;
+            scratch.Count = 0;
+            BuildTable(clLens, scratch, out int off, out int mask);
+            var table = scratch.Data;
 
             int maxSymbol = lens.Length;
             if (_br.ReadBits(1) != 0)
@@ -405,7 +425,7 @@ namespace Aardvark.ImageCodecs
             if (maxLen > root)
             {
                 // size every sub table by the longest code below its root prefix
-                Span<byte> subLen = stackalloc byte[256];
+                Span<byte> subLen = stackalloc byte[1 << RootBits];
                 subLen.Clear();
                 Span<uint> nx = stackalloc uint[16];
                 next.CopyTo(nx);
@@ -420,7 +440,7 @@ namespace Aardvark.ImageCodecs
                         if (l > subLen[p]) subLen[p] = (byte)l;
                     }
                 }
-                for (int p = 0; p < 256; p++)
+                for (int p = 0; p < 1 << RootBits; p++)
                 {
                     if (subLen[p] == 0) continue;
                     int bits = subLen[p] - root;
@@ -463,17 +483,22 @@ namespace Aardvark.ImageCodecs
             0x4f, 0x10, 0x20, 0x62, 0x6e, 0x30, 0x73, 0x7d, 0x51, 0x5f, 0x40, 0x72, 0x7e, 0x61, 0x6f, 0x50, 0x71, 0x7f, 0x60, 0x70,
         };
 
+        /// <summary>
+        /// One symbol of the code whose root table starts at <paramref name="table"/>. The bit window feeds the next
+        /// lookup at once, so it is kept short: the table start is computed off that chain (by the caller), and the
+        /// shift takes the entry as it is (a shift count only looks at its low six bits, the code length here).
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static uint ReadSymbol(ref ulong val, ref int bits, uint* tables, int off, int mask)
+        static uint ReadSymbol(ref ulong val, ref int bits, uint* table, int mask)
         {
-            uint e = tables[off + ((uint)val & (uint)mask)];
+            uint e = table[(uint)val & (uint)mask];
             if ((e & 0x80) != 0)
             {
                 val >>= RootBits; bits -= RootBits;
-                e = tables[off + (e >> 8) + ((uint)val & ((1u << (int)(e & 0x7f)) - 1))];
+                e = table[(e >> 8) + ((uint)val & ((1u << (int)(e & 0x7f)) - 1))];
             }
-            int n = (int)(e & 0xff);
-            val >>= n; bits -= n;
+            val >>= (int)e;
+            bits -= (int)(e & 0xff);
             return e >> 8;
         }
 
@@ -489,7 +514,12 @@ namespace Aardvark.ImageCodecs
             // (the main image's buffer comes from the pool, the small transform images' are kept by the transforms)
             int first = end > Math.Max(Chunk, (long)_length * PixelsPerByte) ? Math.Min(end, Chunk) : (int)Math.Max(end, room);
             var data = room > 0 ? _rented = ArrayPool<uint>.Shared.Rent(first) : new uint[first];
-            uint[]? cache = cacheBits > 0 ? new uint[1 << cacheBits] : null;
+            uint[]? cache = null;
+            if (cacheBits > 0)
+            {
+                cache = _ws.Cache;
+                Array.Clear(cache, 0, 1 << cacheBits);
+            }
             int cacheShift = 32 - cacheBits;
 
             // the reader state lives in locals while the pixels are decoded
@@ -530,17 +560,17 @@ namespace Aardvark.ImageCodecs
                             if ((g[10] & FlagTrivialPixel) != 0) px = (uint)g[11];
                             else
                             {
-                                uint sym = ReadSymbol(ref val, ref bits, t, g[0], g[1]);
+                                uint sym = ReadSymbol(ref val, ref bits, t + g[0], g[1]);
                                 if (sym < NumLiteral)
                                 {
                                     if ((g[10] & FlagTrivialLiteral) != 0) px = (uint)g[11] | sym << 8;
                                     else
                                     {
                                         // a refill guarantees 33 bits, enough for two symbols
-                                        uint r = ReadSymbol(ref val, ref bits, t, g[2], g[3]);
+                                        uint r = ReadSymbol(ref val, ref bits, t + g[2], g[3]);
                                         Vp8lBitReader.Fill(ref val, ref bits, ref cur, bufEnd);
-                                        uint b = ReadSymbol(ref val, ref bits, t, g[4], g[5]);
-                                        uint a = g[7] == 0 ? t[g[6]] >> 8 : ReadSymbol(ref val, ref bits, t, g[6], g[7]);
+                                        uint b = ReadSymbol(ref val, ref bits, t + g[4], g[5]);
+                                        uint a = g[7] == 0 ? t[g[6]] >> 8 : ReadSymbol(ref val, ref bits, t + g[6], g[7]);
                                         px = a << 24 | r << 16 | sym << 8 | b;
                                     }
                                 }
@@ -555,7 +585,7 @@ namespace Aardvark.ImageCodecs
                                         val >>= extra; bits -= extra;
                                     }
                                     Vp8lBitReader.Fill(ref val, ref bits, ref cur, bufEnd);
-                                    int dist = (int)ReadSymbol(ref val, ref bits, t, g[8], g[9]) + 1;
+                                    int dist = (int)ReadSymbol(ref val, ref bits, t + g[8], g[9]) + 1;
                                     if (dist > 4)
                                     {
                                         int extra = (dist - 3) >> 1;
