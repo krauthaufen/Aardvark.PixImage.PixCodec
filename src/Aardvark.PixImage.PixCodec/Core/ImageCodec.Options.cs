@@ -36,8 +36,8 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom: JPEG (8 bit) and PNG (non-interlaced) without
-        /// ever holding the whole image (see <see cref="Jpeg.DecodeBands"/>, <see cref="Png.DecodeBands"/>), every other format
-        /// decoded whole and then cut. <paramref name="onBand"/> gets each band and the index of its first row; the band image
+        /// ever holding the whole image (see <see cref="Jpeg.DecodeBands"/>, <see cref="Png.DecodeBands"/>; progressive JPEG
+        /// keeps the coefficients of the whole image), every other format decoded whole and then cut. <paramref name="onBand"/> gets each band and the index of its first row; the band image
         /// may be reused for the next band, so copy what has to outlive the call. The pixels are as stored: the orientation is
         /// not applied, whatever <see cref="ImageDecodeOptions.ApplyOrientation"/> says. The other options apply. Returns the
         /// image's metadata.

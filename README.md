@@ -87,7 +87,7 @@ RawImage stored = ImageCodec.Decode("photo.jpg", new ImageDecodeOptions
 ImageCodec.Encode(img, "out.png");                  // format from the extension
 Jpeg.Encode(img, stream, new JpegEncodeOptions { Quality = 85, Progressive = true });
 
-Jpeg.DecodeBands(bytes, 64, (band, y) => Consume(band, y));   // rows 64 at a time, the image is never whole (JPEG, PNG)
+Jpeg.DecodeBands(bytes, 64, (band, y) => Consume(band, y));   // rows 64 at a time, the pixels are never whole (JPEG, PNG; progressive JPEG keeps its coefficients)
 Jpeg.Decode(bytes, new JpegDecodeOptions { ScaleEighths = 5, Rgba = true });   // 5/8 size by reduced IDCTs, straight to Rgba
 ImageInfo info = ImageCodec.GetInfo("scan.tif");    // headers and metadata, no pixels
 // info.Format, Width, Height, Channels, SampleType, Color, FrameCount,

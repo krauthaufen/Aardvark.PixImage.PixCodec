@@ -22,9 +22,10 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Decode at k/8 of the size, k = 1..8, by inverse DCTs of size k (0, the default, uses <see cref="ScaleDenominator"/>
         /// instead). The output is ceil(size * k / 8); each output sample is the area average of the full size decode over
-        /// the part of the block it covers, so the result is close to decoding and shrinking with a box filter, at a
-        /// fraction of the cost. k = 1, 2, 4 give exactly what the matching <see cref="ScaleDenominator"/> gives; 3, 5, 6, 7
-        /// are not bit identical to any other decoder. Ignored for lossless JPEG.
+        /// the part of the block it covers (the samples weighted by their overlap), so the result is close to decoding at
+        /// full size and averaging areas, with memory for the smaller output only. k = 1, 2, 4 are also faster than a full
+        /// decode; 3, 5, 6, 7 take about as long or longer. k = 1, 2, 4 give exactly what the matching
+        /// <see cref="ScaleDenominator"/> gives; 3, 5, 6, 7 are not bit identical to any other decoder. Ignored for lossless JPEG.
         /// </summary>
         public int ScaleEighths { get; set; }
 
@@ -335,7 +336,9 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom, without ever holding the whole image: 8 bit
         /// files go through small ring buffers, so memory stays at a few rows of MCUs plus one band, whatever the image size
-        /// (12 bit, lossless and multi-scan sequential files are decoded whole and then cut into bands). <paramref name="onBand"/>
+        /// (12 bit, lossless and multi-scan sequential files are decoded whole and then cut into bands). Progressive files
+        /// are streamed too, but keep the coefficients of the whole image until the last scan: two bytes per sample of every
+        /// component, as much as the decoded image or more. <paramref name="onBand"/>
         /// gets each band and the index of its first row; all bands but the last have <paramref name="bandHeight"/> rows. The
         /// band image is reused for the next band: copy what has to outlive the call. The pixels are as stored - the
         /// orientation is not applied (the metadata keeps it) - otherwise the options apply as for <see cref="Decode"/>
