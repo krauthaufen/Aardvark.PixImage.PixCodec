@@ -233,6 +233,24 @@ public class DecodeOptionsTests
         Assert.Equal(4095, d.GetData<ushort>()[3]);
     }
 
+    // rows of every length around the vector widths of the expansion to Rgba
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void JpegRgbaRowsOfEveryWidth(int channels)
+    {
+        for (int w = 1; w <= 40; w++)
+        {
+            var data = Jpeg.Encode(Photo(w, 5, channels), new JpegEncodeOptions { Quality = 95 });
+            var p = Jpeg.Decode(data).GetData<byte>();
+            var q = Jpeg.Decode(data, new JpegDecodeOptions { Rgba = true }).GetData<byte>();
+            Assert.Equal(w * 5 * 4, q.Length);
+            for (int i = 0; i < w * 5; i++)
+                for (int c = 0; c < 4; c++)
+                    Assert.Equal(c == 3 ? 255 : p[i * channels + (channels == 1 ? 0 : c)], q[i * 4 + c]);
+        }
+    }
+
     [Fact]
     public void TwelveBitJpegTo8BitUsesItsOwnRange()
     {

@@ -237,10 +237,30 @@ namespace Aardvark.ImageCodecs.JpegImpl
 
         static void ExpandToRgba(byte* src, int channels, byte* dst, int w)
         {
+            int x = 0;
+            var opaque = Vector128.Create(0xFF000000u).AsByte();
             if (channels == 1)
-                for (int x = 0; x < w; x++) ((uint*)dst)[x] = src[x] * 0x010101u | 0xFF000000u;
+            {
+                if (Vector128.IsHardwareAccelerated)
+                    for (; x + 16 <= w; x += 16)
+                    {
+                        var g = Vector128.Load(src + x);
+                        byte* d = dst + 4 * x;
+                        (Vector128.Shuffle(g, Vector128.Create((byte)0, 0, 0, 0x80, 1, 1, 1, 0x80, 2, 2, 2, 0x80, 3, 3, 3, 0x80)) | opaque).Store(d);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)4, 4, 4, 0x80, 5, 5, 5, 0x80, 6, 6, 6, 0x80, 7, 7, 7, 0x80)) | opaque).Store(d + 16);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)8, 8, 8, 0x80, 9, 9, 9, 0x80, 10, 10, 10, 0x80, 11, 11, 11, 0x80)) | opaque).Store(d + 32);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)12, 12, 12, 0x80, 13, 13, 13, 0x80, 14, 14, 14, 0x80, 15, 15, 15, 0x80)) | opaque).Store(d + 48);
+                    }
+                for (; x < w; x++) ((uint*)dst)[x] = src[x] * 0x010101u | 0xFF000000u;
+            }
             else
-                for (int x = 0; x < w; x++, src += 3) ((uint*)dst)[x] = src[0] | (uint)src[1] << 8 | (uint)src[2] << 16 | 0xFF000000u;
+            {
+                // 16 bytes read for the 12 of four pixels: the row buffer has 64 bytes to spare
+                if (Vector128.IsHardwareAccelerated)
+                    for (; x + 4 <= w; x += 4)
+                        (Vector128.Shuffle(Vector128.Load(src + 3 * x), Vector128.Create((byte)0, 1, 2, 0x80, 3, 4, 5, 0x80, 6, 7, 8, 0x80, 9, 10, 11, 0x80)) | opaque).Store(dst + 4 * x);
+                for (src += 3 * x; x < w; x++, src += 3) ((uint*)dst)[x] = src[0] | (uint)src[1] << 8 | (uint)src[2] << 16 | 0xFF000000u;
+            }
         }
 
         /// <summary>The last component sample row that output row <paramref name="y"/> reads.</summary>
