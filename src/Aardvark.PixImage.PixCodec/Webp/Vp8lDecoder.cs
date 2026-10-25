@@ -77,6 +77,9 @@ namespace Aardvark.ImageCodecs
         readonly long _maxPixels;
         readonly int _length;
         readonly Workspace _ws;
+        /// <summary>Checked between steps of <see cref="CancelStep"/> pixels and between the inverse transforms.</summary>
+        readonly System.Threading.CancellationToken _cancel;
+        const int CancelStep = 1 << 16;
 
         /// <summary>Buffers that one decode after the other on a thread can share: the streams of an image (transform
         /// images first, then the pixels) are read one at a time, so one set serves them all.</summary>
@@ -89,11 +92,12 @@ namespace Aardvark.ImageCodecs
 
         [ThreadStatic] static Workspace? t_workspace;
 
-        Vp8lDecoder(byte* data, int length, long maxPixels)
+        Vp8lDecoder(byte* data, int length, long maxPixels, System.Threading.CancellationToken cancel)
         {
             _br = new Vp8lBitReader(data, length);
             _maxPixels = maxPixels;
             _length = length;
+            _cancel = cancel;
             _ws = t_workspace ?? new Workspace();
             t_workspace = null;
         }
@@ -116,7 +120,8 @@ namespace Aardvark.ImageCodecs
         /// Decodes a complete VP8L chunk payload to ARGB pixels (0xAARRGGBB). The array may be longer than the image;
         /// when <paramref name="rented"/> it comes from <see cref="ArrayPool{T}.Shared"/> and goes back there after use.
         /// </summary>
-        public static uint[] Decode(ReadOnlySpan<byte> data, out int width, out int height, long maxPixels, out bool rented)
+        public static uint[] Decode(ReadOnlySpan<byte> data, out int width, out int height, long maxPixels, out bool rented,
+            System.Threading.CancellationToken cancel = default)
         {
             if (!TryReadHeader(data, out width, out height, out _))
                 throw new ImageFormatException("invalid WebP lossless header");
@@ -124,7 +129,7 @@ namespace Aardvark.ImageCodecs
                 throw new ImageNotSupportedException($"WebP image of {width}x{height} exceeds WebpDecodeOptions.MaxPixels ({maxPixels})");
             fixed (byte* p = data)
             {
-                var dec = new Vp8lDecoder(p + 5, data.Length - 5, maxPixels);
+                var dec = new Vp8lDecoder(p + 5, data.Length - 5, maxPixels, cancel);
                 var px = dec.DecodeImageStream(width, height, true);
                 rented = px == dec._rented;
                 dec.Done();
@@ -133,11 +138,12 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>Decodes a header-less image stream of known size (the payload of a compressed ALPH chunk); as <see cref="Decode"/>.</summary>
-        public static uint[] DecodeHeaderless(ReadOnlySpan<byte> data, int width, int height, out bool rented)
+        public static uint[] DecodeHeaderless(ReadOnlySpan<byte> data, int width, int height, out bool rented,
+            System.Threading.CancellationToken cancel = default)
         {
             fixed (byte* p = data)
             {
-                var dec = new Vp8lDecoder(p, data.Length, (long)width * height);
+                var dec = new Vp8lDecoder(p, data.Length, (long)width * height, cancel);
                 var px = dec.DecodeImageStream(width, height, true);
                 rented = px == dec._rented;
                 dec.Done();
@@ -239,6 +245,7 @@ namespace Aardvark.ImageCodecs
             {
                 for (int i = numTransforms - 1; i >= 0; i--)
                 {
+                    _cancel.ThrowIfCancellationRequested();
                     ref Transform t = ref transforms![i];
                     switch (t.Type)
                     {
@@ -534,7 +541,9 @@ namespace Aardvark.ImageCodecs
                 int* g = gs;
                 while (pos < end)
                 {
-                    int limit = Math.Min(end, data.Length);
+                    // in steps, with the token checked in between; a copy that crosses the end of a step is pending
+                    _cancel.ThrowIfCancellationRequested();
+                    int limit = (int)Math.Min(Math.Min(end, data.Length), (long)pos + CancelStep);
                     int pendingLength = 0, pendingDist = 0;
                     fixed (uint* d = data)
                     {
@@ -628,14 +637,17 @@ namespace Aardvark.ImageCodecs
                         if (pendingLength == 0) pos = (int)(dp - d);
                     }
                     if (pos >= end) break;
-                    int size = (int)Math.Min(end, Math.Max((long)data.Length * 2, (long)pos + pendingLength));
-                    if (room == 0) Array.Resize(ref data, size);
-                    else
+                    if ((long)pos + Math.Max(pendingLength, 1) > data.Length)
                     {
-                        var bigger = ArrayPool<uint>.Shared.Rent(size == end ? (int)Math.Max(end, room) : size);
-                        data.AsSpan(0, pos).CopyTo(bigger);
-                        ArrayPool<uint>.Shared.Return(data);
-                        data = _rented = bigger;
+                        int size = (int)Math.Min(end, Math.Max((long)data.Length * 2, (long)pos + pendingLength));
+                        if (room == 0) Array.Resize(ref data, size);
+                        else
+                        {
+                            var bigger = ArrayPool<uint>.Shared.Rent(size == end ? (int)Math.Max(end, room) : size);
+                            data.AsSpan(0, pos).CopyTo(bigger);
+                            ArrayPool<uint>.Shared.Return(data);
+                            data = _rented = bigger;
+                        }
                     }
                     if (pendingLength > 0)
                     {

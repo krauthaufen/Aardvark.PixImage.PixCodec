@@ -57,7 +57,7 @@ namespace Aardvark.ImageCodecs
             if (f.Lossless)
             {
                 opt.CancellationToken.ThrowIfCancellationRequested();
-                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels, out bool rented);
+                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels, out bool rented, opt.CancellationToken);
                 opt.CancellationToken.ThrowIfCancellationRequested();
                 var px = GC.AllocateUninitializedArray<byte>(w * h * channels);
                 ArgbToBytes(argb, w * h, px, channels);
@@ -69,7 +69,7 @@ namespace Aardvark.ImageCodecs
             try
             {
                 // the alpha plane goes straight into the conversion
-                if (channels == 4 && f.AlphLength >= 0) a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height);
+                if (channels == 4 && f.AlphLength >= 0) a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height, opt.CancellationToken);
                 var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
                 WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded, a);
                 return dst;

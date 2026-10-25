@@ -137,6 +137,75 @@ public class DecodeOptionsTests
         Assert.Equal(jpeg, Jpeg.Encode(img, new JpegEncodeOptions { CancellationToken = live }));
     }
 
+    // a cancelled WebP encode stops before converting the pixels (the ARGB copy alone is 4 MiB here)
+    [Fact]
+    public void WebpEncodeChecksCancellationFirst()
+    {
+        var img = Photo(1024, 1024);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        foreach (var lossless in new[] { false, true })
+        {
+            var o = new WebpEncodeOptions { Lossless = lossless, CancellationToken = cts.Token };
+            Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, o));
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, o));
+            long used = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.True(used < 1 << 20, $"lossless {lossless}: {used} bytes allocated");
+        }
+    }
+
+    // the colour conversion before the first macroblock row is about a fifth of a lossy encode
+    [Fact]
+    public void WebpLossyEncodeCancelsBeforeTheMacroblocks()
+    {
+        var img = Photo(2048, 2048);
+        AssertCancelsEarly(ct => Webp.Encode(img, new WebpEncodeOptions { Quality = 88, CancellationToken = ct }), 40, 10);
+    }
+
+    [Fact]
+    public void WebpLosslessDecodeCancelsWhileRunning()
+    {
+        var data = Webp.Encode(Photo(2048, 2048), new WebpEncodeOptions { Lossless = true, Method = 0 });
+        AssertCancelsEarly(ct => Webp.Decode(data, new WebpDecodeOptions { CancellationToken = ct }), 10, 2);
+    }
+
+    [Fact]
+    public void WebpLosslessEncodeCancelsWhileRunning()
+    {
+        var img = Photo(1024, 1024);
+        AssertCancelsEarly(ct => Webp.Encode(img, new WebpEncodeOptions { Lossless = true, CancellationToken = ct }), 10, 2);
+    }
+
+    /// <summary>
+    /// Cancelled at 1 / <paramref name="cancelAt"/> of its uncancelled time T (the best of two runs after a warm-up), the
+    /// work throws OperationCanceledException before T / <paramref name="endBy"/>: checks only before and after a long
+    /// stretch of work let it run on to the end of that stretch.
+    /// </summary>
+    static void AssertCancelsEarly(Action<CancellationToken> work, int cancelAt, int endBy)
+    {
+        work(CancellationToken.None);
+        double full = double.MaxValue;
+        for (int i = 0; i < 2; i++)
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            work(CancellationToken.None);
+            full = Math.Min(full, sw.Elapsed.TotalMilliseconds);
+        }
+        using var cts = new CancellationTokenSource();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var canceller = new Thread(() =>
+        {
+            while (clock.Elapsed.TotalMilliseconds < full / cancelAt) Thread.SpinWait(100);
+            cts.Cancel();
+        }) { IsBackground = true };
+        canceller.Start();
+        Assert.ThrowsAny<OperationCanceledException>(() => work(cts.Token));
+        double ended = clock.Elapsed.TotalMilliseconds;
+        canceller.Join();
+        Assert.True(ended < full / endBy, $"cancelled at {full / cancelAt:F1} ms, ended at {ended:F1} ms, uncancelled {full:F1} ms");
+    }
+
     [Theory]
     [InlineData(1, 1, false)]
     [InlineData(3, 1, false)]

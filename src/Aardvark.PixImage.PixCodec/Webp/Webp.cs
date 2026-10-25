@@ -47,7 +47,7 @@ namespace Aardvark.ImageCodecs
     {
         /// <summary>
         /// Stops the decode with an <see cref="OperationCanceledException"/>: checked per macroblock row for lossy data,
-        /// before and after each lossless bitstream.
+        /// every 65536 pixels and between the inverse transforms of lossless data (alpha planes included).
         /// </summary>
         public System.Threading.CancellationToken CancellationToken { get; set; }
 
@@ -90,8 +90,9 @@ namespace Aardvark.ImageCodecs
     public sealed class WebpEncodeOptions
     {
         /// <summary>
-        /// Stops the encode with an <see cref="OperationCanceledException"/>: checked per macroblock row for lossy data,
-        /// before and after each lossless bitstream.
+        /// Stops the encode with an <see cref="OperationCanceledException"/>: checked before the pixels are converted, per
+        /// row of the colour conversion and per macroblock row of the lossy passes, between the phases of a lossless
+        /// encode (alpha planes included) and every 65536 positions of its match search.
         /// </summary>
         public System.Threading.CancellationToken CancellationToken { get; set; }
 

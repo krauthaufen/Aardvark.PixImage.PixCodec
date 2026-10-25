@@ -65,13 +65,16 @@ namespace Aardvark.ImageCodecs
         const int MaxEntropyBlocks = 2600;
 
         readonly int _method;
+        /// <summary>Checked between the phases and every <see cref="CancelStep"/> positions of the long passes.</summary>
+        readonly System.Threading.CancellationToken _cancel;
+        const int CancelStep = 1 << 16;
 
-        Vp8lEncoder(int method) { _method = method; }
+        Vp8lEncoder(int method, System.Threading.CancellationToken cancel) { _method = method; _cancel = cancel; }
 
         /// <summary>Encodes ARGB pixels as a complete VP8L chunk payload (signature and size header included).</summary>
-        public static byte[] Encode(uint[] argb, int width, int height, bool alphaHint, int method)
+        public static byte[] Encode(uint[] argb, int width, int height, bool alphaHint, int method, System.Threading.CancellationToken cancel = default)
         {
-            var enc = new Vp8lEncoder(Math.Clamp(method, 0, 6));
+            var enc = new Vp8lEncoder(Math.Clamp(method, 0, 6), cancel);
             var bw = enc.EncodeBest(argb, width, height, true, w =>
             {
                 w.Put(0x2f, 8);
@@ -84,9 +87,9 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>Encodes a header-less image stream; only the green channel matters (ALPH chunk payload).</summary>
-        public static byte[] EncodeHeaderless(uint[] argb, int width, int height, int method)
+        public static byte[] EncodeHeaderless(uint[] argb, int width, int height, int method, System.Threading.CancellationToken cancel = default)
         {
-            var enc = new Vp8lEncoder(Math.Clamp(method, 0, 6));
+            var enc = new Vp8lEncoder(Math.Clamp(method, 0, 6), cancel);
             return enc.EncodeBest(argb, width, height, false, _ => { }).ToArray();
         }
 
@@ -123,7 +126,7 @@ namespace Aardvark.ImageCodecs
                 if (_method >= 1)
                 {
                     // a quick trial encode says more than the entropy of the symbols: it sees what LZ77 does
-                    var quick = new Vp8lEncoder(0);
+                    var quick = new Vp8lEncoder(0, _cancel);
                     for (int i = 0; i < ranked.Count; i++)
                     {
                         var trial = new Vp8lBitWriter();
@@ -155,6 +158,7 @@ namespace Aardvark.ImageCodecs
             Vp8lBitWriter? best = null;
             foreach (var cfg in configs)
             {
+                _cancel.ThrowIfCancellationRequested();
                 var bw = new Vp8lBitWriter();
                 header(bw);
                 // the transforms work in place; the palette path builds its own index image
@@ -527,12 +531,13 @@ namespace Aardvark.ImageCodecs
             fixed (ushort* pr = runs)
             fixed (int* ph = head, pc = chain)
             {
-                int pos;
+                int pos, nextCheck = 0;
                 // large images at the usual effort: leave the hash chain out when a probe finds it useless
-                if (n >= 1 << 19 && _method <= 4 && !ChainPaysOff(p, pr, n, xsize, ph, pc, hashShift))
+                if (n >= 1 << 19 && _method <= 4 && !ChainPaysOff(p, pr, n, xsize, ph, pc, hashShift, _cancel))
                 {
                     for (pos = 0; pos < n;)
                     {
+                        if (pos >= nextCheck) { _cancel.ThrowIfCancellationRequested(); nextCheck = pos + CancelStep; }
                         int len = Search(p, n, xsize, pos, pc, -1, 0, 0, out int dist);
                         if (len >= 2 && Worthwhile(p + pos, len, DistanceCode(xsize, dist), model)) { tokens.Add((uint)dist, len); pos += len; }
                         else tokens.Add(p[pos++], 0);
@@ -545,6 +550,7 @@ namespace Aardvark.ImageCodecs
                     int prevLen = 0, prevDist = 0;
                     for (pos = 0; pos < n; pos++)
                     {
+                        if ((pos & (CancelStep - 1)) == 0) _cancel.ThrowIfCancellationRequested();
                         int len, dist = 0;
                         // look the position up and enter it in one go: a single visit to its bucket
                         int candidate = -1;
@@ -572,9 +578,11 @@ namespace Aardvark.ImageCodecs
                 }
 
                 pos = 0;
+                nextCheck = 0;
                 int pendingLen = 0, pendingDist = 0;
                 while (pos < n)
                 {
+                    if (pos >= nextCheck) { _cancel.ThrowIfCancellationRequested(); nextCheck = pos + CancelStep; }
                     int len, dist;
                     if (pendingLen > 0) { len = pendingLen; dist = pendingDist; pendingLen = 0; }
                     else if (matches != null) { len = (int)(matches[pos] >> 20); dist = (int)(matches[pos] & 0xfffff); }
@@ -631,6 +639,7 @@ namespace Aardvark.ImageCodecs
                 {
                     for (int i = 0; i < n; i++)
                     {
+                        if ((i & (CancelStep - 1)) == 0) _cancel.ThrowIfCancellationRequested();
                         float c0 = cost[i];
                         float c = c0 + model.LiteralCost(px[i]);
                         if (c < cost[i + 1]) { cost[i + 1] = c; step[i + 1] = 1; }      // (the candidate does not matter here)
@@ -784,12 +793,13 @@ namespace Aardvark.ImageCodecs
         /// Tries the match search on a few windows spread over the image and tells whether matches beyond plain runs
         /// occur at all. Photographs have next to none, and the hash chain is the most expensive part of the encoder.
         /// </summary>
-        static bool ChainPaysOff(uint* p, ushort* run, int n, int xsize, int* head, int* chain, int hashShift)
+        static bool ChainPaysOff(uint* p, ushort* run, int n, int xsize, int* head, int* chain, int hashShift, System.Threading.CancellationToken cancel)
         {
             const int Windows = 16, Size = 8192;
             long covered = 0;
             for (int k = 0; k < Windows; k++)
             {
+                cancel.ThrowIfCancellationRequested();
                 int start = (int)((long)(n - Size) * k / (Windows - 1)), end = start + Size;
                 for (int pos = start; pos < end;)
                 {
@@ -938,6 +948,7 @@ namespace Aardvark.ImageCodecs
 
             for (int round = 0; ; round++)
             {
+                _cancel.ThrowIfCancellationRequested();
                 var clusters = new int[m][];
                 for (int c = 0; c < m; c++) clusters[c] = new int[lay.Total];
                 for (int b = 0; b < n; b++) AddInto(clusters[assign[b]], hist[b]);
@@ -1193,7 +1204,9 @@ namespace Aardvark.ImageCodecs
             int n = w * h;
             int iters = _method switch { 0 => 2, 1 => 8, 2 => 16, 3 => 32, 4 => 64, 5 => 128, _ => 256 };
             var t = BackwardReferences(px, n, w, iters, _method >= 1, _method >= 1);
+            _cancel.ThrowIfCancellationRequested();
             int cacheBits = _method >= 1 ? SelectCacheBits(t, px, _method >= 4 ? MaxCacheBits : _method >= 2 ? 8 : 6) : 0;
+            _cancel.ThrowIfCancellationRequested();
             // a longer match search is no promise of a smaller file: above the standard effort the standard parse runs too
             Tokens? standard = _method >= 5 ? BackwardReferences(px, n, w, 64, true, true) : null;
             int blockBits = Math.Clamp((palette ? 9 : 7) - _method, 2, 9);
@@ -1220,6 +1233,7 @@ namespace Aardvark.ImageCodecs
             Vp8lBitWriter? best = null;
             foreach (var v in variants)
             {
+                _cancel.ThrowIfCancellationRequested();
                 if (v.block > 9) continue;
                 var trial = new Vp8lBitWriter();
                 WriteImage(trial, t, px, w, h, v.cache, v.block, v.bins);
@@ -1230,6 +1244,7 @@ namespace Aardvark.ImageCodecs
                 int cache = SelectCacheBits(standard, px, MaxCacheBits);
                 foreach (int block in entropyImage ? new[] { blockBits, blockBits == 2 ? 0 : (palette ? 5 : 3) } : new[] { 0 })
                 {
+                    _cancel.ThrowIfCancellationRequested();
                     int b = block;
                     while (b > 0 && (long)SubSize(w, b) * SubSize(h, b) > MaxEntropyBlocks) b++;
                     var trial = new Vp8lBitWriter();
@@ -1258,6 +1273,7 @@ namespace Aardvark.ImageCodecs
                     var blockHist = new int[blocksWide * blocksHigh][];
                     for (int i = 0; i < blockHist.Length; i++) blockHist[i] = new int[lay.Total];
                     BuildHistograms(t, px, w, cacheBits, blockBits, blocksWide, blockHist, lay);
+                    _cancel.ThrowIfCancellationRequested();
                     assign = ClusterHistograms(blockHist, lay, bins, out numGroups);
                     if (numGroups == 1) assign = null;
                 }
@@ -1280,6 +1296,7 @@ namespace Aardvark.ImageCodecs
                 for (int i = 0; i < numGroups; i++) hist[i] = new int[lay.Total];
                 BuildGroupHistograms(t, px, w, cacheBits, blockBits, blocksWide, assign, hist, lay);
             }
+            _cancel.ThrowIfCancellationRequested();
             var groups = new GroupCodes[hist.Length];
             for (int i = 0; i < hist.Length; i++) groups[i] = BuildAndWriteCodes(bw, hist[i], lay);
             WriteTokens(bw, t, px, w, cacheBits, blockBits, blocksWide, assign, groups, lay);
@@ -1320,6 +1337,7 @@ namespace Aardvark.ImageCodecs
                 bw.Append(table!);
                 px = ApplyPalette(px, w, h, pal, out cw);
             }
+            _cancel.ThrowIfCancellationRequested();
             if (cfg.SubGreen)
             {
                 bw.Put(1, 1); bw.Put(2, 2);
@@ -1339,8 +1357,10 @@ namespace Aardvark.ImageCodecs
                 var img = new uint[tw * th];
                 for (int i = 0; i < img.Length; i++) img[i] = 0xff000000 | (uint)modes[i] << 8;
                 EncodeSubImage(bw, img, tw, th);
+                _cancel.ThrowIfCancellationRequested();
                 ApplyPredictors(px, cw, h, bits, modes);
             }
+            _cancel.ThrowIfCancellationRequested();
             if (cfg.CrossColor)
             {
                 int bits = cfg.Bits != 0 ? cfg.Bits : cw * h > 1 << 22 ? 5 : 4;
@@ -1353,6 +1373,7 @@ namespace Aardvark.ImageCodecs
                     EncodeSubImage(bw, img, tw, th);
                 }
             }
+            _cancel.ThrowIfCancellationRequested();
             bw.Put(0, 1);
             EncodeImage(bw, px, cw, h, cfg.Palette);
         }
@@ -1644,6 +1665,7 @@ namespace Aardvark.ImageCodecs
                 int count = 0, bestCount = 0;
                 for (int by = 0; by < th; by++)
                 {
+                    _cancel.ThrowIfCancellationRequested();
                     int y0 = by << bits, y1 = Math.Min(h, y0 + size);
                     for (int bx = 0; bx < tw; bx++)
                     {
@@ -1734,6 +1756,7 @@ namespace Aardvark.ImageCodecs
             int prevG2r = 0, prevG2b = 0, prevR2b = 0;
             for (int by = 0; by < th; by++)
             {
+                _cancel.ThrowIfCancellationRequested();
                 int y0 = by << bits, y1 = Math.Min(h, y0 + size);
                 for (int bx = 0; bx < tw; bx++)
                 {

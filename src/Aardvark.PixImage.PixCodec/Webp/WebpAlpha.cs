@@ -8,7 +8,7 @@ namespace Aardvark.ImageCodecs
     internal static unsafe class WebpAlpha
     {
         /// <summary>The alpha plane, in an array from <see cref="System.Buffers.ArrayPool{T}.Shared"/> that may be longer.</summary>
-        public static byte[] Decode(ReadOnlySpan<byte> chunk, int width, int height)
+        public static byte[] Decode(ReadOnlySpan<byte> chunk, int width, int height, System.Threading.CancellationToken cancel = default)
         {
             if (chunk.Length < 1) throw new ImageFormatException("empty WebP alpha chunk");
             int method = chunk[0] & 3, filter = (chunk[0] >> 2) & 3;     // the pre-processing bits are informative only
@@ -21,7 +21,7 @@ namespace Aardvark.ImageCodecs
             }
             else if (method == 1)
             {
-                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height, out bool rented);
+                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height, out bool rented, cancel);
                 GreenToBytes(argb, alpha, n);
                 if (rented) System.Buffers.ArrayPool<uint>.Shared.Return(argb);
             }
