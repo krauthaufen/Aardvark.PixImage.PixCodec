@@ -37,7 +37,7 @@ to run the net8.0 tests.
 | Path | Contents |
 |------|----------|
 | `src/Aardvark.PixImage.PixCodec/Core` | `RawImage`, `RawVolume` / `PhysicalMetadata` (volumes), `ImageCodec` (format detection, `Decode`, `GetInfo`, `DecodeVolume`), managed zlib / zstd / xz / gzip / bzip2 / Brotli (decode) |
-| `src/Aardvark.PixImage.PixCodec/<Format>` | one folder per format: `Png`, `Jpeg`, `JpegLs`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Jxl` (JPEG XL; encoder in the JxlEncoder*.cs files), `JpegXr` (JPEG XR), `Jbig`, `Bmp`, `Tga`, `Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Qoi`, `Ico` (with ANI), `Icns`, `Lerc`, `Pcx` (+ DCX), `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dicom` (files, DICOMDIR, series), `Dpx`, `Cineon` |
+| `src/Aardvark.PixImage.PixCodec/<Format>` | one folder per format: `Png`, `Jpeg`, `JpegLs`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Jxl` (JPEG XL; encoder in the JxlEncoder*.cs files), `JpegXr` (JPEG XR), `Jbig`, `Bmp`, `Tga`, `Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Qoi`, `Ico` (with ANI), `Icns`, `Lerc`, `Pcx` (+ DCX), `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Envi` (.hdr + sample file), `Nitf` (NITF / NSIF), `Dicom` (files, DICOMDIR, series), `Dpx`, `Cineon` |
 | `src/Aardvark.PixImage.PixCodec/Geo` | georeferencing: `GeoReference` / `GeoCrs` / `GeoUnits` (shared by the georeferenced formats), `GeoTiff` (GeoTIFF 1.1 tags and GeoKeys) |
 | `src/Aardvark.PixImage.PixCodec/Metadata` | EXIF / XMP / IPTC / GPS reading without decoding pixels, lossless metadata writing |
 | `src/Aardvark.PixImage.PixCodec/Color` | ICC profiles and colour management |
@@ -88,7 +88,7 @@ to run the net8.0 tests.
   script: `pxref.missing(name)` for a missing tool, `pxref.unverifiable(why)` for a file no reference can read) or
   `[TestDataFact]` / `[TestDataTheory]`.
 - Oracle locations: python (`python3`, else `python`) with `tests/oracle/requirements.txt` (pydicom with the pylibjpeg
-  plugins and pyjpegls for DICOM, rasterio (GDAL) and tifffile for GeoTIFF); the volume oracles use
+  plugins and pyjpegls for DICOM, rasterio (GDAL) and tifffile for GeoTIFF, NITF and ENVI, pyproj for ENVI: `tests/oracle/envi_read.py` is what GDAL reads); the volume oracles use
   `PIXCODEC_PYTHON` or `.tmp/venv` if present. Tools on the PATH: `magick` (ImageMagick 7), `zstd`, `7z`, `ffmpeg`,
   netpbm (`pamtopnm`, `pngtopam`, `sgitopnm`, `wbmptopbm`), `pngcheck`, `cjxl` / `djxl`. By variable: `ASTCENC`,
   `PIXCODEC_KTX`, `PIXCODEC_BASISU`, `EXIFTOOL`, `PIXCODEC_ULTRAHDR` (libultrahdr's `ultrahdr_app`), `EXR_ORACLE` (`tests/oracle/exr_oracle.cpp`), `PIXCODEC_JBIGKIT` (jbigkit's

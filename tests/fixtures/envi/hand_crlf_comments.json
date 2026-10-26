@@ -1,0 +1,38 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 2,
+ "dtype": "int16",
+ "transform": [
+  10.0,
+  -0.0,
+  500000.0,
+  -0.0,
+  -10.0,
+  4000000.0
+ ],
+ "epsg": 32733,
+ "geographic": false,
+ "projected": true,
+ "linearFactor": 1.0,
+ "nodata": null,
+ "descriptions": [
+  "first band",
+  "second band"
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "Samples": "7",
+  "lines": "5",
+  "bands": "2",
+  "data_type": "2",
+  "interleave": "BIL",
+  "byte_order": "0",
+  "band_names": "first band, second band",
+  "map_info": "UTM, 1, 1, 500000, 4000000, 10, 10, 33, South, WGS-84"
+ },
+ "complex": false,
+ "dataFile": "hand_crlf_comments.img",
+ "headerFile": "hand_crlf_comments.hdr"
+}

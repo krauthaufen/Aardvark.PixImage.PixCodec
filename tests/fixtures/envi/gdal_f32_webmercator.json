@@ -1,0 +1,42 @@
+{
+ "width": 9,
+ "height": 7,
+ "bands": 2,
+ "dtype": "float32",
+ "transform": [
+  100.0,
+  -0.0,
+  1000000.0,
+  -0.0,
+  -100.0,
+  6000000.0
+ ],
+ "epsg": 3857,
+ "geographic": false,
+ "projected": true,
+ "linearFactor": 1.0,
+ "nodata": null,
+ "descriptions": [
+  "Band 1",
+  "Band 2"
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "description": "/home/schorsch/projects/Aardvark.PixImage.PixCodec/.claude/worktrees/agent-a7ea44915b199865d/tests/oracle/../fixtures/envi/gdal_f32_webmercator.img",
+  "samples": "9",
+  "lines": "7",
+  "bands": "2",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "4",
+  "interleave": "bsq",
+  "byte_order": "0",
+  "map_info": "Mercator_1SP, 1, 1, 1000000, 6000000, 100, 100",
+  "coordinate_system_string": "PROJCS[\"WGS_1984_Web_Mercator_Auxiliary_Sphere\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Mercator_Auxiliary_Sphere\"],PARAMETER[\"False_Easting\",0.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",0.0],PARAMETER[\"Standard_Parallel_1\",0.0],PARAMETER[\"Auxiliary_Sphere_Type\",0.0],UNIT[\"Meter\",1.0]]",
+  "band_names": "Band 1,Band 2"
+ },
+ "complex": false,
+ "dataFile": "gdal_f32_webmercator.img",
+ "headerFile": "gdal_f32_webmercator.hdr"
+}

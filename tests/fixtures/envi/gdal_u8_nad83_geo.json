@@ -1,0 +1,41 @@
+{
+ "width": 9,
+ "height": 7,
+ "bands": 1,
+ "dtype": "uint8",
+ "transform": [
+  0.01,
+  -0.0,
+  -120.0,
+  -0.0,
+  -0.01,
+  40.0
+ ],
+ "epsg": 4269,
+ "geographic": true,
+ "projected": false,
+ "linearFactor": null,
+ "nodata": null,
+ "descriptions": [
+  "Band 1"
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "description": "/home/schorsch/projects/Aardvark.PixImage.PixCodec/.claude/worktrees/agent-a7ea44915b199865d/tests/oracle/../fixtures/envi/gdal_u8_nad83_geo.img",
+  "samples": "9",
+  "lines": "7",
+  "bands": "1",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "1",
+  "interleave": "bsq",
+  "byte_order": "0",
+  "map_info": "Geographic Lat/Lon, 1, 1, -120, 40, 0.01, 0.01,North America 1983",
+  "coordinate_system_string": "GEOGCS[\"GCS_North_American_1983\",DATUM[\"D_North_American_1983\",SPHEROID[\"GRS_1980\",6378137.0,298.257222101]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]]",
+  "band_names": "Band 1"
+ },
+ "complex": false,
+ "dataFile": "gdal_u8_nad83_geo.img",
+ "headerFile": "gdal_u8_nad83_geo.hdr"
+}

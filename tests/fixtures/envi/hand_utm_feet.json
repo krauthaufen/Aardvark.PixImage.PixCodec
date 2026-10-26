@@ -1,0 +1,37 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 1,
+ "dtype": "uint8",
+ "transform": [
+  10.0,
+  -0.0,
+  500000.0,
+  -0.0,
+  -10.0,
+  4000000.0
+ ],
+ "epsg": null,
+ "geographic": false,
+ "projected": true,
+ "linearFactor": 0.3048,
+ "nodata": null,
+ "descriptions": [
+  null
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "samples": "7",
+  "lines": "5",
+  "bands": "1",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "1",
+  "interleave": "bsq",
+  "byte_order": "0"
+ },
+ "complex": false,
+ "dataFile": "hand_utm_feet.img",
+ "headerFile": "hand_utm_feet.hdr"
+}

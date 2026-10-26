@@ -92,6 +92,8 @@ namespace Aardvark.ImageCodecs
         Dicom,
         /// <summary>NITF 2.0 / 2.1 and NSIF 1.0 (.ntf, .nitf, .nsf): defence and remote sensing imagery.</summary>
         Nitf,
+        /// <summary>ENVI raster: a text header (.hdr) and the raw samples in a file next to it.</summary>
+        Envi,
     }
 
     /// <summary>

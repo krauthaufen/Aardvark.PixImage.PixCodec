@@ -438,13 +438,7 @@ namespace Aardvark.Data
         }
 
         static bool IsScientific(string path)
-        {
-            using var fs = File.OpenRead(path);
-            var b = new byte[8192];
-            int n = fs.Read(b, 0, b.Length);
-            var f = ImageCodec.DetectFormat(b.AsSpan(0, n));
-            return f is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits or ImageFormat.Dicom;
-        }
+            => ImageCodec.SniffFile(path) is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits or ImageFormat.Dicom or ImageFormat.Envi;
 
         /// <inheritdoc cref="LoadVolume(string, int, int)"/>
         public static PixVolume LoadVolume(Stream stream, int mip = 0, int item = 0) => ImageCodec.WithData(stream, d => LoadVolumeCore(d, mip, item));

@@ -1,0 +1,40 @@
+{
+ "width": 9,
+ "height": 7,
+ "bands": 1,
+ "dtype": "uint16",
+ "transform": [
+  10.085752212224284,
+  1.5091727249104285,
+  500000.0,
+  1.4872465319760226,
+  -9.939220178320102,
+  4000000.0
+ ],
+ "epsg": 32633,
+ "geographic": false,
+ "projected": true,
+ "linearFactor": 1.0,
+ "nodata": null,
+ "descriptions": [
+  "Band 1"
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "description": "/home/schorsch/projects/Aardvark.PixImage.PixCodec/.claude/worktrees/agent-a7ea44915b199865d/tests/oracle/../fixtures/envi/gdal_u16_rotated.img",
+  "samples": "9",
+  "lines": "7",
+  "bands": "1",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "12",
+  "interleave": "bsq",
+  "byte_order": "0",
+  "coordinate_system_string": "PROJCS[\"WGS_1984_UTM_Zone_33N\",GEOGCS[\"GCS_WGS_1984\",DATUM[\"D_WGS_1984\",SPHEROID[\"WGS_1984\",6378137.0,298.257223563]],PRIMEM[\"Greenwich\",0.0],UNIT[\"Degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"False_Easting\",500000.0],PARAMETER[\"False_Northing\",0.0],PARAMETER[\"Central_Meridian\",15.0],PARAMETER[\"Scale_Factor\",0.9996],PARAMETER[\"Latitude_Of_Origin\",0.0],UNIT[\"Meter\",1.0]]",
+  "band_names": "Band 1"
+ },
+ "complex": false,
+ "dataFile": "gdal_u16_rotated.img",
+ "headerFile": "gdal_u16_rotated.hdr"
+}

@@ -1,0 +1,16 @@
+ENVI
+description = {
+/home/schorsch/projects/Aardvark.PixImage.PixCodec/.claude/worktrees/agent-a7ea44915b199865d/tests/oracle/../fixtures/envi/gdal_u16_stateplane_ft.img}
+samples = 9
+lines   = 7
+bands   = 1
+header offset = 0
+file type = ENVI Standard
+data type = 12
+interleave = bsq
+byte order = 0
+map info = {Lambert Conformal Conic, 1, 1, 6000000, 2000000, 2, 2,North America 1983, units=Feet}
+projection info = {4, 6378137, 6356752.314140356, 36.5, -120.5, 2000000.000101601, 500000.0001016002, 38.4333333333333, 37.0666666666667,North America 1983, Lambert Conformal Conic}
+coordinate system string = {PROJCS["NAD_1983_StatePlane_California_III_FIPS_0403_Feet",GEOGCS["GCS_North_American_1983",DATUM["D_North_American_1983",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",6561666.667],PARAMETER["False_Northing",1640416.667],PARAMETER["Central_Meridian",-120.5],PARAMETER["Standard_Parallel_1",38.4333333333333],PARAMETER["Standard_Parallel_2",37.0666666666667],PARAMETER["Latitude_Of_Origin",36.5],UNIT["US survey foot",0.304800609601219]]}
+band names = {
+Band 1}
