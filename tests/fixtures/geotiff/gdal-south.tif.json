@@ -1,0 +1,114 @@
+{
+ "what": "UTM 33S (EPSG:32733)",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    30.0,
+    0.0,
+    500000.0,
+    0.0,
+    -30.0,
+    7000000.0
+   ],
+   "epsg": 32733,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  },
+  "standard": {
+   "transform": [
+    30.0,
+    0.0,
+    500000.0,
+    0.0,
+    -30.0,
+    7000000.0
+   ],
+   "epsg": 32733,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   30.0,
+   30.0,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   500000.0,
+   7000000.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1026,
+    "location": 34737,
+    "count": 22,
+    "text": "WGS 84 / UTM zone 33S"
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 7,
+    "text": "WGS 84"
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     32733
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9001
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   0,
+   7
+  ]
+ }
+}

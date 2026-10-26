@@ -1,0 +1,116 @@
+{
+ "what": "WGS 84 (EPSG:4326), degrees",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    0.001,
+    0.0,
+    15.5,
+    0.0,
+    -0.001,
+    48.25
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  },
+  "standard": {
+   "transform": [
+    0.001,
+    0.0,
+    15.5,
+    0.0,
+    -0.001,
+    48.25
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   0.001,
+   0.001,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   15.5,
+   48.25,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     2
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 2048,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     4326
+    ]
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 7,
+    "text": "WGS 84"
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 2057,
+    "location": 34736,
+    "count": 1,
+    "doubles": [
+     6378137.0
+    ]
+   },
+   {
+    "id": 2059,
+    "location": 34736,
+    "count": 1,
+    "doubles": [
+     298.257223563
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   0,
+   7
+  ]
+ }
+}

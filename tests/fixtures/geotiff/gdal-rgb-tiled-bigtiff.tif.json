@@ -1,0 +1,114 @@
+{
+ "what": "RGB, tiled 16 x 16, BigTIFF, deflate",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    0.5,
+    0.0,
+    1700000.0,
+    0.0,
+    -0.5,
+    6100000.0
+   ],
+   "epsg": 3857,
+   "nodata": null,
+   "gcps": 0,
+   "width": 36,
+   "height": 40
+  },
+  "standard": {
+   "transform": [
+    0.5,
+    0.0,
+    1700000.0,
+    0.0,
+    -0.5,
+    6100000.0
+   ],
+   "epsg": 3857,
+   "nodata": null,
+   "gcps": 0,
+   "width": 36,
+   "height": 40
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   0.5,
+   0.5,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   1700000.0,
+   6100000.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1026,
+    "location": 34737,
+    "count": 25,
+    "text": "WGS 84 / Pseudo-Mercator"
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 7,
+    "text": "WGS 84"
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     3857
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9001
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   0,
+   7
+  ]
+ }
+}
