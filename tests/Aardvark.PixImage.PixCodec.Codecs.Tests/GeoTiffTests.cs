@@ -36,7 +36,6 @@ public class GeoTiffTests
         var data = File.ReadAllBytes(TestUtil.Fixture(file));
         var j = Json(file);
         var raw = j.GetProperty("raw");
-        var std = j.GetProperty("gdal").GetProperty("standard");
         var def = j.GetProperty("gdal").GetProperty("default");
 
         // the samples, as stored
@@ -82,7 +81,7 @@ public class GeoTiffTests
         }
 
         // the placement GDAL reads, in the reading GeoTIFF 1.1 prescribes (see gen_geotiff.py)
-        var gt = Doubles(std.GetProperty("transform"))!;
+        var gt = Doubles(def.GetProperty("transform"))!;
         Assert.Equal(!IsIdentity(gt), info.HasTransform);
         var g = info.Reference;
         if (info.HasTransform) Near(gt, g.Affine, file + " affine");

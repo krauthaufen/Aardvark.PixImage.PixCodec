@@ -77,9 +77,9 @@ namespace Aardvark.ImageCodecs
     /// </summary>
     /// <remarks>
     /// A PixelIsPoint grid ties its tiepoint to the sample centre; it is read half a cell up and left, so that the affine
-    /// gives cell corners as for every grid (as GDAL reads it by default), and written back the same way. Where GDAL
-    /// reads differently by default: a negative ScaleY is honoured as a flip (requirement 10.5; GDAL needs
-    /// GTIFF_HONOUR_NEGATIVE_SCALEY=YES for that). The GeoTIFF placement refers to the
+    /// gives cell corners as for every grid (as GDAL reads it by default), and written back the same way. The sign of
+    /// ScaleY is ignored, as GDAL does by default (requirement 10.5 would flip on a negative one, but writers put
+    /// negative values on north-up data). The GeoTIFF placement refers to the
     /// raster as stored (B.6: it is independent of the TIFF Orientation tag), so when a decoder turns the pixels upright
     /// the affine is turned with them.
     /// </remarks>
@@ -166,10 +166,11 @@ namespace Aardvark.ImageCodecs
             }
             else if (info.ModelTransformation == null && info.PixelScale is { Length: >= 2 } s && info.TiePoints.Count > 0)
             {
-                // B.6: the first tiepoint ties raster (I, J) to model (X, Y); a positive ScaleY means Y decreases as J
-                // grows, a negative one reverses that (requirements 10.4 and 10.5)
+                // B.6: the first tiepoint ties raster (I, J) to model (X, Y); Y decreases as J grows. Requirement 10.5
+                // lets a negative ScaleY reverse that, but writers put negative values on north-up data, so the sign is
+                // ignored as GDAL does by default; a flipped grid needs ModelTransformation
                 var t = info.TiePoints[0];
-                double sx = s[0], sy = s[1];
+                double sx = s[0], sy = Math.Abs(s[1]);
                 g.Affine = new[] { sx, 0, t[3] - t[0] * sx, 0, -sy, t[4] + t[1] * sy };
                 info.HasTransform = AllFinite(g.Affine) && sx != 0 && sy != 0;
             }
