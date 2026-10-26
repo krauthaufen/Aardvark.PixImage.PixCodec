@@ -41,6 +41,7 @@ namespace Aardvark.ImageCodecs
             if (Pnm.IsMatch(header)) return ImageFormat.Pnm;
             if (Ico.IsMatch(header)) return ImageFormat.Ico;
             if (MetaImage.IsMatch(header)) return ImageFormat.MetaImage; // text header without a signature
+            if (Nitf.IsMatch(header)) return ImageFormat.Nitf;
             if (Dicom.IsMatch(header)) return ImageFormat.Dicom;            // "DICM" after a free preamble, or a bare data set
             // no signatures, strict plausibility checks
             if (Pcx.IsMatch(header)) return ImageFormat.Pcx;
@@ -102,6 +103,7 @@ namespace Aardvark.ImageCodecs
                 ".jxr" or ".wdp" or ".hdp" => ImageFormat.JpegXr,
                 ".avif" or ".avifs" => ImageFormat.Avif,
                 ".dcm" or ".dicom" or ".dic" => ImageFormat.Dicom,
+                ".ntf" or ".nitf" or ".nsf" => ImageFormat.Nitf,
                 _ => ImageFormat.Unknown,
             };
         }
@@ -152,6 +154,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.JpegXr => JpegXr.GetInfo(data),
             ImageFormat.Avif => Avif.GetInfo(data),
             ImageFormat.Dicom => Dicom.GetInfo(data),
+            ImageFormat.Nitf => Nitf.GetInfo(data),
             _ => throw new ImageFormatException("unknown image format"),
         };
 
@@ -418,6 +421,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.JpegXr => JpegXr.Decode(data),
             ImageFormat.Avif => Avif.Decode(data),
             ImageFormat.Dicom => Dicom.Decode(data),
+            ImageFormat.Nitf => Nitf.Decode(data),
             _ => throw new ImageFormatException("unknown image format"),
         };
 
@@ -602,6 +606,8 @@ namespace Aardvark.ImageCodecs
                         AddSlices(r, DecodeVolume(data));
                         return r.ToArray();
                     }
+                case ImageFormat.Nitf:
+                    return Nitf.DecodeAll(data);
                 case ImageFormat.Icns:
                     return Icns.DecodeAll(data);
                 case ImageFormat.Ani:
@@ -715,6 +721,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Jxl: Jxl.Encode(image, output); break;
                 case ImageFormat.JpegXr: JpegXr.Encode(image, output); break;
                 case ImageFormat.Dicom: Dicom.Encode(image, output); break;
+                case ImageFormat.Nitf: Nitf.Encode(image, output); break;
                 default: throw new ArgumentException("unknown image format", nameof(format));
             }
         }

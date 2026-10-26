@@ -1,0 +1,301 @@
+{
+ "gdal": {
+  "colorinterp": [
+   "palette"
+  ],
+  "colormap": [
+   [
+    165,
+    165,
+    165
+   ],
+   [
+    97,
+    97,
+    97
+   ],
+   [
+    82,
+    82,
+    82
+   ],
+   [
+    185,
+    185,
+    185
+   ],
+   [
+    88,
+    88,
+    88
+   ],
+   [
+    82,
+    82,
+    82
+   ],
+   [
+    7,
+    7,
+    7
+   ],
+   [
+    247,
+    247,
+    247
+   ],
+   [
+    215,
+    215,
+    215
+   ],
+   [
+    189,
+    189,
+    189
+   ],
+   [
+    150,
+    150,
+    150
+   ],
+   [
+    117,
+    117,
+    117
+   ],
+   [
+    105,
+    105,
+    105
+   ],
+   [
+    53,
+    53,
+    53
+   ],
+   [
+    158,
+    158,
+    158
+   ],
+   [
+    0,
+    0,
+    0
+   ],
+   [
+    37,
+    37,
+    37
+   ],
+   [
+    200,
+    200,
+    200
+   ],
+   [
+    70,
+    70,
+    70
+   ],
+   [
+    59,
+    59,
+    59
+   ],
+   [
+    99,
+    99,
+    99
+   ],
+   [
+    3,
+    3,
+    3
+   ],
+   [
+    111,
+    111,
+    111
+   ],
+   [
+    88,
+    88,
+    88
+   ],
+   [
+    159,
+    159,
+    159
+   ],
+   [
+    43,
+    43,
+    43
+   ],
+   [
+    83,
+    83,
+    83
+   ],
+   [
+    12,
+    12,
+    12
+   ],
+   [
+    153,
+    153,
+    153
+   ],
+   [
+    60,
+    60,
+    60
+   ],
+   [
+    128,
+    128,
+    128
+   ],
+   [
+    80,
+    80,
+    80
+   ],
+   [
+    151,
+    151,
+    151
+   ],
+   [
+    183,
+    183,
+    183
+   ],
+   [
+    235,
+    235,
+    235
+   ],
+   [
+    43,
+    43,
+    43
+   ],
+   [
+    6,
+    6,
+    6
+   ],
+   [
+    5,
+    5,
+    5
+   ],
+   [
+    110,
+    110,
+    110
+   ],
+   [
+    21,
+    21,
+    21
+   ],
+   [
+    0,
+    0,
+    0
+   ]
+  ],
+  "count": 1,
+  "crs": null,
+  "dtype": "uint8",
+  "gcps": [],
+  "height": 11,
+  "status": "reads",
+  "subdatasets": 0,
+  "tags": {
+   "NITF_ABPP": "08",
+   "NITF_CCS_COLUMN": "0",
+   "NITF_CCS_ROW": "0",
+   "NITF_CLEVEL": "03",
+   "NITF_ENCRYP": "0",
+   "NITF_FBKGC": "0,  0,  0",
+   "NITF_FDT": "20260101000000",
+   "NITF_FHDR": "NITF02.10",
+   "NITF_FSCATP": "",
+   "NITF_FSCAUT": "",
+   "NITF_FSCLAS": "U",
+   "NITF_FSCLSY": "",
+   "NITF_FSCLTX": "",
+   "NITF_FSCODE": "",
+   "NITF_FSCOP": "00000",
+   "NITF_FSCPYS": "00000",
+   "NITF_FSCRSN": "",
+   "NITF_FSCTLH": "",
+   "NITF_FSCTLN": "",
+   "NITF_FSDCDT": "",
+   "NITF_FSDCTP": "",
+   "NITF_FSDCXM": "",
+   "NITF_FSDG": "",
+   "NITF_FSDGDT": "",
+   "NITF_FSREL": "",
+   "NITF_FSSRDT": "",
+   "NITF_FTITLE": "",
+   "NITF_IALVL": "0",
+   "NITF_IC": "NC",
+   "NITF_ICAT": "VIS",
+   "NITF_ICORDS": "",
+   "NITF_IDATIM": "20260101000000",
+   "NITF_IDLVL": "1",
+   "NITF_IID1": "IMAGE",
+   "NITF_IID2": "",
+   "NITF_ILOC_COLUMN": "0",
+   "NITF_ILOC_ROW": "0",
+   "NITF_IMAG": "1.0 ",
+   "NITF_IMODE": "B",
+   "NITF_IREP": "MONO",
+   "NITF_ISCATP": "",
+   "NITF_ISCAUT": "",
+   "NITF_ISCLAS": "U",
+   "NITF_ISCLSY": "",
+   "NITF_ISCLTX": "",
+   "NITF_ISCODE": "",
+   "NITF_ISCRSN": "",
+   "NITF_ISCTLH": "",
+   "NITF_ISCTLN": "",
+   "NITF_ISDCDT": "",
+   "NITF_ISDCTP": "",
+   "NITF_ISDCXM": "",
+   "NITF_ISDG": "",
+   "NITF_ISDGDT": "",
+   "NITF_ISORCE": "",
+   "NITF_ISREL": "",
+   "NITF_ISSRDT": "",
+   "NITF_ONAME": "",
+   "NITF_OPHONE": "",
+   "NITF_OSTAID": "PIXCODEC",
+   "NITF_PJUST": "R",
+   "NITF_PVTYPE": "INT",
+   "NITF_STYPE": "BF01",
+   "NITF_TGTID": ""
+  },
+  "transform": [
+   1.0,
+   0.0,
+   0.0,
+   0.0,
+   1.0,
+   0.0
+  ],
+  "tre": [],
+  "width": 13
+ },
+ "gdalAgrees": true,
+ "spec": "table A-3 NLUTSn = 1, 5.4.3.4",
+ "what": "IREP MONO: one band, one table of 40 entries",
+ "writer": "pack"
+}
