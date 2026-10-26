@@ -90,6 +90,8 @@ namespace Aardvark.ImageCodecs
         Avif,
         /// <summary>DICOM medical images (.dcm, also files without extension and DICOMDIR media).</summary>
         Dicom,
+        /// <summary>NITF 2.0 / 2.1 and NSIF 1.0 (.ntf, .nitf, .nsf): defence and remote sensing imagery.</summary>
+        Nitf,
     }
 
     /// <summary>

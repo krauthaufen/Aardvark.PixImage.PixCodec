@@ -128,6 +128,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Dds: return Dds.Decode(data, new DdsDecodeOptions { MaxPixels = Mp(new DdsDecodeOptions().MaxPixels) });
                 case ImageFormat.Hdr: return Hdr.Decode(data, new HdrDecodeOptions { MaxPixels = Mp(new HdrDecodeOptions().MaxPixels) });
                 case ImageFormat.Pnm: return Pnm.Decode(data, new PnmDecodeOptions { MaxPixels = Mp(new PnmDecodeOptions().MaxPixels) });
+                case ImageFormat.Nitf: return Nitf.Decode(data, new NitfDecodeOptions { MaxPixels = Mp(new NitfDecodeOptions().MaxPixels), CancellationToken = ct });
                 case ImageFormat.Qoi: return Qoi.Decode(data, new QoiDecodeOptions { MaxPixels = Mp(new QoiDecodeOptions().MaxPixels) });
                 case ImageFormat.Ktx: return Ktx.Decode(data, new KtxDecodeOptions { ApplyOrientation = up, MaxPixels = Mp(new KtxDecodeOptions().MaxPixels) });
                 case ImageFormat.Pcx or ImageFormat.Dcx: return Pcx.Decode(data, new PcxDecodeOptions { MaxPixels = Mp(new PcxDecodeOptions().MaxPixels) });
