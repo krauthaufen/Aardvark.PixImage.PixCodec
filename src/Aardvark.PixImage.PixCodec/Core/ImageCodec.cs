@@ -721,6 +721,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Jxl: Jxl.Encode(image, output); break;
                 case ImageFormat.JpegXr: JpegXr.Encode(image, output); break;
                 case ImageFormat.Dicom: Dicom.Encode(image, output); break;
+                case ImageFormat.Nitf: Nitf.Encode(image, output); break;
                 default: throw new ArgumentException("unknown image format", nameof(format));
             }
         }

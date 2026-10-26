@@ -135,14 +135,10 @@ public class NitfTests
             return;
         }
         Assert.NotNull(geo);
-        Assert.Equal(GeoRasterType.PixelIsPoint, geo!.RasterType);
-        // GDAL's area grid is the same placement shifted by half a pixel: its corner is our position (-0.5, -0.5)
-        var (x0, y0) = geo.ToWorld(-0.5, -0.5);
+        // the affine maps grid positions to cell corners, as GDAL's geotransform does: the two agree
+        Assert.Equal(GeoRasterType.PixelIsArea, geo!.RasterType);
         double tol = seg.CoordinateSystem is 'N' or 'S' ? 1e-6 : 1e-9;
-        Assert.Equal(t[2], x0, tol);
-        Assert.Equal(t[5], y0, tol);
-        Assert.Equal(t[0], geo.Affine[0], tol); Assert.Equal(t[1], geo.Affine[1], tol);
-        Assert.Equal(t[3], geo.Affine[3], tol); Assert.Equal(t[4], geo.Affine[4], tol);
+        for (int k = 0; k < 6; k++) Assert.Equal(t[k], geo.Affine[k], tol);
         Assert.Equal(Str(j, "crs"), "EPSG:" + geo.Crs!.Epsg);
     }
 
@@ -229,8 +225,189 @@ public class NitfTests
         }
         // seconds left blank are zero: 50 00 N, 10 00 E .. 49 30 N, 10 30 E
         var g = Nitf.ReadGeo(Nitf.ReadFile(File.ReadAllBytes(Fixture("nitf/p_geo_blank_seconds.ntf"))).Images[0])!;
-        Assert.Equal((10.0, 50.0), g.ToWorld(0, 0));
-        Assert.Equal((10.5, 49.5), (Math.Round(g.ToWorld(30, 20).X, 12), Math.Round(g.ToWorld(30, 20).Y, 12)));
+        // the corners are cell centres: (0, 0) is the centre of the first cell, (30, 20) that of the last
+        Assert.Equal((10.0, 50.0), (Math.Round(g.ToWorld(0.5, 0.5).X, 12), Math.Round(g.ToWorld(0.5, 0.5).Y, 12)));
+        Assert.Equal((10.5, 49.5), (Math.Round(g.ToWorld(30.5, 20.5).X, 12), Math.Round(g.ToWorld(30.5, 20.5).Y, 12)));
+    }
+
+    // ------------------------------------------------------------------ writing
+
+    /// <summary>GDAL's reading of a file we wrote (tests/oracle/nitf_read.py), null when GDAL is not there.</summary>
+    static (RawImage? Samples, JsonElement Report)? GdalRead(byte[] file)
+    {
+        if (!PythonAvailable) return null;
+        var tmp = Path.Combine(FixtureDir, "_tmp");
+        Directory.CreateDirectory(tmp);
+        var f = Path.Combine(tmp, Guid.NewGuid().ToString("N") + ".ntf");
+        try
+        {
+            File.WriteAllBytes(f, file);
+            var (exit, output) = RunPython($"nitf_read.py \"{f}\" \"{f}.out\"");
+            if (CannotVerify(exit, output)) return null;
+            Assert.True(exit == 0, "nitf_read.py failed: " + output);
+            var rep = JsonDocument.Parse(File.ReadAllText(f + ".out.json")).RootElement.Clone();
+            return (File.Exists(f + ".out.ref") ? LoadRef(f + ".out.ref") : null, rep);
+        }
+        finally
+        {
+            foreach (var p in new[] { f, f + ".out.ref", f + ".out.json", f + ".aux.xml" }) File.Delete(p);
+        }
+    }
+
+    static RawImage Pattern(int w, int h, int c, SampleType t, int seed)
+    {
+        var img = RawImage.Create(w, h, c == 3 ? ColorModel.Rgb : c == 1 ? ColorModel.Gray : ColorModel.Other, t, c);
+        var rng = new Random(seed);
+        var b = img.GetBytes();
+        rng.NextBytes(b);
+        if (t == SampleType.Float32) { var a = img.GetData<float>(); for (int i = 0; i < a.Length; i++) a[i] = (float)(rng.NextDouble() * 200 - 100); }
+        if (t == SampleType.Float64) { var a = img.GetData<double>(); for (int i = 0; i < a.Length; i++) a[i] = rng.NextDouble() * 2e6 - 1e6; }
+        return img;
+    }
+
+    public static IEnumerable<object[]> WriteCases()
+    {
+        foreach (var t in new[] { SampleType.UInt8, SampleType.UInt16, SampleType.UInt32, SampleType.Int8, SampleType.Int16, SampleType.Int32, SampleType.Float32, SampleType.Float64 })
+            yield return new object[] { t, 3, 'B', 0 };
+        foreach (var m in new[] { 'B', 'P', 'R', 'S' })
+        {
+            yield return new object[] { SampleType.UInt8, 3, m, 16 };
+            yield return new object[] { SampleType.UInt16, 4, m, 16 };
+            yield return new object[] { SampleType.Int16, 2, m, 0 };
+        }
+        yield return new object[] { SampleType.UInt8, 1, 'B', 16 };
+        yield return new object[] { SampleType.UInt8, 12, 'P', 0 };
+        yield return new object[] { SampleType.Float32, 11, 'S', 16 };
+    }
+
+    [Theory, MemberData(nameof(WriteCases))]
+    public void WhatWeWriteGdalReadsTheSame(SampleType type, int channels, char mode, int block)
+    {
+        var img = Pattern(37, 29, channels, type, channels * 31 + mode);
+        var file = Nitf.Encode(img, new NitfEncodeOptions { Mode = mode, BlockWidth = block, BlockHeight = block, DateTime = new DateTime(2026, 1, 2, 3, 4, 5, DateTimeKind.Utc) });
+        var back = Nitf.Decode(file);
+        AssertEqual(img, back);
+        Assert.Equal(img.Color, back.Color);
+        var seg = Nitf.ReadFile(file).Images[0];
+        char written = channels == 1 || mode == 'S' && block == 0 ? 'B' : mode;
+        Assert.Equal(written, seg.Mode);
+        var g = GdalRead(file);
+        if (g == null) return;
+        var (samples, rep) = g.Value;
+        Assert.Equal("reads", rep.GetProperty("status").GetString());
+        // GDAL (3.12) hands out 8 bit SI samples as uint8: compare the stored bytes
+        Assert.True(img.GetBytes().SequenceEqual(samples!.GetBytes()), "GDAL reads other samples");
+        Assert.Equal((img.Width, img.Height, img.Channels), (samples.Width, samples.Height, samples.Channels));
+        if (type != SampleType.Int8) Assert.Equal(type, samples.SampleType);
+        Assert.Equal(written.ToString(), rep.GetProperty("tags").GetProperty("NITF_IMODE").GetString());
+        Assert.Equal(channels == 3 ? "RGB" : channels == 1 ? "MONO" : "MULTI", rep.GetProperty("tags").GetProperty("NITF_IREP").GetString());
+    }
+
+    [Fact]
+    public void HeaderTextCommentsAndTresSurvive()
+    {
+        var img = Pattern(9, 7, 1, SampleType.UInt16, 5);
+        var a = img.GetData<ushort>();
+        for (int i = 0; i < a.Length; i++) a[i] &= 0x0FFF;
+        var o = new NitfEncodeOptions
+        {
+            Title = "a title", ImageId = "IMG01", ImageTitle = "an image title", Category = "IR", ActualBitsPerPixel = 12,
+            Comments = { "first comment", "second comment" },
+            FileTres = { new NitfTre("FILEAA", "file tre data"u8.ToArray()) },
+            ImageTres = { new NitfTre("IMGBBB", "image tre data"u8.ToArray()), new NitfTre("IMGCCC", new byte[] { 0, 1, 2 }) },
+        };
+        var file = Nitf.Encode(img, o);
+        var f = Nitf.ReadFile(file);
+        Assert.Empty(f.Warnings);
+        Assert.Equal("a title", f.Title);
+        var s = f.Images[0];
+        Assert.Equal(("IMG01", "an image title", "IR", 12), (s.Id, s.Title, s.Category, s.ActualBitsPerPixel));
+        Assert.Equal(new[] { "first comment", "second comment" }, s.Comments);
+        Assert.Equal(new[] { "FILEAA" }, f.Tres.Select(t => t.Tag));
+        Assert.Equal(new[] { "IMGBBB", "IMGCCC" }, s.Tres.Select(t => t.Tag));
+        Assert.Equal(new byte[] { 0, 1, 2 }, s.Tres[1].Data);
+        AssertEqual(img, Nitf.Decode(file));
+        Assert.Throws<ArgumentException>(() => Nitf.Encode(Pattern(9, 7, 1, SampleType.UInt16, 6), o));   // samples above 12 bits
+
+        var g = GdalRead(file);
+        if (g == null) return;
+        var tags = g.Value.Report.GetProperty("tags");
+        Assert.Equal("a title", tags.GetProperty("NITF_FTITLE").GetString());
+        Assert.Equal("IMG01", tags.GetProperty("NITF_IID1").GetString());
+        Assert.Equal("12", tags.GetProperty("NITF_ABPP").GetString());
+        Assert.Equal("first comment", tags.GetProperty("NITF_IMAGE_COMMENTS").GetString()!.Substring(0, 80).Trim());
+        Assert.Equal(new[] { "FILEAA", "IMGBBB", "IMGCCC" }, g.Value.Report.GetProperty("tre").EnumerateArray().Select(e => e.GetString()));
+        AssertEqual(img, g.Value.Samples!);
+    }
+
+    public static IEnumerable<object[]> PlacementCases()
+    {
+        // (EPSG, affine of an area grid, decimal degrees, precision of IGEOLO in world units)
+        yield return new object[] { 4326, new[] { 0.01, 0, 10.0, 0, -0.01, 50.0 }, false, 1.0 / 7200 };
+        yield return new object[] { 4326, new[] { 0.025, 0, -74.5, 0, -0.025, -20.25 }, true, 0.0005 };
+        yield return new object[] { 4326, new[] { 0.01, 0.002, 10.0, 0.001, -0.01, 50.0 }, false, 1.0 / 7200 };
+        yield return new object[] { 32633, new[] { 10.0, 0, 500000, 0, -10.0, 5000000 }, false, 0.5 };
+        yield return new object[] { 32719, new[] { 30.0, 0, 300000, 0, -30.0, 7000000 }, false, 0.5 };
+    }
+
+    [Theory, MemberData(nameof(PlacementCases))]
+    public void PlacementIsWrittenAsCornersGdalReads(int epsg, double[] affine, bool decimalDegrees, double precision)
+    {
+        var img = Pattern(53, 37, 1, SampleType.UInt8, epsg);
+        var geo = new GeoReference { Affine = affine, Crs = new GeoCrs { Epsg = epsg } };
+        var file = Nitf.Encode(img, new NitfEncodeOptions { Geo = geo, DecimalDegrees = decimalDegrees });
+        var seg = Nitf.ReadFile(file).Images[0];
+        Assert.Equal(epsg == 4326 ? (decimalDegrees ? 'D' : 'G') : epsg > 32700 ? 'S' : 'N', seg.CoordinateSystem);
+        var back = Nitf.ReadGeo(seg)!;
+        Assert.Equal(epsg, back.Crs!.Epsg);
+        var (x0, y0) = back.ToWorld(0, 0);
+        var (x1, y1) = back.ToWorld(53, 37);
+        Assert.Equal(affine[2], x0, 2 * precision);
+        Assert.Equal(affine[5], y0, 2 * precision);
+        Assert.Equal(affine[0] * 53 + affine[1] * 37 + affine[2], x1, 2 * precision);
+        Assert.Equal(affine[3] * 53 + affine[4] * 37 + affine[5], y1, 2 * precision);
+
+        var g = GdalRead(file);
+        if (g == null) return;
+        var rep = g.Value.Report;
+        Assert.Equal("EPSG:" + epsg, rep.GetProperty("crs").GetString());
+        var t = rep.GetProperty("transform").EnumerateArray().Select(v => v.GetDouble()).ToArray();
+        // GDAL's grid from the same corners agrees with what was written within the precision IGEOLO keeps
+        Assert.Equal(affine[2], t[2], 2 * precision);
+        Assert.Equal(affine[5], t[5], 2 * precision);
+        foreach (int k in new[] { 0, 1, 3, 4 }) Assert.Equal(affine[k], t[k], 4 * precision / 36);
+        for (int k = 0; k < 6; k++) Assert.Equal(t[k], back.Affine[k], 1e-6 * Math.Max(1, Math.Abs(t[k])));
+    }
+
+    [Fact]
+    public void PlacementsIgeoloHoldsExactlyComeBackExactly()
+    {
+        // corner centres on whole metres / whole arc seconds: written and read back without a change
+        var img = Pattern(53, 37, 1, SampleType.UInt8, 3);
+        foreach (var (epsg, affine) in new[] { (32633, new[] { 10.0, 0, 500000, 0, -10.0, 5000000 }), (4326, new[] { 2.0 / 3600, 0, 10.0, 0, -2.0 / 3600, 50.0 }) })
+        {
+            var geo = new GeoReference { Affine = affine, Crs = new GeoCrs { Epsg = epsg } };
+            var back = Nitf.Decode(Nitf.Encode(img, new NitfEncodeOptions { Geo = geo })).Metadata!.Geo!;
+            for (int k = 0; k < 6; k++) Assert.Equal(affine[k], back.Affine[k], 1e-12 * Math.Max(1, Math.Abs(affine[k])));
+            Assert.Equal(epsg, back.Crs!.Epsg);
+        }
+    }
+
+    [Fact]
+    public void WhatTheStandardCannotHoldIsRefused()
+    {
+        var img = Pattern(9, 7, 1, SampleType.UInt8, 1);
+        var lambert = new GeoReference { Affine = new[] { 1.0, 0, 0, 0, -1, 0 }, Crs = new GeoCrs { Epsg = 31287 } };
+        Assert.Throws<ImageNotSupportedException>(() => Nitf.Encode(img, new NitfEncodeOptions { Geo = lambert }));
+        Assert.Throws<ImageNotSupportedException>(() => Nitf.Encode(img, new NitfEncodeOptions { Geo = new GeoReference { Affine = new[] { 1.0, 0, 0, 0, -1, 0 } } }));
+        Assert.Throws<ImageNotSupportedException>(() => Nitf.Encode(RawImage.Create(4, 4, ColorModel.Gray, SampleType.Float16, 1)));
+        Assert.Throws<ArgumentException>(() => Nitf.Encode(img, new NitfEncodeOptions { Title = new string('x', 81) }));
+        Assert.Throws<ArgumentException>(() => Nitf.Encode(img, new NitfEncodeOptions { BlockWidth = 9000, BlockHeight = 9000 }));
+        // the placement of a decoded image goes back into the file it is written to
+        var placed = Nitf.Decode(File.ReadAllBytes(Fixture("nitf/g_utm_n.ntf")));
+        var again = Nitf.ReadGeo(Nitf.ReadFile(Nitf.Encode(placed)).Images[0])!;
+        Assert.Equal(placed.Metadata!.Geo!.Affine, again.Affine);
+        Assert.Equal(placed.Metadata.Geo.Crs!.Epsg, again.Crs!.Epsg);
     }
 
     [Fact]

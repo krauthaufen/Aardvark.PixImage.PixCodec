@@ -95,6 +95,20 @@ namespace Aardvark.ImageCodecs
             return img;
         }
 
+        /// <summary>
+        /// Writes a NITF 2.1 file with one uncompressed image segment: the channels become the bands (RGB as IREP RGB,
+        /// one channel as MONO, others as MULTI), integer and real samples of 8 to 64 bits, the band order and blocking
+        /// of <paramref name="options"/>, and the placement (options, else <see cref="ImageMetadata.Geo"/>) as IGEOLO.
+        /// </summary>
+        public static void Encode(RawImage image, Stream output, NitfEncodeOptions? options = null) => NitfWriter.Encode(image, output, options);
+
+        public static byte[] Encode(RawImage image, NitfEncodeOptions? options = null)
+        {
+            using var m = new MemoryStream();
+            NitfWriter.Encode(image, m, options);
+            return m.ToArray();
+        }
+
         /// <summary>Every image segment of the file, in file order.</summary>
         public static RawImage[] DecodeAll(ReadOnlySpan<byte> data, NitfDecodeOptions? options = null)
         {
@@ -275,10 +289,12 @@ namespace Aardvark.ImageCodecs
         /// <para>
         /// IGEOLO holds the locations of the image corners "in image coordinate order: (0,0), (0, MaxCol), (MaxRow, MaxCol),
         /// (MaxRow, 0)" with MaxCol = NCOLS - 1, MaxRow = NROWS - 1 (MIL-STD-2500C table A-3): the positions of the four
-        /// corner pixels, not the outer corners of the image. The affine therefore maps grid position (col, row) to the
-        /// position of pixel (col, row), and <see cref="GeoReference.RasterType"/> is
-        /// <see cref="GeoRasterType.PixelIsPoint"/>; the outer corner of the image lies half a pixel further out. GDAL
-        /// reports the same placement as an area grid shifted by that half pixel.
+        /// corner pixels, not the outer corners of the image: the location of pixel (0, 0) is where its value sits, the
+        /// centre of its cell. GeoReference.Affine maps grid position (col, row) to the outer corner of cell (col, row),
+        /// so the affine through the corners is moved out by half a cell; GDAL reads the same corners the same way (its
+        /// geotransform equals this affine, its control points for corners that are no grid sit at (0.5, 0.5)), and
+        /// <see cref="Nitf.Encode(RawImage, NitfEncodeOptions?)"/> writes the centres back, so a placement IGEOLO can hold
+        /// exactly comes back exactly.
         /// </para>
         /// <para>
         /// ICORDS G and D (degrees: x is longitude, y latitude) are WGS 84, EPSG:4326, the standard's default geodetic
@@ -303,10 +319,12 @@ namespace Aardvark.ImageCodecs
             var (x0, y0) = xy[0]; var (x1, y1) = xy[1]; var (x2, y2) = xy[2]; var (x3, y3) = xy[3];
             double tol = 2 * precision + 1e-9;
             if (Math.Abs(x1 + x3 - x0 - x2) > tol || Math.Abs(y1 + y3 - y0 - y2) > tol) return null;
+            double a = (x1 - x0) / maxCol, b = (x3 - x0) / maxRow, d = (y1 - y0) / maxCol, e = (y3 - y0) / maxRow;
             var g = new GeoReference
             {
-                Affine = new[] { (x1 - x0) / maxCol, (x3 - x0) / maxRow, x0, (y1 - y0) / maxCol, (y3 - y0) / maxRow, y0 },
-                RasterType = GeoRasterType.PixelIsPoint,
+                // the centre of cell (0, 0) is (x0, y0); its outer corner half a cell back along both grid axes
+                Affine = new[] { a, b, x0 - (a + b) / 2, d, e, y0 - (d + e) / 2 },
+                RasterType = GeoRasterType.PixelIsArea,
             };
             if (kind is 'G' or 'D')
             {
