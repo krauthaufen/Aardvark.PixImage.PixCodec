@@ -143,6 +143,8 @@ namespace Aardvark.ImageCodecs
         /// scientific formats (NRRD, NIfTI, MetaImage, FITS); null otherwise.
         /// </summary>
         public PhysicalMetadata? Physical;
+        /// <summary>Placement of the grid in world coordinates (GeoTIFF, ENVI, NITF), null when the file has none.</summary>
+        public GeoReference? Geo;
         /// <summary>
         /// The file ended early and was decoded as far as its data goes (only when the format's decode options allow
         /// that, such as <see cref="JpegDecodeOptions.AllowTruncated"/>): part of the image is missing.
