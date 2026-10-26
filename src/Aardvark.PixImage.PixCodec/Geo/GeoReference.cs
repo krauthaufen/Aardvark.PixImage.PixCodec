@@ -18,14 +18,15 @@ namespace Aardvark.ImageCodecs
     }
 
     /// <summary>
-    /// What a sample stands for (the GeoTIFF GTRasterTypeGeoKey codes). <see cref="GeoReference.Affine"/> always maps
-    /// grid positions as the file states them; this only says how to read a position.
+    /// What the file says a sample stands for (the GeoTIFF GTRasterTypeGeoKey codes). Information only:
+    /// <see cref="GeoReference.Affine"/> maps grid positions to cell corners whatever this says, so the value of sample
+    /// (col, row) belongs to world position (col + 0.5, row + 0.5); a reader converts a point grid to that, a writer back.
     /// </summary>
     public enum GeoRasterType
     {
-        /// <summary>Sample (col, row) covers the cell from (col, row) to (col + 1, row + 1). The default.</summary>
+        /// <summary>The sample is the value of its whole cell. The default.</summary>
         PixelIsArea = 1,
-        /// <summary>Sample (col, row) is a point measurement at (col, row).</summary>
+        /// <summary>The sample is a point measurement at the centre of its cell (grids, DEMs).</summary>
         PixelIsPoint = 2,
     }
 
@@ -104,8 +105,10 @@ namespace Aardvark.ImageCodecs
     /// <c>y = A[3]*col + A[4]*row + A[5]</c> for grid position (col, row), plus the CRS those coordinates refer to.
     /// A north-up grid is <c>[dx, 0, x0, 0, -dy, y0]</c>. This is rasterio's Affine; GDAL's geotransform holds the same
     /// numbers in the order <c>[A2, A0, A1, A5, A3, A4]</c> (<see cref="GetGeoTransform"/>, <see cref="FromGeoTransform"/>).
-    /// Positions are taken as the file states them, never shifted by half a pixel; <see cref="RasterType"/> says whether a
-    /// grid position is a cell corner (area) or a sample point.
+    /// Grid position (col, row) is always the outer (upper left) corner of cell (col, row), so the value of that sample sits
+    /// at (col + 0.5, row + 0.5), for every <see cref="RasterType"/>: the convention of GDAL's geotransform. A format that
+    /// places point samples on the grid positions themselves (GeoTIFF PixelIsPoint) is shifted by half a cell when read
+    /// and back when written.
     /// </summary>
     public sealed class GeoReference
     {

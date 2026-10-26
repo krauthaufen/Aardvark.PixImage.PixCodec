@@ -7,10 +7,10 @@ by hand). Every fixture F.tif gets
   F.tif.ref   the stored samples as GDAL reads them (GDAL ignores the TIFF Orientation tag, so these are stored order)
   F.tif.json  what the references report:
     gdal        GDAL's geotransform as rasterio's Affine (a, b, c, d, e, f: x = a*col + b*row + c, y = d*col + e*row + f)
-                read twice: with GDAL's defaults ("default"), and with GTIFF_HONOUR_NEGATIVE_SCALEY=YES and
-                GTIFF_POINT_GEO_IGNORE=TRUE ("standard"), which is the reading GeoTIFF 1.1 prescribes: a negative
-                ScaleY flips (requirement 10.5) and a PixelIsPoint grid is not moved; also GDAL's EPSG code, no-data
-                value and the number of ground control points
+                read twice: with GDAL's defaults ("default"), and with GTIFF_HONOUR_NEGATIVE_SCALEY=YES ("standard"),
+                where a negative ScaleY flips as requirement 10.5 says. Both give cell corners for every grid (a
+                PixelIsPoint grid moved half a cell from its sample centres). Also GDAL's EPSG code, no-data value and the
+                number of ground control points
     raw         the tags and the GeoKeyDirectory as tifffile lists them, each key's value taken from where the
                 directory points (the inline short, GeoDoubleParams or GeoAsciiParams), with no interpretation
 Nothing in the expectations is computed by this script; it only records what GDAL and tifffile return.
@@ -48,7 +48,7 @@ def gdal_reading(path):
                             gcps=len(ds.gcps[0]), width=ds.width, height=ds.height)
     with rasterio.open(path) as ds:
         samples = np.moveaxis(ds.read(), 0, -1)
-    return dict(default=read(), standard=read(GTIFF_HONOUR_NEGATIVE_SCALEY='YES', GTIFF_POINT_GEO_IGNORE='TRUE')), samples
+    return dict(default=read(), standard=read(GTIFF_HONOUR_NEGATIVE_SCALEY='YES')), samples
 
 
 def raw_tags(path):

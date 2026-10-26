@@ -93,12 +93,12 @@ public class GeoTiffTests
         else Assert.Equal(nd.GetDouble(), g.NoData);
         bool point = info.Key(GeoTiff.KeyRasterType)?.Code == 2;
         Assert.Equal(point ? GeoRasterType.PixelIsPoint : GeoRasterType.PixelIsArea, g.RasterType);
-        if (point && info.HasTransform)
+        if (point && info.HasTransform && info.PixelScale != null)
         {
-            // GDAL's default turns a point grid into an area grid half a cell up and left
-            var gd = Doubles(def.GetProperty("transform"))!;
-            var (x, y) = g.ToWorld(-0.5, -0.5);
-            Near(gd[2], x, "GDAL's area origin x"); Near(gd[5], y, "GDAL's area origin y");
+            // the file ties the sample centre: the affine, which gives cell corners, puts it half a cell further in
+            var t = Doubles(raw.GetProperty("tiepoints"))!;
+            var (x, y) = g.ToWorld(t[0] + 0.5, t[1] + 0.5);
+            Near(t[3], x, "tiepoint x of the sample centre"); Near(t[4], y, "tiepoint y of the sample centre");
         }
 
         // decoded: the placement travels with the image, through orientation and regions
@@ -106,7 +106,7 @@ public class GeoTiffTests
         Assert.Equal(info.HasTransform, Tiff.Decode(data).Metadata?.Geo != null);
         if (!info.HasTransform) return;
         Near(gt, Tiff.Decode(data, new TiffDecodeOptions { ApplyOrientation = false }).Metadata!.Geo!.Affine, "stored decode");
-        double c = point ? 0 : 0.5;   // where a sample sits in its cell
+        const double c = 0.5;   // a sample's value sits at its cell centre, for every raster type
         var upright = Tiff.Decode(data);
         SamplesLieWhereGdalPutsThem(upright, 0, 0, stored, gt, c, file);
         var info2 = Tiff.GetInfo(data);
@@ -205,25 +205,25 @@ public class GeoTiffTests
         "rotated" => new GeoReference { Affine = new double[] { 10, 2, 600000, 1.5, -10, 5300000 }, ModelType = GeoModelType.Projected, Crs = new GeoCrs { Epsg = 32633 } },
         "flipped-x" => new GeoReference { Affine = new double[] { -10, 0, 600000, 0, -10, 5300000 }, ModelType = GeoModelType.Projected, Crs = new GeoCrs { Epsg = 32633 } },
         "south-up" => new GeoReference { Affine = new double[] { 10, 0, 600000, 0, 10, 5300000 }, ModelType = GeoModelType.Projected, Crs = new GeoCrs { Epsg = 32633 } },
-        "point" => new GeoReference { Affine = new double[] { 10, 0, 600005, 0, -10, 5299995 }, ModelType = GeoModelType.Projected,
+        "point" => new GeoReference { Affine = new double[] { 10, 0, 600000, 0, -10, 5300000 }, ModelType = GeoModelType.Projected,
             RasterType = GeoRasterType.PixelIsPoint, Crs = new GeoCrs { Epsg = 32633 } },
         "nodata-nan" => new GeoReference { Affine = new double[] { 0.5, 0, 1700000, 0, -0.5, 6100000 }, ModelType = GeoModelType.Projected,
             Crs = new GeoCrs { Epsg = 3857 }, NoData = double.NaN },
         _ => new GeoReference { Affine = new double[] { 2, 0, 6000000, 0, -2, 2100000 }, Crs = new GeoCrs { Epsg = 2227, LinearUnit = 9003 } },
     };
 
-    // what GDAL (standard reading, see gen_geotiff.py) and tifffile see in a file we wrote
+    // what GDAL (default options) and tifffile see in a file we wrote
     const string Readback = """
         import rasterio, tifffile, json, math
-        from rasterio.env import Env
-        with Env(GTIFF_HONOUR_NEGATIVE_SCALEY='YES', GTIFF_POINT_GEO_IGNORE='TRUE'):
-            with rasterio.open(PATH) as ds:
-                t = ds.transform
-                nd = ds.nodata
-                r = dict(transform=[t.a, t.b, t.c, t.d, t.e, t.f], epsg=ds.crs.to_epsg() if ds.crs else None,
-                         nodata=None if nd is None else ('nan' if math.isnan(nd) else nd),
-                         point=ds.tags().get('AREA_OR_POINT'), overviews=ds.overviews(1))
+        with rasterio.open(PATH) as ds:
+            t = ds.transform
+            nd = ds.nodata
+            r = dict(transform=[t.a, t.b, t.c, t.d, t.e, t.f], epsg=ds.crs.to_epsg() if ds.crs else None,
+                     nodata=None if nd is None else ('nan' if math.isnan(nd) else nd),
+                     point=ds.tags().get('AREA_OR_POINT'), overviews=ds.overviews(1))
         with tifffile.TiffFile(PATH) as tf:
+            tp = tf.pages[0].tags.get(33922)
+            r['tiepoint'] = None if tp is None else [float(v) for v in tp.value]
             d = [int(v) for v in tf.pages[0].tags[34735].value]
             r['keyIds'] = [d[4 + 4 * e] for e in range(d[3])]
             r['tags'] = sorted(t.code for t in tf.pages[0].tags.values())
@@ -263,6 +263,8 @@ public class GeoTiffTests
         }
         else Assert.Equal(JsonValueKind.Null, nd.ValueKind);
         Assert.Equal(geo.RasterType == GeoRasterType.PixelIsPoint ? "Point" : "Area", j.GetProperty("point").GetString());
+        if (name == "point")   // the file itself ties the first sample centre, as GDAL writes AREA_OR_POINT=Point
+            Assert.Equal(new double[] { 0, 0, 0, 600005, 5299995, 0 }, Doubles(j.GetProperty("tiepoint")));
         // requirements 1.5 and 1.6: tags and keys in ascending order
         var keyIds = j.GetProperty("keyIds").EnumerateArray().Select(x => x.GetInt32()).ToArray();
         Assert.Equal(keyIds.OrderBy(x => x).ToArray(), keyIds);

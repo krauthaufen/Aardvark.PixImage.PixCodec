@@ -76,9 +76,10 @@ namespace Aardvark.ImageCodecs
     /// the placement into <see cref="ImageMetadata.Geo"/>.
     /// </summary>
     /// <remarks>
-    /// Where GDAL reads differently from the standard by default: a negative ScaleY is honoured as a flip (requirement
-    /// 10.5; GDAL needs GTIFF_HONOUR_NEGATIVE_SCALEY=YES for that), and a PixelIsPoint grid is not shifted by half a pixel
-    /// (GDAL's default moves it to an area origin unless GTIFF_POINT_GEO_IGNORE=TRUE). The GeoTIFF placement refers to the
+    /// A PixelIsPoint grid ties its tiepoint to the sample centre; it is read half a cell up and left, so that the affine
+    /// gives cell corners as for every grid (as GDAL reads it by default), and written back the same way. Where GDAL
+    /// reads differently by default: a negative ScaleY is honoured as a flip (requirement 10.5; GDAL needs
+    /// GTIFF_HONOUR_NEGATIVE_SCALEY=YES for that). The GeoTIFF placement refers to the
     /// raster as stored (B.6: it is independent of the TIFF Orientation tag), so when a decoder turns the pixels upright
     /// the affine is turned with them.
     /// </remarks>
@@ -186,8 +187,14 @@ namespace Aardvark.ImageCodecs
             g.ModelType = info.Key(KeyModelType)?.Code is int mt and >= 1 and <= 3 ? (GeoModelType)mt : GeoModelType.Unknown;
             g.RasterType = info.Key(KeyRasterType)?.Code == 2 ? GeoRasterType.PixelIsPoint : GeoRasterType.PixelIsArea;
             g.Crs = Crs(info, g.ModelType);
+            // the affine maps to cell corners; a point grid's positions are the cell centres
+            if (info.HasTransform && g.RasterType == GeoRasterType.PixelIsPoint) g.Affine = AtCell(g.Affine, -0.5);
             return info;
         }
+
+        // the same affine with grid position (0, 0) moved to (d, d)
+        static double[] AtCell(double[] a, double d)
+            => new[] { a[0], a[1], a[2] + d * (a[0] + a[1]), a[3], a[4], a[5] + d * (a[3] + a[4]) };
 
         static bool AllFinite(double[] a) => Array.TrueForAll(a, double.IsFinite);
 
@@ -282,7 +289,8 @@ namespace Aardvark.ImageCodecs
         public static List<TiffTag> BuildTags(GeoReference geo)
         {
             ArgumentNullException.ThrowIfNull(geo);
-            var a = geo.Affine;
+            // a point grid states the positions of its sample centres
+            var a = geo.RasterType == GeoRasterType.PixelIsPoint ? AtCell(geo.Affine, 0.5) : geo.Affine;
             if (!AllFinite(a)) throw new ArgumentException("GeoTIFF: the affine has non-finite coefficients", nameof(geo));
             var tags = new List<TiffTag>();
             if (a[1] == 0 && a[3] == 0 && a[0] > 0 && a[4] < 0)
@@ -356,14 +364,12 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// The placement of an image turned upright from TIFF orientation <paramref name="orientation"/> (stored size
         /// <paramref name="width"/> x <paramref name="height"/>), as <see cref="ImageOps.ApplyOrientation"/> turns it: grid
-        /// positions of the upright image are mapped back to stored ones, then through the stored affine. Area samples
-        /// span a whole cell, so a mirrored axis runs from the far edge (width); point samples sit on the grid
-        /// positions, so it runs from the last sample (width - 1).
+        /// corners of the upright image are mapped back to stored ones, then through the stored affine.
         /// </summary>
         internal static GeoReference Oriented(GeoReference g, int orientation, int width, int height)
         {
             if (orientation <= 1 || orientation > 8) return g;
-            double k = g.RasterType == GeoRasterType.PixelIsPoint ? 1 : 0, w = width - k, h = height - k;
+            double w = width, h = height;
             // stored (s, t) = (p * u + q * v + r0, p2 * u + q2 * v + r1) for upright (u, v)
             (double p, double q, double r0, double p2, double q2, double r1) = orientation switch
             {
