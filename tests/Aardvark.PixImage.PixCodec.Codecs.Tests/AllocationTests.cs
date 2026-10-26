@@ -4,9 +4,10 @@ namespace Aardvark.ImageCodecs.Tests;
 
 /// <summary>
 /// Decoders allocate about their output: no second full copy of the pixels, no per-chunk buffers that add up to one.
-/// Large working buffers come from the shared array pool, so the second decode is measured. Counted on the current
-/// thread, so multithreaded decoding is switched off.
+/// Large working buffers come from the shared array pool, so the second decode is measured; no other test runs in
+/// between to take them. Counted on the current thread, so multithreaded decoding is switched off.
 /// </summary>
+[Collection("Measurements")]
 public class AllocationTests
 {
     const int W = 1024, H = 768;
@@ -35,12 +36,29 @@ public class AllocationTests
         return ms.ToArray();
     }
 
+    /// <summary>
+    /// The bytes <paramref name="measured"/> allocates on this thread right after <paramref name="warmUp"/>, with no
+    /// garbage collection in between: under high memory load a collection empties the shared array pool.
+    /// </summary>
+    static long AllocatedAfterWarmUp(Action warmUp, Action measured)
+    {
+        Assert.True(GC.TryStartNoGCRegion(NoGCBytes), "no-GC region refused");
+        try
+        {
+            warmUp();
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            measured();
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+        finally { GC.EndNoGCRegion(); }
+    }
+
+    const long NoGCBytes = 64 << 20;
+
     static void AssertAboutOutput(Func<RawImage> decode, double factor)
     {
-        decode();
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        var img = decode();
-        long used = GC.GetAllocatedBytesForCurrentThread() - before;
+        RawImage img = null!;
+        long used = AllocatedAfterWarmUp(() => decode(), () => img = decode());
         long output = (long)img.Data.Length * RawImage.BytesPerSample(img.SampleType);
         Assert.True(used < output * factor, $"{used} bytes allocated for {output} bytes of pixels");
     }
@@ -112,11 +130,8 @@ public class AllocationTests
     static void AssertSmallEncode(RawImage img, Action<Stream> encode)
     {
         var first = new MemoryStream();
-        encode(first);
-        var target = new MemoryStream((int)first.Length + 4096);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        encode(target);
-        long used = GC.GetAllocatedBytesForCurrentThread() - before;
+        var target = new MemoryStream();
+        long used = AllocatedAfterWarmUp(() => { encode(first); target = new MemoryStream((int)first.Length + 4096); }, () => encode(target));
         Assert.Equal(first.Length, target.Length);
         long input = (long)img.Data.Length * RawImage.BytesPerSample(img.SampleType);
         Assert.True(used < input / 20, $"{used} bytes allocated to encode {input} bytes of pixels");
