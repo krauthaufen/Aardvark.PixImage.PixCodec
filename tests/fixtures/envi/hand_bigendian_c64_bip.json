@@ -1,0 +1,31 @@
+{
+ "width": 5,
+ "height": 4,
+ "bands": 2,
+ "dtype": "complex64",
+ "transform": null,
+ "epsg": null,
+ "geographic": null,
+ "projected": null,
+ "linearFactor": null,
+ "nodata": null,
+ "descriptions": [
+  null,
+  null
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "samples": "5",
+  "lines": "4",
+  "bands": "2",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "6",
+  "interleave": "bip",
+  "byte_order": "1"
+ },
+ "complex": true,
+ "dataFile": "hand_bigendian_c64_bip.img",
+ "headerFile": "hand_bigendian_c64_bip.hdr"
+}

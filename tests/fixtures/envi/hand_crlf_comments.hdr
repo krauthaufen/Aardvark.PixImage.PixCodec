@@ -1,0 +1,15 @@
+ENVI
+; written by hand
+Samples = 7
+lines   = 5
+;another comment
+bands = 2
+data type = 2
+interleave = BIL
+byte order = 0
+band names = {
+ first band,
+ second band
+}
+map info = {UTM, 1, 1, 500000,
+ 4000000, 10, 10, 33, South, WGS-84}

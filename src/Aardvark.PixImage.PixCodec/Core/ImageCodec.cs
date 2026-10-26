@@ -41,6 +41,7 @@ namespace Aardvark.ImageCodecs
             if (Pnm.IsMatch(header)) return ImageFormat.Pnm;
             if (Ico.IsMatch(header)) return ImageFormat.Ico;
             if (MetaImage.IsMatch(header)) return ImageFormat.MetaImage; // text header without a signature
+            if (Envi.IsMatch(header)) return ImageFormat.Envi;            // the "ENVI" line of a header (.hdr)
             if (Dicom.IsMatch(header)) return ImageFormat.Dicom;            // "DICM" after a free preamble, or a bare data set
             // no signatures, strict plausibility checks
             if (Pcx.IsMatch(header)) return ImageFormat.Pcx;
@@ -141,6 +142,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.Nifti => Nifti.GetInfo(data),
             ImageFormat.MetaImage => MetaImage.GetInfo(data),
             ImageFormat.Fits => Fits.GetInfo(data),
+            ImageFormat.Envi => Envi.GetInfo(data),
             ImageFormat.Icns => Icns.GetInfo(data),
             ImageFormat.Ani => Ani.GetInfo(data),
             ImageFormat.Astc => Astc.GetInfo(data),
@@ -180,6 +182,7 @@ namespace Aardvark.ImageCodecs
         {
             long length = new FileInfo(path).Length;
             if (length == 0) throw new ImageFormatException("empty file");
+            if (SniffFile(path) == ImageFormat.Envi) return Envi.GetInfo(path);   // header and samples are two files
             if (length > int.MaxValue)
             {
                 // beyond what a span can address: headers through the stream, metadata from the first 2 GB
@@ -309,7 +312,7 @@ namespace Aardvark.ImageCodecs
             // end and BMP run codes have to be walked: these need all the data. The others are parsed from a growing prefix; their
             // header parsers throw ImageFormatException when the prefix ends inside the headers, which is the signal
             // to read more.
-            bool needAll = format is ImageFormat.Tiff or ImageFormat.Dng or ImageFormat.Gif or ImageFormat.Tga or ImageFormat.Ico or ImageFormat.Pcx or ImageFormat.Dcx or ImageFormat.Icns or ImageFormat.Ani or ImageFormat.Astc
+            bool needAll = format is ImageFormat.Envi or ImageFormat.Tiff or ImageFormat.Dng or ImageFormat.Gif or ImageFormat.Tga or ImageFormat.Ico or ImageFormat.Pcx or ImageFormat.Dcx or ImageFormat.Icns or ImageFormat.Ani or ImageFormat.Astc
                 || format == ImageFormat.Bmp && Bmp.InfoNeedsAllData(buf.AsSpan(0, n));
             while (true)
             {
@@ -407,6 +410,7 @@ namespace Aardvark.ImageCodecs
             ImageFormat.Nifti => Nifti.Decode(data),
             ImageFormat.MetaImage => MetaImage.Decode(data),
             ImageFormat.Fits => Fits.Decode(data),
+            ImageFormat.Envi => Envi.Decode(data),
             ImageFormat.Icns => Icns.Decode(data),
             ImageFormat.Ani => Ani.Decode(data),
             ImageFormat.Astc => Astc.Decode(data),
@@ -431,17 +435,35 @@ namespace Aardvark.ImageCodecs
         {
             var f = SniffFile(path);
             if (IsVolumeFormat(f)) return ColorTags.Tag(DecodeVolume(path).GetSlice(0), default, f);
+            if (f == ImageFormat.Envi) return ColorTags.Tag(Envi.Decode(path), default, f);
             return WithFile(path, d => Decode(d));
         }
 
         static bool IsVolumeFormat(ImageFormat f) => f is ImageFormat.Nrrd or ImageFormat.Nifti or ImageFormat.MetaImage or ImageFormat.Fits;
 
-        static ImageFormat SniffFile(string path)
+        /// <summary>
+        /// The format of a file from its content; a file with an ENVI header next to it is ENVI unless that header names
+        /// another file type (ENVI also writes headers for TIFF and other files).
+        /// </summary>
+        internal static ImageFormat SniffFile(string path)
         {
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1);
-            var b = new byte[8192];
-            int n = Fill(fs, b, 0);
-            return DetectFormat(b.AsSpan(0, n));
+            ImageFormat f;
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1))
+            {
+                var b = new byte[8192];
+                int n = Fill(fs, b, 0);
+                f = DetectFormat(b.AsSpan(0, n));
+            }
+            if (f != ImageFormat.Envi && Envi.FindHeaderFile(path) is string hdr)
+            {
+                try
+                {
+                    var type = Envi.ReadHeader(hdr).FileType;
+                    if (type == null || type.StartsWith("ENVI", StringComparison.OrdinalIgnoreCase)) return ImageFormat.Envi;
+                }
+                catch (ImageFormatException) { }
+            }
+            return f;
         }
 
         // ------------------------------------------------------------------ volumes
@@ -462,6 +484,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Nifti: return Nifti.DecodeVolume(path, options);
                 case ImageFormat.MetaImage: return MetaImage.DecodeVolume(path, options);
                 case ImageFormat.Fits: return Fits.DecodeVolume(path, options);
+                case ImageFormat.Envi: return Envi.DecodeVolume(path, new EnviDecodeOptions { MaxSamples = (options ?? VolumeDecodeOptions.Default).MaxSamples });
                 case ImageFormat.Dicom: return Dicom.DecodeVolume(path, options);
                 default: return WithFile(path, d => DecodeVolume(d, options));
             }
@@ -479,6 +502,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Nifti: return Nifti.DecodeVolume(data, options);
                 case ImageFormat.MetaImage: return MetaImage.DecodeVolume(data, options);
                 case ImageFormat.Fits: return Fits.DecodeVolume(data, options);
+                case ImageFormat.Envi: return Envi.DecodeVolume(data, new EnviDecodeOptions { MaxSamples = (options ?? VolumeDecodeOptions.Default).MaxSamples });
                 case ImageFormat.Dicom: return Dicom.DecodeVolume(data, options);
                 case ImageFormat.Dds:
                     {
@@ -644,6 +668,7 @@ namespace Aardvark.ImageCodecs
                 AddSlices(r, DecodeVolume(path));
                 return ColorTags.Tag(r.ToArray(), default, f);
             }
+            if (f == ImageFormat.Envi) return new[] { Decode(path) };   // one raster: its bands are its channels
             return WithFile(path, d => DecodeAll(d));
         }
 
@@ -715,6 +740,7 @@ namespace Aardvark.ImageCodecs
                 case ImageFormat.Jxl: Jxl.Encode(image, output); break;
                 case ImageFormat.JpegXr: JpegXr.Encode(image, output); break;
                 case ImageFormat.Dicom: Dicom.Encode(image, output); break;
+                case ImageFormat.Envi: throw new ImageNotSupportedException("ENVI keeps header and samples in two files: use Envi.Encode(image, samples, header) or Envi.Encode(image, path)");
                 default: throw new ArgumentException("unknown image format", nameof(format));
             }
         }

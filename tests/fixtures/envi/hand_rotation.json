@@ -1,0 +1,37 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 1,
+ "dtype": "uint8",
+ "transform": [
+  8.660254037844387,
+  4.999999999999999,
+  499980.0,
+  9.999999999999998,
+  -17.320508075688775,
+  4000020.0
+ ],
+ "epsg": 32633,
+ "geographic": false,
+ "projected": true,
+ "linearFactor": 1.0,
+ "nodata": null,
+ "descriptions": [
+  null
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "samples": "7",
+  "lines": "5",
+  "bands": "1",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "1",
+  "interleave": "bsq",
+  "byte_order": "0"
+ },
+ "complex": false,
+ "dataFile": "hand_rotation.img",
+ "headerFile": "hand_rotation.hdr"
+}

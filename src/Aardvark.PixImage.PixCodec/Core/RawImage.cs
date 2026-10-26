@@ -90,6 +90,8 @@ namespace Aardvark.ImageCodecs
         Avif,
         /// <summary>DICOM medical images (.dcm, also files without extension and DICOMDIR media).</summary>
         Dicom,
+        /// <summary>ENVI raster: a text header (.hdr) and the raw samples in a file next to it.</summary>
+        Envi,
     }
 
     /// <summary>

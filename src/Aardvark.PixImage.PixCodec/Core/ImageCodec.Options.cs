@@ -31,6 +31,11 @@ namespace Aardvark.ImageCodecs
                 CheckMaxPixels(GetInfo(path), options.MaxPixels);
                 return Finish(ColorTags.Tag(DecodeVolume(path).GetSlice(0), default, f), options, 0);
             }
+            if (f == ImageFormat.Envi)
+            {
+                CheckMaxPixels(GetInfo(path), options.MaxPixels);
+                return Finish(ColorTags.Tag(Envi.Decode(path), default, f), options, 0);
+            }
             return WithFile(path, d => Decode(d, options));
         }
 

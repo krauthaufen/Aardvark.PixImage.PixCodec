@@ -1,0 +1,38 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 1,
+ "dtype": "uint8",
+ "transform": [
+  0.001,
+  -0.0,
+  16.3,
+  -0.0,
+  -0.001,
+  48.2
+ ],
+ "epsg": null,
+ "geographic": false,
+ "projected": false,
+ "linearFactor": null,
+ "nodata": null,
+ "descriptions": [
+  null
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "samples": "7",
+  "lines": "5",
+  "bands": "1",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "1",
+  "interleave": "bsq",
+  "byte_order": "0",
+  "map_info": "Geographic Lat/Lon, 1, 1, 16.3, 48.2, 0.001, 0.001"
+ },
+ "complex": false,
+ "dataFile": "hand_geographic_no_datum.img",
+ "headerFile": "hand_geographic_no_datum.hdr"
+}
