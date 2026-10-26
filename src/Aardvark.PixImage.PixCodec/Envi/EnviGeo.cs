@@ -50,7 +50,9 @@ namespace Aardvark.ImageCodecs
                     datum ??= e;
                 }
                 // the affine of a rotated grid as GDAL reads it: x along the row by (xs cos r, ys sin r), down the column
-                // by (xs sin r, -ys cos r); without rotation simply (xs, 0) and (0, -ys)
+                // by (xs sin r, -ys cos r); without rotation simply (xs, 0) and (0, -ys). Confirmed on an ENVI-written
+                // AVIRIS-NG ortho product (rotation=-80, equal pixel sizes) against its per-pixel ground positions
+                // (EnviTests.RotatedMapInfoPlacesAvirisNgCellsOnTheirGroundPositions); unequal sizes are untested
                 double rad = rotation * Math.PI / 180, c = Math.Cos(rad), s = Math.Sin(rad);
                 double a = xs * c, b = xs * s, d = ys * s, e2 = -ys * c;
                 if (rotation == 0) { a = xs; b = 0; d = 0; e2 = -ys; }

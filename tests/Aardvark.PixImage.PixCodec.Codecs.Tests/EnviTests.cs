@@ -132,7 +132,8 @@ public class EnviTests
 
     // ------------------------------------------------------------------ what GDAL makes of what is written
 
-    static readonly string Tmp = Path.Combine(FixtureDir, "_tmp", "envi");
+    // one folder per test process: the frameworks run side by side and the files have fixed names
+    static readonly string Tmp = Path.Combine(FixtureDir, "_tmp", "envi-" + Environment.ProcessId);
 
     /// <summary>Writes with <see cref="Envi.Encode(RawImage, string, EnviEncodeOptions?)"/> and reads back with GDAL; null when it cannot run.</summary>
     static (JsonElement Json, RawImage Samples, string Path)? Gdal(RawImage image, EnviEncodeOptions o, string name)
@@ -447,5 +448,46 @@ public class EnviTests
         Assert.Throws<ImageNotSupportedException>(() => ImageCodec.Decode(data, new ImageDecodeOptions { MaxPixels = 10 }));
         Assert.Equal(new[] { 9, 7, 3 }, ImageCodec.DecodeVolume(hdr).Sizes);
         Assert.Equal(32633, ImageCodec.Decode(hdr).Metadata!.Geo!.Crs!.Epsg);
+    }
+
+    const string Avng = "downloads/aviris-ng/ang20150811t172724_";
+
+    /// <summary>
+    /// The meaning of map info "rotation=" on a real ENVI file with an independent ground truth: AVIRIS-NG's orthocorrected
+    /// lookup table (GLT, map info with rotation=-80) names for every output cell the raw pixel that fills it, and the
+    /// input geometry (IGM) gives that raw pixel centre's UTM position. Every cell centre the GLT fills from a real
+    /// pixel (positive entries; negative ones are infill) lies within half a cell diagonal of that pixel's IGM position,
+    /// the nearest neighbour bound of a 1.7 m grid. The other rotation sense misses by kilometres, and a half pixel
+    /// slip doubles the bound. GDAL reads the same affine (gdal.json).
+    /// </summary>
+    [TestDataFact(Avng + "ort_glt", Avng + "ort_igm", "fixtures/envi/aviris-ng/gdal.json")]
+    public void RotatedMapInfoPlacesAvirisNgCellsOnTheirGroundPositions()
+    {
+        var glt = Envi.Decode(TestData(Avng + "ort_glt.hdr"));
+        var g = glt.Metadata!.Geo!;
+        Assert.Equal(32619, g.Crs!.Epsg);
+        var gdal = Json(TestData("fixtures/envi/aviris-ng/gdal.json"));
+        var want = gdal.GetProperty("affine").EnumerateArray().Select(x => x.GetDouble()).ToArray();
+        for (int k = 0; k < 6; k++) Assert.True(Near(want[k], g.Affine[k]), $"affine[{k}]: GDAL {want[k]}, here {g.Affine[k]}");
+
+        var igm = Envi.Decode(TestData(Avng + "ort_igm.hdr"));
+        Assert.Equal((598, 1883, 3), (igm.Width, igm.Height, igm.Channels));
+        var lut = glt.GetData<short>();
+        var pos = igm.GetData<double>();
+        double bound = 1.7 * Math.Sqrt(2) / 2 + 0.005, worst = 0, sum = 0;
+        long n = 0;
+        for (int r = 0; r < glt.Height; r++)
+            for (int c = 0; c < glt.Width; c++)
+            {
+                int s = lut[(r * glt.Width + c) * 2], l = lut[(r * glt.Width + c) * 2 + 1];
+                if (s <= 0 || l <= 0) continue;
+                long at = ((long)(l - 1) * igm.Width + (s - 1)) * 3;
+                var (x, y) = g.ToWorld(c + 0.5, r + 0.5);
+                double d = Math.Sqrt((x - pos[at]) * (x - pos[at]) + (y - pos[at + 1]) * (y - pos[at + 1]));
+                worst = Math.Max(worst, d); sum += d * d; n++;
+            }
+        Assert.True(n > 1_000_000, $"{n} cells filled from real pixels");
+        Assert.True(worst <= bound, $"a cell centre lies {worst:F3} m from its pixel's ground position (bound {bound:F3} m)");
+        Assert.True(Math.Sqrt(sum / n) < 0.75, $"rms {Math.Sqrt(sum / n):F3} m");
     }
 }
