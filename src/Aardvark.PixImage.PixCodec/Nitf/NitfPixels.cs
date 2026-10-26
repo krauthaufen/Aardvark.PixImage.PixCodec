@@ -252,9 +252,16 @@ namespace Aardvark.ImageCodecs
                 }
                 else at = next;
                 if (at >= end) throw new ImageFormatException($"NITF: JPEG block {k} lies past the image data");
-                long len = JpegLength(d.Slice((int)at, (int)(end - at)));
-                next = at + len;
-                var block = ImageCodecs.Jpeg.Decode(d.Slice((int)at, (int)len), jo);
+                var (skip, len) = JpegStream(d.Slice((int)at, (int)(end - at)), out bool noDht);
+                next = at + skip + len;
+                RawImage block;
+                try { block = ImageCodecs.Jpeg.Decode(d.Slice((int)at + skip, (int)len), jo); }
+                catch (ImageFormatException e) when (noDht)
+                {
+                    // without DHT the JPEG decoder falls back to the tables of ITU-T T.81 annex K; MIL-STD-188-198A may
+                    // mean other defaults, which this reader does not have
+                    throw new ImageNotSupportedException($"NITF: a JPEG block without DHT relies on default Huffman tables of MIL-STD-188-198A, which are not supported ({e.Message})");
+                }
                 int blk, band0, bands;
                 if (!perBand) { blk = k; band0 = 0; bands = nb; }
                 else if (s.Mode == 'S') { blk = k % blocks; band0 = k / blocks; bands = 1; }
@@ -272,24 +279,46 @@ namespace Aardvark.ImageCodecs
             return img;
         }
 
-        /// <summary>The length of the JPEG stream at the start of the data: SOI to EOI, walking the marker segments.</summary>
-        static long JpegLength(ReadOnlySpan<byte> d)
+        /// <summary>
+        /// Where the JPEG stream at the start of the data begins (after fill bytes 0xFF, which ISO/IEC 10918-1 B.1.1.2
+        /// allows in front of any marker, SOI included) and how long it is, SOI to EOI, walking the marker segments.
+        /// </summary>
+        static (int Start, long Length) JpegStream(ReadOnlySpan<byte> d, out bool missingHuffman)
         {
-            if (d.Length < 4 || d[0] != 0xFF || d[1] != 0xD8) throw new ImageFormatException("NITF: a JPEG block does not start with SOI");
-            int p = 2;
+            bool dqt = false, dht = false, huffman = false;
+            missingHuffman = false;
+            int s = 0;
+            while (s + 1 < d.Length && d[s] == 0xFF && d[s + 1] == 0xFF) s++;
+            if (s + 4 > d.Length || d[s] != 0xFF || d[s + 1] != 0xD8) throw new ImageFormatException("NITF: a JPEG block does not start with SOI");
+            int p = s + 2;
             while (p + 1 < d.Length)
             {
                 if (d[p] != 0xFF) throw new ImageFormatException("NITF: a JPEG block has bytes between its marker segments");
                 byte m = d[p + 1];
                 if (m == 0xFF) { p++; continue; }
-                if (m == 0xD9) return p + 2;
+                if (m == 0xD9) return (s, p + 2 - s);
                 if (m is 0x01 or (>= 0xD0 and <= 0xD7)) { p += 2; continue; }
                 if (p + 4 > d.Length) break;
                 int len = d[p + 2] << 8 | d[p + 3];
                 p += 2 + len;
+                if (m == 0xDB) dqt = true;
+                else if (m == 0xC4) dht = true;
+                else if (m is 0xC0 or 0xC1 or 0xC2 or 0xC3) huffman = true;
                 if (m != 0xDA) continue;
-                // entropy coded data: up to the next marker that is neither a stuffed 0xFF nor a restart marker
-                while (p + 1 < d.Length && !(d[p] == 0xFF && d[p + 1] != 0x00 && d[p + 1] is not (>= 0xD0 and <= 0xD7))) p++;
+                // MIL-STD-188-198A lets a stream leave its quantization tables out and use defaults that COMRAT
+                // names; this reader does not have them
+                if (!dqt)
+                    throw new ImageNotSupportedException("NITF: a JPEG block without DQT relies on the default quantization tables of MIL-STD-188-198A, which are not supported");
+                missingHuffman = huffman && !dht;
+                // entropy coded data, restart markers and fill bytes in front of them included, up to the next other marker
+                while (p + 1 < d.Length)
+                {
+                    if (d[p] != 0xFF) { p++; continue; }
+                    byte n = d[p + 1];
+                    if (n == 0x00 || n is >= 0xD0 and <= 0xD7) p += 2;
+                    else if (n == 0xFF) p++;
+                    else break;
+                }
             }
             throw new ImageFormatException("NITF: a JPEG block has no EOI");
         }

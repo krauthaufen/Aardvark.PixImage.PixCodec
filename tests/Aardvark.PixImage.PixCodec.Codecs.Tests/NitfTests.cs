@@ -410,6 +410,64 @@ public class NitfTests
         Assert.Equal(placed.Metadata.Geo.Crs!.Epsg, again.Crs!.Epsg);
     }
 
+    // ------------------------------------------------------------------ the NITFS Technical Board's sample files
+
+    /// <summary>
+    /// The NTB / JITC sample files of NITF 2.0, 2.1 and NSIF 1.0 (test-data repository, fetch/fetch_nitf_samples.sh)
+    /// against tests/oracle/gen_nitf_samples.py's refs.txt: GDAL's samples, or where GDAL reads a file differently from
+    /// MIL-STD-2500C (packed 12 bit samples, RGB JPEG) an independent reading of the standard, and GDAL's own samples
+    /// recorded as differing. Segments the reader refuses (bi-level and VQ compression, JPEG with the default tables of
+    /// MIL-STD-188-198A, NITF 1.1) have to be refused with the exception refs.txt names.
+    /// </summary>
+    [TestDataFact("fixtures/nitf/jitc/refs.txt", "fixtures/nitf/jitc/U_1001a.ntf")]
+    public void TechnicalBoardSamples()
+    {
+        var dir = TestData(Path.Combine("fixtures", "nitf", "jitc"));
+        int checkedSegments = 0;
+        foreach (var line in File.ReadAllLines(Path.Combine(dir, "refs.txt")))
+        {
+            var f = line.Split(' ', 9);
+            var path = Path.Combine(dir, f[0]);
+            Assert.True(File.Exists(path), f[0] + " missing: run fetch/fetch_nitf_samples.sh of the test-data repository again");
+            var data = File.ReadAllBytes(path);
+            var o = new NitfDecodeOptions { ImageIndex = int.Parse(f[1]) };
+            string what = $"{f[0]} image {f[1]}";
+            if (f[7].StartsWith("unsupported:"))
+            {
+                var e = Record.Exception(() => Nitf.Decode(data, o));
+                Assert.True(e != null && e.GetType().Name == f[7]["unsupported:".Length..], $"{what}: {e?.GetType().Name ?? "no exception"}, {f[7]} expected ({f[8]})");
+                continue;
+            }
+            var img = Nitf.Decode(data, o);
+            Assert.True((int.Parse(f[2]), int.Parse(f[3]), int.Parse(f[4])) == (img.Width, img.Height, img.Channels), what + ": size");
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(img.GetBytes())).ToLowerInvariant();
+            Assert.True(f[6] == sha, $"{what}: samples differ from {f[7]}");
+            // where the standard is the reference, GDAL really reads the file another way
+            if (f[7] == "standard") Assert.NotEqual(f[6], f[8]);
+            checkedSegments++;
+        }
+        Assert.True(checkedSegments >= 40, $"only {checkedSegments} segments compared");
+    }
+
+    [Fact]
+    public void JpegFillBytesBeforeMarkersAreSkipped()
+    {
+        // ISO/IEC 10918-1 B.1.1.2: any marker may be preceded by fill bytes 0xFF, SOI and the restart markers included
+        // (the NTB sample U_4022a has them in front of SOI)
+        var file = File.ReadAllBytes(Fixture("nitf/g_jpeg_rgb.ntf"));
+        var seg = Nitf.ReadFile(file).Images[0];
+        var src = Nitf.Decode(file);
+        var jpeg = Jpeg.Encode(src, new JpegEncodeOptions { RestartInterval = 1, Quality = 95 });
+        int rst = jpeg.AsSpan().IndexOf(new byte[] { 0xFF, 0xD0 });
+        Assert.True(rst > 0);
+        var stream = new byte[] { 0xFF, 0xFF, 0xFF }.Concat(jpeg[..rst]).Concat(new byte[] { 0xFF, 0xFF }).Concat(jpeg[rst..]).ToArray();
+        var patched = file[..(int)seg.DataOffset].Concat(stream).ToArray();
+        void Field(int at, int width, long v) => System.Text.Encoding.ASCII.GetBytes(v.ToString(new string('0', width))).CopyTo(patched, at);
+        Field(342, 12, patched.Length);   // FL
+        Field(369, 10, stream.Length);    // LI of the one image segment
+        AssertEqual(Jpeg.Decode(jpeg), Nitf.Decode(patched));
+    }
+
     [Fact]
     public void BrokenFilesAreNamed()
     {
