@@ -115,4 +115,23 @@ public class IccBpcTests
         double expected = LOf(0.2 * (1 - Ab0)); // 10.04 (20.08 from a* = -128)
         foreach (var intent in Intents) Near(expected, BlackL(p, intent, true));
     }
+
+    [Fact]
+    public void DarkestColourTriesAllVertices()
+    {
+        // ISO 18619 4.2.2.2: D takes the darkest of {0, 1} (Gray), {000, 111} (RGB), {0000, 1111, 0001, 1110} (CMYK)
+        // through the A2B; profiles without a B2A use it for the source black (4.2.3)
+        var gray = Profile(IccProfileClass.Display, IccColorSpace.Gray, ("A2B0", Lut16(1, 3, 2, x => Gray(100 - 90 * x[0]))));
+        var rgb = Profile(IccProfileClass.Display, IccColorSpace.Rgb,
+            ("A2B0", Lut16(3, 3, 2, x => Gray(100 - 95 * (x[0] + x[1] + x[2]) / 3))));
+        // CMYK: 0000 -> 100, 1111 -> 20, 0001 -> 15, 1110 -> 90
+        var cmyk = Profile(IccProfileClass.Output, IccColorSpace.Cmyk,
+            ("A2B0", Lut16(4, 3, 2, x => Gray(100 - 85 * x[3] - 10 * x[0] + 15 * x[0] * x[3]))));
+        foreach (var intent in Intents)
+        {
+            Near(10, BlackL(gray, intent, true));
+            Near(5, BlackL(rgb, intent, true));
+            Near(15, BlackL(cmyk, intent, true));
+        }
+    }
 }
