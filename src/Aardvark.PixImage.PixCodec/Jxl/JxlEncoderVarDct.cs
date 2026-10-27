@@ -180,7 +180,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             f.Xyb = planes;
             JxlProfile.Mark("vardct colour");
 
-            ChooseQuantizer(f);
+            ChooseQuantizer(f, opt.Quantizer);
             AdaptiveQuantization(f);
             if (opt.HfMul is { } hfMul) for (int i = 0; i < f.Qf.Length; i++) f.Qf[i] = hfMul(i);
             ChooseStrategies(f, opt.ForceStrategy);
@@ -249,15 +249,16 @@ namespace Aardvark.ImageCodecs.JpegXl
         /// <summary>LF step of Y at distance 1 and its growth with the distance.</summary>
         internal static float LfStep1 = 0.00085f, LfExponent = 0.65f;
 
-        static void ChooseQuantizer(Frame f)
+        static void ChooseQuantizer(Frame f, Func<(int gs, int ql), (int gs, int ql)>? hook = null)
         {
             float s = StepPerDistance * f.Distance;
             int gs = (int)Math.Clamp(Math.Round(65536.0 / (s * QfBase)), 1, (1 << 16) + 8192);
-            f.GlobalScale = gs;
-            f.InvScale = 65536f / gs;
             float lfY = LfStep1 * MathF.Pow(f.Distance, LfExponent);
             // Y LF step = (1/512) * invScale / quantLf
-            int ql = (int)Math.Clamp(Math.Round(f.InvScale / 512 / lfY), 1, 65536);
+            int ql = (int)Math.Clamp(Math.Round(65536f / gs / 512 / lfY), 1, 65536);
+            if (hook != null) (gs, ql) = hook((gs, ql));
+            f.GlobalScale = gs;
+            f.InvScale = 65536f / gs;
             f.QuantLf = ql;
             float mul = f.InvScale / ql;
             for (int c = 0; c < 3; c++) f.DcStep[c] = LfDequant[c] * mul;

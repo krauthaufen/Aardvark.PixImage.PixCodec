@@ -64,6 +64,8 @@ namespace Aardvark.ImageCodecs
         internal Action<JxlBitWriter>? DequantMatrices { get; set; }
         /// <summary>Test hook: the HfMul of each 8 x 8 block (by block index) instead of the adaptive quantization's.</summary>
         internal Func<int, int>? HfMul { get; set; }
+        /// <summary>Test hook: maps the chosen (global_scale, quant_lf) to the ones written.</summary>
+        internal Func<(int gs, int ql), (int gs, int ql)>? Quantizer { get; set; }
         /// <summary>Test hook: the number of HF histogram sets written (num_hf_presets, at most the number of groups).</summary>
         internal int HfPresets { get; set; } = 1;
         /// <summary>Test hook: XFromY and BFromY of each 64 x 64 tile (by tile index) written instead of the fitted ones.</summary>

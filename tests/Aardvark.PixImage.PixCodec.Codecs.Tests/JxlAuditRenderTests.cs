@@ -820,19 +820,53 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// G.2.4: HfMul is 1 + mul with no bounds. libjxl clamps mul to [0, 255]: blocks coded with HfMul 300 .. 100000
-    /// decode as HfMul 256 (taking the text literally differs from libjxl by 0.15 / 0.97 here), mul = -1 as HfMul 1.
-    /// We follow libjxl.
+    /// G.2.4: HfMul is 1 + mul with no upper bound, and Mul of I.2 depends on global_scale * HfMul only (as does the EPF
+    /// sigma of J.4). So blocks with HfMul (a, b) under global_scale G and quant_lf k * q decode as blocks with HfMul
+    /// (a / k, b / k) under k * G and q, all within libjxl's range; libjxl's decode of that second stream is the expected
+    /// image of the first. libjxl 0.12 itself clamps mul at 255 (it decodes HfMul 300 and 700 as 256): a storage limit
+    /// that contradicts the text, which no encoder reaches (cjxl stays below it even at distance 0.01, and our encoder
+    /// writes at most 256), pinned here as libjxl's defect; we follow the text.
     /// </summary>
     [Theory]
-    [InlineData(300, 700)]
-    [InlineData(1, 100000)]
-    [InlineData(0, 40)]
-    public void HfMulIsClampedAsLibjxl(int a, int b)
+    [InlineData(300, 700, 100)]
+    [InlineData(2000, 512, 8)]
+    public void HfMulHasNoUpperBound(int a, int b, int k)
     {
         var img = JxlEncodeTests.Synthetic(64, 48, ColorModel.Rgb, SampleType.UInt8, 0);
-        var data = Jxl.Encode(img, new JxlEncodeOptions { Distance = 1, ForceStrategy = 0, HfMul = i => i % 5 == 0 ? a : b });
-        var m = LossyDiff(data, $"hfmul {a} {b}");
+        byte[] Enc(int div, int gsMul, int qlDiv) => Jxl.Encode(img, new JxlEncodeOptions
+        {
+            Distance = 1, ForceStrategy = 0, HfMul = i => (i % 5 == 0 ? a : b) / div,
+            Quantizer = q => (q.gs * gsMul, Math.Max(1, q.ql / k) * k / qlDiv),
+        });
+        var big = Enc(1, 1, 1);         // HfMul (a, b), G, k * q
+        var small = Enc(k, k, k);       // HfMul (a / k, b / k), k * G, q
+        Dump($"hfmul {a} {b}", big);
+        var ours = Floats(Jxl.Decode(big, new JxlDecodeOptions { ForceFloat = true }));
+        var oursSmall = Floats(Jxl.Decode(small, new JxlDecodeOptions { ForceFloat = true }));
+        double same = ours.Zip(oursSmall, (x, y) => Math.Abs(x - y)).Max();
+        output.WriteLine($"hfmul {a} {b}: ours, the two streams differ by {same:g3}");
+        Assert.True(same < 1e-4, $"{same}");
+        var m = LossyDiff(small, $"hfmul {a / k} {b / k}");
+        if (m == null) return;
+        Assert.True(m < 2 / 255.0, $"{m}");
+        var lib = Floats(JxlEncodeTests.Libjxl(small)!);
+        double toLib = ours.Zip(lib, (x, y) => Math.Abs(Math.Clamp(x, 0, 1) - Math.Clamp(y, 0, 1))).Max();
+        double libClamped = Floats(JxlEncodeTests.Libjxl(big)!).Zip(lib, (x, y) => Math.Abs(x - y)).Max();
+        output.WriteLine($"ours to libjxl's decode of the equivalent stream {toLib:g3}; libjxl's own decode differs by {libClamped:g3}");
+        Assert.True(toLib < 2 / 255.0, $"{toLib}");
+        Assert.True(libClamped > 0.05, $"libjxl now decodes HfMul above 256 as the text says ({libClamped}): follow it");
+    }
+
+    /// <summary>
+    /// G.2.4 gives HfMul = 1 + mul no meaning for mul &lt; 0 (mul = -1 makes Mul of I.2 a division by zero); libjxl
+    /// takes such mul as 0 (HfMul 1), and so do we.
+    /// </summary>
+    [Fact]
+    public void NegativeHfMulIsOne()
+    {
+        var img = JxlEncodeTests.Synthetic(64, 48, ColorModel.Rgb, SampleType.UInt8, 0);
+        var data = Jxl.Encode(img, new JxlEncodeOptions { Distance = 1, ForceStrategy = 0, HfMul = i => i % 5 == 0 ? 0 : 40 });
+        var m = LossyDiff(data, "hfmul 0 40");
         Assert.True(m == null || m < 2 / 255.0, $"{m}");
     }
 
