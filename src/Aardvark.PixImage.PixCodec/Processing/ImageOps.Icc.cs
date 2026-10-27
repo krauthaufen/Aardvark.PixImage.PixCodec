@@ -6,7 +6,13 @@ namespace Aardvark.ImageCodecs
     public sealed class ColorConvertOptions
     {
         public IccRenderingIntent Intent { get; set; } = IccRenderingIntent.Perceptual;
-        /// <summary>Black point compensation (ISO 18619) for the relative colorimetric, perceptual and saturation intents.</summary>
+        /// <summary>
+        /// Black point compensation (ISO 18619, ISO/TS 21830 for n-colour profiles) for the relative colorimetric, perceptual
+        /// and saturation intents; Gray, RGB, Lab, CMYK, CMY and 3 to 15 colour profiles only. Perceptual and saturation
+        /// conversions to an ICC v4 profile are scaled between the black points even when this is off (with the v4 perceptual
+        /// reference black for v4 tables), as LittleCMS does. Where ISO 18619 and LittleCMS differ in the black points, this
+        /// follows LittleCMS.
+        /// </summary>
         public bool BlackPointCompensation { get; set; }
         /// <summary>Sample type of the result (UInt8, UInt16, Float16, Float32); default: the input's (Float32 for Float64).</summary>
         public SampleType? OutputType { get; set; }

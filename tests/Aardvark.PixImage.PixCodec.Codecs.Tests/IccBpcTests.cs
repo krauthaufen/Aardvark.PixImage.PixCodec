@@ -302,4 +302,35 @@ public class IccBpcTests
             Assert.Equal(c, d);
         }
     }
+
+    // ------------------------------------------------------------------ ICC v4
+
+    [Fact]
+    public void V4PerceptualDestinationIsAlwaysScaled()
+    {
+        // v4 perceptual / saturation tables have the perceptual reference medium black (ICC.1 6.3.4.3, Y = 0.0034731,
+        // L* 3.137) as black point, and a v4 destination scales perceptual and saturation conversions with or without BPC,
+        // as LittleCMS does (ISO 18619 has neither)
+        var v2 = IccProfile.Parse(File.ReadAllBytes(Path.Combine(TestUtil.FixtureDir, "icc", "profiles", "lcms_cmyk_v2.icc")));
+        var v4 = IccProfile.Parse(File.ReadAllBytes(Path.Combine(TestUtil.FixtureDir, "icc", "profiles", "lcms_cmyk_v4.icc")));
+        double prm = 24389.0 / 27 * 0.0034731; // below the cube root part of L*
+        foreach (var intent in new[] { IccRenderingIntent.Perceptual, IccRenderingIntent.Saturation })
+        {
+            Near(prm, BlackL(v4, intent, true), 1e-3);
+            Near(prm, BlackL(v4, intent, false), 1e-3);
+        }
+        Assert.True(BlackL(v4, IccRenderingIntent.RelativeColorimetric, false) > 10);
+        var cmyk = new float[] { 0, 0, 0, 1, 1, 1, 1, 1, 0.5f, 0.5f, 0.5f, 0.5f };
+        foreach (var intent in Intents)
+        {
+            var off = new float[12]; var on = new float[12]; var plain = new float[12];
+            new IccTransform(v2, v4, intent).Transform(cmyk, off);
+            new IccTransform(v2, v4, intent, true).Transform(cmyk, on);
+            Assert.Equal(intent != IccRenderingIntent.RelativeColorimetric, off.AsSpan().SequenceEqual(on));
+            // to v2 nothing is forced
+            new IccTransform(v4, v2, intent).Transform(cmyk, plain);
+            new IccTransform(v4, v2, intent, true).Transform(cmyk, on);
+            Assert.False(plain.AsSpan().SequenceEqual(on));
+        }
+    }
 }

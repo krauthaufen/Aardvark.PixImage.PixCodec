@@ -215,8 +215,10 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// The perceptual and saturation intents of ICC v4 work with the perceptual reference medium black: when the
-        /// destination is a v4 profile, the source black is scaled to the destination's (a no-op between two black points at
-        /// zero, e.g. two matrix / TRC profiles). This is also what LittleCMS does.
+        /// destination is a v4 profile, the source black is scaled to the destination's even without black point compensation
+        /// (a no-op between two black points at zero, e.g. two matrix / TRC profiles). ISO 18619 makes the scaling optional
+        /// (Annex A) and says nothing of v4; this follows PIL.ImageCms (LittleCMS 2.16) as a black box
+        /// (IccBpcTests.V4PerceptualDestinationIsAlwaysScaled, and the v2 to v4 cases of IccTests.MatchesLittleCms).
         /// </summary>
         bool AutoBpc(IccRenderingIntent intent)
         {
@@ -224,7 +226,9 @@ namespace Aardvark.ImageCodecs
             return Destination.IsV4;
         }
 
-        /// <summary>The perceptual reference medium black of ICC v4 (ICC.1 6.3.4.3, Y = 0.0034731), made neutral.</summary>
+        /// <summary>The perceptual reference medium black of ICC v4 (ICC.1 6.3.4.3, Y = 0.0034731), made neutral. v4 perceptual
+        /// and saturation tables take it as their black point instead of the one ISO 18619 4.2.3 - 4.2.5 computes from the
+        /// tables, as LittleCMS does (IccBpcTests.V4PerceptualDestinationIsAlwaysScaled).</summary>
         static readonly CieXyz PerceptualBlack = new(0.0034731 * IccMath.D50X, 0.0034731, 0.0034731 * IccMath.D50Z);
 
         /// <summary>
