@@ -211,7 +211,7 @@ namespace Aardvark.ImageCodecs
                 }
                 int bits = rd.ItemBitDepth(it);
                 bool mono = Monochrome(rd, it);
-                bool alpha = !opt.IgnoreAlpha && rd.AlphaItem(it) != null;
+                bool alpha = !opt.IgnoreAlpha && rd.HasAlpha(it);
                 var color = mono ? (alpha ? ColorModel.GrayAlpha : ColorModel.Gray) : (alpha ? ColorModel.Rgba : ColorModel.Rgb);
                 var colr = ColourOf(rd, it);
                 int orient = rd.Orientation(it);

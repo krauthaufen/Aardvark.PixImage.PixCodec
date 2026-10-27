@@ -223,6 +223,25 @@ namespace Aardvark.ImageCodecs.Heif
             return null;
         }
 
+        /// <summary>
+        /// The alpha of a grid without an alpha item of its own: an alpha item on every tile (in tile order), laid out like
+        /// the colour tiles; null when a tile has none.
+        /// </summary>
+        public HeifItem[]? AlphaTiles(HeifItem grid)
+        {
+            if (grid.Type != "grid") return null;
+            var refs = grid.Refs("dimg");
+            if (refs.Length == 0) return null;
+            var r = new HeifItem[refs.Length];
+            for (int i = 0; i < refs.Length; i++)
+                if (!File.Items.TryGetValue(refs[i], out var t) || AlphaItem(t) is not HeifItem a) return null;
+                else r[i] = a;
+            return r;
+        }
+
+        /// <summary>Whether the item's output image has alpha: an alpha item of its own, or one on each tile of a grid.</summary>
+        public bool HasAlpha(HeifItem it) => AlphaItem(it) != null || AlphaTiles(it) != null;
+
         public bool IsPremultiplied(HeifItem master, HeifItem alpha)
         {
             var refs = master.Refs("prem");
@@ -298,7 +317,8 @@ namespace Aardvark.ImageCodecs.Heif
             return y;
         }
 
-        YuvImage DecodeGrid(HeifItem it, int depth)
+        /// <summary>A grid of its dimg tiles, or of the given items in their place (the alpha items of the tiles).</summary>
+        YuvImage DecodeGrid(HeifItem it, int depth, HeifItem[]? tiles = null)
         {
             var payload = File.ItemData(Data, it);
             if (payload.Length < 8 || payload[0] != 0) throw new ImageFormatException("AVIF: bad grid item");
@@ -324,7 +344,8 @@ namespace Aardvark.ImageCodecs.Heif
             int tw = 0, th = 0;
             for (int i = 0; i < refs.Length; i++)
             {
-                if (!File.Items.TryGetValue(refs[i], out var ti)) throw new ImageFormatException("AVIF: missing grid tile");
+                HeifItem? ti = tiles?[i];
+                if (ti == null && !File.Items.TryGetValue(refs[i], out ti)) throw new ImageFormatException("AVIF: missing grid tile");
                 var t = DecodeYuv(ti, depth + 1);
                 if (outp == null)
                 {
@@ -348,7 +369,7 @@ namespace Aardvark.ImageCodecs.Heif
                 }
             }
             var c = Colour(it);
-            if (c.HasNclx)
+            if (c.HasNclx && tiles == null)
             {
                 outp!.ColorPrimaries = c.Primaries; outp.TransferCharacteristics = c.Transfer; outp.MatrixCoefficients = c.Matrix; outp.FullRange = c.FullRange;
             }
@@ -389,6 +410,15 @@ namespace Aardvark.ImageCodecs.Heif
                             a = DecodeYuv(ai, depth);
                             if (a.Width != y.Width || a.Height != y.Height) a = ResizeNearest(a, y.Width, y.Height);
                             prem = IsPremultiplied(it, ai);
+                        }
+                        else if (!opt.IgnoreAlpha && AlphaTiles(it) is HeifItem[] at)
+                        {
+                            // alpha on the tiles only (auxl from each alpha tile to its colour tile): the grid of those
+                            a = DecodeGrid(it, depth, at);
+                            if (a.Width != y.Width || a.Height != y.Height) a = ResizeNearest(a, y.Width, y.Height);
+                            var tiles = it.Refs("dimg");
+                            prem = true;
+                            for (int i = 0; i < at.Length; i++) prem &= IsPremultiplied(File.Items[tiles[i]], at[i]);
                         }
                         long t0 = Av1Stats.TimeOn ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                         img = AvifColor.ToRaw(y, a, prem, opt.Multithreaded);

@@ -586,6 +586,29 @@ public class AvifTests(ITestOutputHelper output)
         Avif.DecodeAll(data);
     }
 
+    static string AlphaSha256(RawImage img)
+    {
+        var d = (byte[])img.Data;
+        var a = new byte[img.Width * img.Height];
+        for (int i = 0; i < a.Length; i++) a[i] = d[i * img.Channels + img.Channels - 1];
+        return Convert.ToHexString(SHA256.HashData(a)).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// libavif's color_grid_alpha_nogrid.avif: a 1x2 grid whose alpha is an auxl item on each tile, without an alpha grid.
+    /// The alpha channel as avifdec 1.4.2 (-d 8) writes it.
+    /// </summary>
+    [TestDataFact("fixtures/avif/libavif/color_grid_alpha_nogrid.avif")]
+    public void AlphaOnGridTiles()
+    {
+        var data = File.ReadAllBytes(Path.Combine(TestData(Path.Combine("fixtures", "avif", "libavif")), "color_grid_alpha_nogrid.avif"));
+        var img = Avif.Decode(data);
+        Assert.Equal((80, 80, ColorModel.Rgba), (img.Width, img.Height, img.Color));
+        Assert.Equal("248f2d33c474a17c8e5a7c5b125ee587ff5be05be00f1edc54aff9a0f564179f", AlphaSha256(img));
+        Assert.Equal(ColorModel.Rgba, Avif.GetInfo(data).Color);
+        Assert.Equal(ColorModel.Rgb, Avif.Decode(data, new AvifDecodeOptions { IgnoreAlpha = true }).Color);
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]
