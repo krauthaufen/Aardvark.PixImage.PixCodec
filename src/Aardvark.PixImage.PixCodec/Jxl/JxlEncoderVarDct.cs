@@ -286,9 +286,10 @@ namespace Aardvark.ImageCodecs.JpegXl
         {
             int bw = f.Bw, bh = f.Bh, pw = f.Pw;
             var dc = new[] { new float[bw * bh], new float[bw * bh], new float[bw * bh] };
+            int need = ScratchFloats(f);
             void Row(int by)
             {
-                var coef = new float[4 * 64 * 64 + 512];
+                var coef = new float[need];
                 for (int bx = 0; bx < bw; bx++)
                 {
                     int st = f.Strategy[by * bw + bx];
@@ -623,6 +624,18 @@ namespace Aardvark.ImageCodecs.JpegXl
             if (f.Parallel) Parallel.For(0, cells, Cell); else for (int i = 0; i < cells; i++) Cell(i);
         }
 
+        /// <summary>
+        /// Floats for the coefficients of the largest varblock in use and the scratch of its forward transform
+        /// (<see cref="JxlEncDct.Forward"/>: 3 * size in all; 256 x 256 needs 196608).
+        /// </summary>
+        static int ScratchFloats(Frame f)
+        {
+            int max = 64;
+            foreach (byte st in f.Strategy)
+                if (st != 255) max = Math.Max(max, JxlAcStrategy.CoveredX[st] * JxlAcStrategy.CoveredY[st] * 64);
+            return 3 * max + 512;
+        }
+
         static bool GroupAligned(int st, int bx, int by)
             => bx % 32 + JxlAcStrategy.CoveredX[st] <= 32 && by % 32 + JxlAcStrategy.CoveredY[st] <= 32;
 
@@ -635,6 +648,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             f.CflB = new int[f.CflX.Length];
             f.HfTokens = new JxlTokens[dims.NumGroups];
             bool cfl = f.Effort >= 3;
+            int need = ScratchFloats(f);
             void Group(int g)
             {
                 int gx = g % dims.GroupsX, gy = g / dims.GroupsX;
@@ -653,7 +667,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                 var q = new[] { new int[total], new int[total], new int[total] };
                 var coefBuf = new float[3 * total + 64];
-                var scratch = new float[3 * 64 * 64 * 4 + 512];
+                var scratch = new float[need];
                 fixed (float* pc = coefBuf, ps = scratch)
                 fixed (int* qx = q[0], qy = q[1], qb = q[2])
                 {

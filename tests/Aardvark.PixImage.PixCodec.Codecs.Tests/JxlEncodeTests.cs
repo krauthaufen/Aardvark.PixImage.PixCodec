@@ -1,4 +1,5 @@
 using Aardvark.ImageCodecs;
+using Aardvark.ImageCodecs.JpegXl;
 using Xunit;
 using Xunit.Abstractions;
 using static Aardvark.ImageCodecs.Tests.TestUtil;
@@ -399,6 +400,36 @@ public class JxlEncodeTests(ITestOutputHelper output)
         output.WriteLine($"strategy {strategy}: {enc.Length} bytes {p:F2} dB");
         Assert.True(p > 44, $"PSNR {p:F2}");
         if (Libjxl(enc) is { } r) Assert.True(ColourPsnr(img, r) > 44);
+    }
+
+    /// <summary>
+    /// The 128 and 256 sample transforms (I.2.6), forced everywhere on an image of two by two groups and more, so that
+    /// varblocks end at group and LF group boundaries and the image edge falls back to DCT8: near exact, and libjxl's
+    /// decode agrees with ours.
+    /// </summary>
+    [Theory]
+    [InlineData(JxlAcStrategy.Dct64x128)]
+    [InlineData(JxlAcStrategy.Dct128x64)]
+    [InlineData(JxlAcStrategy.Dct128x128)]
+    [InlineData(JxlAcStrategy.Dct128x256)]
+    [InlineData(JxlAcStrategy.Dct256x128)]
+    [InlineData(JxlAcStrategy.Dct256x256)]
+    public void LossyLargeTransformsReconstruct(int strategy)
+    {
+        var img = Synthetic(600, 560, ColorModel.Rgb, SampleType.UInt8, 4, 5);
+        var enc = Jxl.Encode(img, new JxlEncodeOptions { Distance = 0.1f, ForceStrategy = strategy });
+        var ours = Jxl.Decode(enc);
+        double p = ColourPsnr(img, ours);
+        output.WriteLine($"strategy {strategy}: {enc.Length} bytes {p:F2} dB");
+        Assert.True(p > 44, $"PSNR {p:F2}");
+        if (Libjxl(enc) is not { } r) return;
+        Assert.True(ColourPsnr(img, r) > 44);
+        var a = (byte[])ours.Data; var b = (byte[])r.Data;
+        Assert.Equal(a.Length, b.Length);
+        int m = 0;
+        for (int i = 0; i < a.Length; i++) m = Math.Max(m, Math.Abs(a[i] - b[i]));
+        output.WriteLine($"largest difference to libjxl {m}");
+        Assert.True(m <= 2, $"largest difference to libjxl {m}");
     }
 
     [Theory]

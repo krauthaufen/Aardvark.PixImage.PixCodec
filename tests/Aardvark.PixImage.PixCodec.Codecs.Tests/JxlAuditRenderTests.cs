@@ -593,7 +593,6 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
     /// sample", which leaves open which tile a varblock wider or taller than 64 uses. 128 x 64 varblocks (each covering
     /// two tiles), the factors differing from tile to tile: libjxl takes those of the tile of the varblock's top-left
     /// block, as we do. Changing only the factors of the tiles without a varblock origin leaves libjxl's decode as it is.
-    /// (Our encoder cannot write 128 or 256 sample varblocks; they go through the same code.)
     /// </summary>
     [Fact]
     public void ChromaFromLumaOfLargeVarblocksFromTheirFirstTile()
