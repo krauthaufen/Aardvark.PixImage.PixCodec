@@ -251,42 +251,16 @@ namespace Aardvark.ImageCodecs
             else if (p.ColorSpace == IccColorSpace.Lab)
                 device = LabBlack(p, intent);
             else
-                device = Darkest(p, intent, trilinear);
+            {
+                device = new float[p.Channels];
+                if (subtractive) Array.Fill(device, 1f);
+            }
             var fwd = ToPcs(p, intent == IccRenderingIntent.AbsoluteColorimetric ? IccRenderingIntent.RelativeColorimetric : intent, trilinear, out var fpcs);
             if (fpcs == IccColorSpace.Xyz) fwd.Add(new XyzToLabStage());
             var lab = IccPipeline.Eval(fwd, device);
             double l = Math.Clamp((double)lab[0], 0, 50);
             var (x, y, z) = IccMath.LabToXyz(l, 0, 0);
             return new CieXyz(x, y, z);
-        }
-
-        /// <summary>
-        /// D of ISO 18619 4.2.2.2: the vertex of the device space with the lowest L* through the A2B / TRCs of the intent, of
-        /// {0, 1} (Gray), {000, 111} (RGB), {0000, 1111, 0001, 1110} (CMYK). Other colour spaces (CMY, xCLR, which ISO/TS
-        /// 21830 4.1 leaves undefined as they should have a B2A) take no colour and all colourants, like RGB.
-        /// </summary>
-        static float[] Darkest(IccProfile p, IccRenderingIntent intent, bool trilinear)
-        {
-            int n = p.Channels;
-            var vertices = new List<float[]> { new float[n], Fill(n, 0, n) };
-            if (p.ColorSpace == IccColorSpace.Cmyk) { vertices.Add(Fill(4, 3, 4)); vertices.Add(Fill(4, 0, 3)); }
-            var fwd = ToPcs(p, intent, trilinear, out var pcs);
-            if (pcs == IccColorSpace.Xyz) fwd.Add(new XyzToLabStage());
-            float[] best = vertices[0];
-            float bestL = float.PositiveInfinity;
-            foreach (var v in vertices)
-            {
-                float l = IccPipeline.Eval(fwd, v)[0];
-                if (l < bestL) { bestL = l; best = v; }
-            }
-            return best;
-
-            static float[] Fill(int n, int from, int to)
-            {
-                var v = new float[n];
-                for (int i = from; i < to; i++) v[i] = 1;
-                return v;
-            }
         }
 
         /// <summary>Lab (0, 0, 0) as the normalised device values of a profile with a Lab data colour space (ISO 18619 4.2.3):
