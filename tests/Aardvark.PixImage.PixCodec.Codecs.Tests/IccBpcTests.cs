@@ -134,4 +134,17 @@ public class IccBpcTests
             Near(15, BlackL(cmyk, intent, true));
         }
     }
+
+    [Fact]
+    public void RgbOutputProfileUsesDarkestColour()
+    {
+        // ISO 18619 4.2.3: only CMYK (or xCLR) output-capable profiles start from the B2A; an RGB profile, of the output
+        // class and with a B2A1 that stops short of black (Lab 0 -> 0.1), still takes D: (0, 0, 0) -> L* 5
+        var rgb = Profile(IccProfileClass.Output, IccColorSpace.Rgb,
+            ("A2B0", Lut16(3, 3, 2, x => Gray(5 + 95 * (x[0] + x[1] + x[2]) / 3))),
+            ("A2B1", Lut16(3, 3, 2, x => Gray(5 + 95 * (x[0] + x[1] + x[2]) / 3))),
+            ("B2A0", Lut16(3, 3, 2, x => Enumerable.Repeat(LOf(x[0]) / 100, 3).ToArray())),
+            ("B2A1", Lut16(3, 3, 2, x => Enumerable.Repeat(0.1 + 0.9 * LOf(x[0]) / 100, 3).ToArray())));
+        Near(5, BlackL(rgb, IccRenderingIntent.RelativeColorimetric, true));
+    }
 }

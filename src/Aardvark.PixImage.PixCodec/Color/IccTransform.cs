@@ -241,7 +241,7 @@ namespace Aardvark.ImageCodecs
             float[] device;
             bool subtractive = p.ColorSpace is IccColorSpace.Cmyk or IccColorSpace.Cmy;
             bool colorimetric = intent is IccRenderingIntent.RelativeColorimetric or IccRenderingIntent.AbsoluteColorimetric;
-            if (colorimetric && (p.Class == IccProfileClass.Output || subtractive)
+            if (colorimetric && subtractive
                 && UsesLut(p, IccRenderingIntent.RelativeColorimetric, false) && UsesLut(p, intent, true))
             {
                 var back = FromPcs(p, IccRenderingIntent.RelativeColorimetric, trilinear, out var pcs);
