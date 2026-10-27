@@ -21,6 +21,11 @@ namespace Aardvark.ImageCodecs.JpegXl
     internal sealed class JxlDisplayedFrame
     {
         public JxlFrameImage Canvas = null!;
+        /// <summary>
+        /// Whether the colour of an XYB image's canvas is in the header's colour encoding (blended there), not linear sRGB;
+        /// grey images then have the encoded grey in each of the three colour planes.
+        /// </summary>
+        public bool Encoded;
         public uint Duration;
         public uint Timecode;
         public string Name = "";
@@ -147,6 +152,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             }
             // the last frame shown as it is: XYB is converted to linear RGB by the output stage, block by block
             bool defer = fh.IsLast && Header.XybEncoded && frame.Planes.Length >= 3 && IsDisplayed(fh) && JxlBlender.IsPassthrough(Header, fh, frame);
+            // frames of XYB images that may blend are converted to the colour encoding of the header (not to an ICC profile)
+            bool encoded = !defer && Header.XybEncoded && !Header.Colour.WantIcc && frame.Planes.Length >= 3;
             JxlFrameImage post;
             if (defer)
             {
@@ -154,7 +161,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 frame.PendingIntensityTarget = Header.ToneMapping.IntensityTarget;
                 post = frame;
             }
-            else post = ColourTransform(frame);
+            else post = ColourTransform(frame, encoded);
             JxlProfile.Mark("XYB to linear");
             var canvas = JxlBlender.Blend(Header, fh, post, state);
             if (!fh.SaveBeforeColourTransform && canReference)
@@ -163,17 +170,26 @@ namespace Aardvark.ImageCodecs.JpegXl
                 state.ReferencePreCt[fh.SaveAsReference] = false;
             }
             if (!IsDisplayed(fh)) return null;
-            return new JxlDisplayedFrame { Canvas = canvas, Duration = fh.Duration, Timecode = fh.Timecode, Name = fh.Name };
+            return new JxlDisplayedFrame { Canvas = canvas, Encoded = encoded, Duration = fh.Duration, Timecode = fh.Timecode, Name = fh.Name };
         }
 
-        /// <summary>XYB to linear RGB (sRGB primaries); other frames are already in the output colour space.</summary>
-        JxlFrameImage ColourTransform(JxlFrameImage f)
+        /// <summary>
+        /// XYB to linear RGB (sRGB primaries), and with <paramref name="encoded"/> on to the header's colour encoding, where
+        /// blending happens (F.2, L.2.2); other frames are already in the output colour space.
+        /// </summary>
+        JxlFrameImage ColourTransform(JxlFrameImage f, bool encoded)
         {
             if (!Header.XybEncoded) return f;
             var r = new JxlFrameImage { Width = f.Width, Height = f.Height, NumColour = f.NumColour, Planes = (float[][])f.Planes.Clone() };
+            int n = f.Width * f.Height;
             var x = (float[])f.Planes[0].Clone(); var y = (float[])f.Planes[1].Clone(); var b = (float[])f.Planes[2].Clone();
-            JxlColour.XybToLinear(x, y, b, f.Width * f.Height, Header.Opsin, Header.ToneMapping.IntensityTarget, opt.Multithreaded);
+            JxlColour.XybToLinear(x, y, b, n, Header.Opsin, Header.ToneMapping.IntensityTarget, opt.Multithreaded);
             r.Planes[0] = x; r.Planes[1] = y; r.Planes[2] = b;
+            if (encoded)
+            {
+                var col = Jxl.LinearToEncoding(Header, r.Planes, n, opt.Multithreaded);
+                for (int c = 0; c < 3; c++) r.Planes[c] = c < col.Length ? col[c] : (float[])col[0].Clone();
+            }
             return r;
         }
     }

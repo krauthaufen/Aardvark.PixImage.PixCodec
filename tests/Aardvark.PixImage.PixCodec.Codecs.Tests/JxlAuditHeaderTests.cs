@@ -36,7 +36,7 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
     }
 
     /// <summary>Appends a lossless frame of float planes (colour then extra channels, at frame size).</summary>
-    static void Frame(JxlBitWriter w, JxlImageHeader h, JxlFrameHeader fh, float[][] planes)
+    static void Frame(JxlBitWriter w, JxlImageHeader h, JxlFrameHeader fh, float[][] planes, Action<JxlBitWriter>? features = null)
     {
         var chans = planes.Select(p =>
         {
@@ -44,7 +44,7 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
             for (int i = 0; i < c.Data.Length; i++) c.Data[i] = BitConverter.SingleToInt32Bits(p[i]);
             return c;
         }).ToList();
-        JxlLosslessEncoder.EncodeFrame(w, chans, h, fh, JxlLosslessParams.For(2), false);
+        JxlLosslessEncoder.EncodeFrame(w, chans, h, fh, JxlLosslessParams.For(2), false, features);
     }
 
     static JxlBitWriter Start(JxlImageHeader h)
@@ -337,6 +337,101 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
         f.EcBlending[0] = new JxlBlendingInfo { Mode = JxlBlendMode.Blend, AlphaChannel = 0, Clamp = true, Source = 1 };
         Frame(w, h, f, Planes(W, H, 4, 60).Select(p => p.Select(v => v * 1.6f - 0.3f).ToArray()).ToArray());
         AssertLikeLibjxl(w.ToArray(), "kBlend clamped", 1e-5);
+    }
+
+    /// <summary>
+    /// F.2 and L.2.2: frames of an XYB image blend in the colour space after the inverse colour transforms, the colour
+    /// encoding of the image header (transfer function and primaries included), not in linear sRGB. Two lossy frames,
+    /// the second added (kAdd) or blended (kBlend) onto the first; libjxl does the same (and cjxl-made blended
+    /// animations decode within one level of it, checked by hand). The samples stay away from 0: how a transfer curve
+    /// treats negative values (lossy coding makes some) is not specified, and libjxl clamps them for a gamma curve.
+    /// </summary>
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 2)]
+    [InlineData(true, 0)]
+    public void XybFramesBlendInTheHeaderEncoding(bool p3Gamma, int mode)
+    {
+        const int S = 40;
+        bool alpha = mode == 2;
+        var h = new JxlImageHeader { Width = S, Height = S };
+        if (p3Gamma) h.Colour = new JxlColourEncoding { Primaries = JxlPrimaries.P3, Transfer = JxlTransfer.Gamma, Gamma = 0.45455 };
+        if (alpha) h.ExtraChannels = new[] { new JxlExtraChannel() };
+        var w = Start(h);
+        int nc = alpha ? 4 : 3;
+        RawImage Image(int seed) => new(S, S, alpha ? ColorModel.Rgba : ColorModel.Rgb,
+            Enumerable.Range(0, S * S * nc).Select(i => (byte)(i % nc == 3 ? 40 + i * 7 % 180 : (int)(64 + Rand(seed + i % nc, i / nc % S, i / nc / S) * 64))).ToArray(), nc);
+        var opt = new JxlEncodeOptions { Distance = 1, Effort = 3 };
+        for (int k = 0; k < 2; k++)
+        {
+            var f = NewFrame(h, S, S);
+            f.IsLast = k == 1;
+            if (k == 1)
+            {
+                f.Blending = new JxlBlendingInfo { Mode = (JxlBlendMode)mode, Source = 0 };
+                if (alpha) f.EcBlending[0] = new JxlBlendingInfo { Mode = JxlBlendMode.Blend, Source = 0 };
+            }
+            JxlVarDctEncoder.EncodeFrame(w, Image(10 * k + 3), h, f, opt);
+        }
+        var data = w.ToArray();
+        var ours = (byte[])Jxl.Decode(data).Data;
+        var lib = JxlEncodeTests.Libjxl(data);
+        if (lib == null) { output.WriteLine("libjxl not available"); return; }
+        var l = (byte[])lib.Data;
+        Assert.Equal(l.Length, ours.Length);
+        int m = 0;
+        for (int i = 0; i < ours.Length; i++) m = Math.Max(m, Math.Abs(ours[i] - l[i]));
+        output.WriteLine($"XYB {(p3Gamma ? "P3 gamma" : "sRGB")} {(JxlBlendMode)mode}: largest difference to libjxl {m}");
+        Assert.True(m <= 2, $"{m}");
+    }
+
+    /// <summary>
+    /// The patches of a frame (K.3.1): one patch type copying a w x h rectangle at (sx, sy) of Reference[1] with kReplace
+    /// (on colour and every extra channel) to (px, py).
+    /// </summary>
+    static Action<JxlBitWriter> OnePatch(int ne, int sx, int sy, int pw, int ph, int px, int py) => bw =>
+    {
+        var t = new JxlTokens();
+        t.Add(0, 1);                                // one patch type
+        t.Add(1, 1);                                // reference 1
+        t.Add(3, (uint)sx); t.Add(3, (uint)sy);
+        t.Add(2, (uint)pw - 1); t.Add(2, (uint)ph - 1);
+        t.Add(7, 0);                                // one position
+        t.Add(4, (uint)px); t.Add(4, (uint)py);
+        for (int c = 0; c <= ne; c++) t.Add(5, 1);  // kReplace
+        var enc = new JxlEntropyEncoder(10) { MaxClusters = 10 };
+        enc.Build(new[] { t }, false);
+        enc.WriteCode(bw);
+        enc.WriteTokens(bw, t);
+    };
+
+    /// <summary>
+    /// F.2 says "Blending is performed before recording the reference frame" after describing both cases; libjxl (djxl
+    /// 0.12) records a frame saved before its colour transform as decoded: in frame coordinates (here a full frame larger
+    /// than the image, with a negative origin) and without blending its extra channel (kAdd here). We do the same. libjxl
+    /// refuses to blend from such a reference, so a patch copying the whole canvas reads it back.
+    /// </summary>
+    [Fact]
+    public void SavedBeforeCtIsRecordedAsDecoded()
+    {
+        var h = FloatHeader(W, H, 1);
+        var w = Start(h);
+        Background(w, h, 0);
+        var f = NewFrame(h, W + 8, H + 6);
+        f.X0 = -4; f.Y0 = -2; f.IsLast = false; f.SaveAsReference = 1; f.SaveBeforeColourTransform = true;
+        f.EcBlending[0] = new JxlBlendingInfo { Mode = JxlBlendMode.Add, Source = 0 };
+        var fp = Planes(W + 8, H + 6, 4, 90);
+        Frame(w, h, f, fp);
+        var g = NewFrame(h, W, H);
+        g.IsLast = true; g.Flags = JxlFrameHeader.FlagPatches;
+        Frame(w, h, g, Planes(W, H, 4, 91), OnePatch(1, 0, 0, W, H, 0, 0));
+        AssertLikeLibjxl(w.ToArray(), "save_before_ct, larger frame");
+        var ours = (float[])Jxl.DecodeAll(w.ToArray(), new JxlDecodeOptions { ApplyOrientation = false })[0].Data;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+                for (int c = 0; c < 4; c++) Assert.Equal(fp[c][y * (W + 8) + x], ours[(y * W + x) * 4 + c]);
     }
 
     // ------------------------------------------------------------------ J.1 restoration filter
