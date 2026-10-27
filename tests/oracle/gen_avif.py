@@ -14,7 +14,7 @@ Tools: avifenc, avifdec, avifgainmaputil, aomenc, dav1d from PATH (tests/oracle/
 their libraries in .tmp/tools/usr/lib/x86_64-linux-gnu); the fixtures were made with those versions (the tonemap ones with
 the libavif 1.4.2 release binaries).
 
-usage: python3 gen_avif.py [avif] [gainmap] [tonemap] [overlay] [av1]
+usage: python3 gen_avif.py [avif] [gainmap] [tonemap] [overlay] [container] [av1]
 """
 import hashlib
 import json
@@ -456,6 +456,122 @@ def heif_overlay(out, inputs, canvas, fill):
     heif_file(out, items, [('dimg', n + 1, list(range(1, n + 1)))], n + 1)
 
 
+def heif_items(path):
+    """
+    The items of a HEIF file: ({id: {'type', 'hidden', 'props': [(box, essential)], 'data'}}, refs [(type, from, [to])],
+    primary id). Item data from the file or idat (construction methods 0 and 1).
+    """
+    d = open(path, 'rb').read()
+    meta = next(b for b in boxes(d, 0, len(d)) if b[0] == 'meta')
+    sub = {t: (s, p, e) for t, s, p, e in boxes(d, meta[2] + 4, meta[3])}
+    u = lambda at, n: int.from_bytes(d[at:at + n], 'big')
+    p = sub['pitm'][1]
+    primary = u(p + 4, 2) if d[p] == 0 else u(p + 4, 4)
+    items = {}
+    _, p, e = sub['iinf']
+    for t, s, ip, ie in boxes(d, p + (6 if d[p] == 0 else 8), e):
+        v, fl = d[ip], u(ip + 1, 3)
+        iid, o = (u(ip + 4, 2), ip + 6) if v == 2 else (u(ip + 4, 4), ip + 8)
+        items[iid] = {'type': d[o + 2:o + 6].decode('latin1'), 'hidden': fl & 1, 'props': [], 'data': b''}
+    _, p, e = sub['iloc']
+    ver = d[p]
+    q = p + 4
+    osz, lsz, bsz, isz = d[q] >> 4, d[q] & 15, d[q + 1] >> 4, (d[q + 1] & 15 if ver in (1, 2) else 0)
+    q += 2
+    count = u(q, 2 if ver < 2 else 4); q += 2 if ver < 2 else 4
+    idat = sub['idat'][1] if 'idat' in sub else 0
+    for _ in range(count):
+        iid = u(q, 2 if ver < 2 else 4); q += 2 if ver < 2 else 4
+        cm = 0
+        if ver in (1, 2): cm = u(q, 2) & 15; q += 2
+        q += 2
+        base = u(q, bsz); q += bsz
+        n = u(q, 2); q += 2
+        parts = []
+        for _ in range(n):
+            q += isz
+            off = u(q, osz); q += osz
+            ln = u(q, lsz); q += lsz
+            at = (idat if cm == 1 else 0) + base + off
+            parts.append(d[at:at + ln])
+        if iid in items: items[iid]['data'] = b''.join(parts)
+    refs = []
+    if 'iref' in sub:
+        _, p, e = sub['iref']
+        w = 2 if d[p] == 0 else 4
+        for t, s, rp, re in boxes(d, p + 4, e):
+            n = u(rp + w, 2)
+            refs.append((t, u(rp, w), [u(rp + w + 2 + w * i, w) for i in range(n)]))
+    iprp = sub['iprp']
+    pb = {t: (s, pp, ee) for t, s, pp, ee in boxes(d, iprp[1], iprp[2])}
+    props = [d[s:ee] for t, s, pp, ee in boxes(d, pb['ipco'][1], pb['ipco'][2])]
+    _, p, e = pb['ipma']
+    ver, flags = d[p], u(p + 1, 3)
+    q = p + 4
+    count = u(q, 4); q += 4
+    for _ in range(count):
+        iid = u(q, 2 if ver < 1 else 4); q += 2 if ver < 1 else 4
+        n = d[q]; q += 1
+        for _ in range(n):
+            if flags & 1: x = u(q, 2); q += 2; idx, ess = x & 0x7FFF, bool(x & 0x8000)
+            else: x = d[q]; q += 1; idx, ess = x & 0x7F, bool(x & 0x80)
+            if iid in items and idx: items[iid]['props'].append((props[idx - 1], ess))
+    return items, refs, primary
+
+
+def heif_write(out, items, refs, primary, major=b'avif', minor=0, compatible=(b'avif', b'mif1', b'miaf'), groups=(), ipro=()):
+    """
+    A HEIF file of items {id: {'type', 'hidden', 'props': [(box, essential)], 'data', optional 'protection' (1 based
+    index into ipro)}}, references [(type, from, [to])], entity groups [(type, id, [entities])] and ipro sinf boxes; the
+    item payloads go into mdat.
+    """
+    ids = sorted(items)
+    props, ipma = b'', b''
+    k = 0
+    for i in ids:
+        idx = []
+        for pb, ess in items[i]['props']:
+            props += pb
+            k += 1
+            idx.append((0x80 if ess else 0) | k)
+        ipma += struct.pack('>HB', i, len(idx)) + bytes(idx)
+    assert k < 128
+    ipma = fullbox('ipma', 0, 0, struct.pack('>I', len(ids)) + ipma)
+    iinf = fullbox('iinf', 0, 0, struct.pack('>H', len(ids)) + b''.join(
+        fullbox('infe', 2, items[i].get('hidden', 0), struct.pack('>HH4s', i, items[i].get('protection', 0), items[i]['type'].encode()) + b'\0')
+        for i in ids))
+    iref = fullbox('iref', 0, 0, b''.join(box(t, struct.pack('>HH', f, len(to)) + b''.join(struct.pack('>H', x) for x in to)) for t, f, to in refs))
+    grpl = box('grpl', b''.join(fullbox(t, 0, 0, struct.pack('>II', g, len(e)) + b''.join(struct.pack('>I', x) for x in e)) for t, g, e in groups))
+    iprob = fullbox('ipro', 0, 0, struct.pack('>H', len(ipro)) + b''.join(ipro))
+    hdlr = fullbox('hdlr', 0, 0, b'\0' * 4 + b'pict' + b'\0' * 12 + b'\0')
+    pitm = fullbox('pitm', 0, 0, struct.pack('>H', primary))
+    ftyp = box('ftyp', major + struct.pack('>I', minor) + b''.join(compatible))
+    payloads = [items[i]['data'] for i in ids]
+
+    def build(offsets):
+        iloc = fullbox('iloc', 0, 0, bytes([0x44, 0x00]) + struct.pack('>H', len(ids)) + b''.join(
+            struct.pack('>HHHII', i, 0, 1, offsets[j], len(payloads[j])) for j, i in enumerate(ids)))
+        meta = fullbox('meta', 0, 0, hdlr + pitm + iloc + (iprob if ipro else b'') + iinf + (iref if refs else b'')
+                       + box('iprp', box('ipco', props) + ipma) + (grpl if groups else b''))
+        return ftyp + meta
+    head = build([0] * len(ids))
+    offs, o = [], len(head) + 8
+    for pl in payloads: offs.append(o); o += len(pl)
+    with open(out, 'wb') as f: f.write(build(offs) + box('mdat', b''.join(payloads)))
+
+
+def prop(name, payload, full=True): return fullbox(name, 0, 0, payload) if full else box(name, payload)
+
+
+def irot(a): return box('irot', bytes([a]))
+
+
+def imir(axis): return box('imir', bytes([axis]))
+
+
+def clap(w, h, ho=(0, 1), vo=(0, 1)): return box('clap', struct.pack('>IIIIiIiI', w, 1, h, 1, ho[0], ho[1], vo[0], vo[1]))
+
+
 def gen_overlay():
     """
     iovl: two of the stills on a grey canvas, the second one partly outside it, in avif/overlay. libavif does not read
@@ -534,6 +650,49 @@ def gen_gainmap_tonemap():
         print(name, os.path.getsize(out))
 
 
+CONTAINER = os.path.join(OUT, 'container')
+
+
+def avifdec_png(path):
+    """avifdec's 8 bit output (the stored pixels: no transform applied)."""
+    png = os.path.join(TMP, 'c.png')
+    run(tool('avifdec'), '-c', 'dav1d', '-u', 'bilinear', '-d', 8, path, png)
+    return np.asarray(Image.open(png))
+
+
+def item_alone(items, iid, out):
+    """A file with the one item (made visible) as the primary item: what avifdec decodes of it."""
+    it = dict(items[iid])
+    it['hidden'] = 0
+    heif_write(out, {iid: it}, [], iid)
+    return avifdec_png(out)
+
+
+def gen_container():
+    """
+    Hand-made container cases in avif/container from grid_2x2.avif (2x2 tiles of 96x64), with a .ref each:
+      * grid_iden.avif: the tiles through 'iden' items with irot 2 (MIAF 7.3.11.4.1; avifdec refuses it): the reference is
+        avifdec's decode of each coded tile turned 180 degrees (irot, HEIF 6.5.10) and pasted.
+      * grid_tile_irot.avif: irot 2 on the coded tiles themselves: avifdec's output, which ignores them.
+    """
+    os.makedirs(CONTAINER, exist_ok=True)
+    os.makedirs(TMP, exist_ok=True)
+    items, refs, primary = heif_items(os.path.join(OUT, 'grid_2x2.avif'))
+    tiles = refs[0][2]
+    it = {k: dict(v) for k, v in items.items()}
+    for t in tiles: it[t + 10] = {'type': 'iden', 'hidden': 1, 'props': [(irot(2), True)], 'data': b''}
+    out = os.path.join(CONTAINER, 'grid_iden.avif')
+    heif_write(out, it, [('dimg', primary, [t + 10 for t in tiles])] + [('dimg', t + 10, [t]) for t in tiles], primary)
+    parts = [np.rot90(item_alone(items, t, os.path.join(TMP, 'tile.avif')), 2) for t in tiles]
+    write_ref(out + '.ref', np.concatenate([np.concatenate(parts[0:2], 1), np.concatenate(parts[2:4], 1)], 0))
+    it = {k: dict(v, props=list(v['props'])) for k, v in items.items()}
+    for t in tiles: it[t]['props'].append((irot(2), True))
+    out = os.path.join(CONTAINER, 'grid_tile_irot.avif')
+    heif_write(out, it, refs, primary)
+    write_ref(out + '.ref', avifdec_png(out))
+    print('container')
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     what = sys.argv[1:] or ['avif', 'av1']
@@ -541,5 +700,6 @@ if __name__ == '__main__':
     if 'gainmap' in what or 'avif' in what: gen_gainmap()
     if 'tonemap' in what or 'gainmap' in what or 'avif' in what: gen_gainmap_tonemap()
     if 'overlay' in what or 'avif' in what: gen_overlay()
+    if 'container' in what or 'avif' in what: gen_container()
     if 'av1' in what: gen_av1()
     shutil.rmtree(TMP, ignore_errors=True)

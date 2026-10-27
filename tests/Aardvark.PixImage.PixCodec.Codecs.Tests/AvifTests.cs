@@ -609,6 +609,25 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal(ColorModel.Rgb, Avif.Decode(data, new AvifDecodeOptions { IgnoreAlpha = true }).Color);
     }
 
+    /// <summary>
+    /// Grid tiles (gen_avif.py container): 'iden' tiles with irot 2 (MIAF 7.3.11.4.1; avifdec refuses them) against
+    /// avifdec's decode of the coded tiles turned per HEIF 6.5.10; irot on the coded tiles themselves is ignored, as
+    /// avifdec does (HEIF 6.6.1 would apply it).
+    /// </summary>
+    [Theory]
+    [InlineData("avif/container/grid_iden.avif")]
+    [InlineData("avif/container/grid_tile_irot.avif")]
+    public void GridTileTransforms(string file)
+    {
+        var path = Fixture(file);
+        var data = File.ReadAllBytes(path);
+        var img = Avif.Decode(data);
+        var expected = LoadRef(path + ".ref");
+        Assert.True(MaxDiff(expected, img) <= 1, $"max difference {MaxDiff(expected, img)}");
+        var info = Avif.GetInfo(data);
+        Assert.Equal((img.Width, img.Height, img.Color), (info.Width, info.Height, info.Color));
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]

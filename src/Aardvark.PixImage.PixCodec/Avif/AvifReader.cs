@@ -317,8 +317,8 @@ namespace Aardvark.ImageCodecs.Heif
             return y;
         }
 
-        /// <summary>A grid of its dimg tiles, or of the given items in their place (the alpha items of the tiles).</summary>
-        YuvImage DecodeGrid(HeifItem it, int depth, HeifItem[]? tiles = null)
+        /// <summary>The grid item's rows, columns and output size (HEIF 6.6.2.3).</summary>
+        (int rows, int cols, int ow, int oh) GridLayout(HeifItem it)
         {
             var payload = File.ItemData(Data, it);
             if (payload.Length < 8 || payload[0] != 0) throw new ImageFormatException("AVIF: bad grid item");
@@ -338,8 +338,18 @@ namespace Aardvark.ImageCodecs.Heif
             }
             if (ow <= 0 || oh <= 0) throw new ImageFormatException("AVIF: empty grid");
             if ((long)ow * oh > opt.MaxPixels) throw new ImageNotSupportedException("AVIF: grid exceeds the pixel limit");
+            if (it.Refs("dimg").Length != rows * cols) throw new ImageFormatException("AVIF: grid tile count does not match");
+            return (rows, cols, ow, oh);
+        }
+
+        /// <summary>
+        /// A grid of its dimg tiles, or of the given items in their place (the alpha items of the tiles). The tiles' own
+        /// clap / irot / imir are ignored, as avifdec 1.4.2 does: HEIF 6.6.1 takes the output images of the inputs.
+        /// </summary>
+        YuvImage DecodeGrid(HeifItem it, int depth, HeifItem[]? tiles = null)
+        {
+            var (rows, cols, ow, oh) = GridLayout(it);
             var refs = it.Refs("dimg");
-            if (refs.Length != rows * cols) throw new ImageFormatException("AVIF: grid tile count does not match");
             YuvImage? outp = null;
             int tw = 0, th = 0;
             for (int i = 0; i < refs.Length; i++)
@@ -376,6 +386,47 @@ namespace Aardvark.ImageCodecs.Heif
             return outp!;
         }
 
+        bool HasIdenTile(HeifItem grid)
+        {
+            foreach (var r in grid.Refs("dimg"))
+                if (File.Items.TryGetValue(r, out var t) && t.Type == "iden") return true;
+            return false;
+        }
+
+        /// <summary>
+        /// A grid with 'iden' tiles (MIAF 7.3.11.4.1; avifdec 1.4.2 refuses them): the tiles' output images (an iden item's
+        /// transforms applied, a coded tile's ignored as in <see cref="DecodeGrid"/>) pasted on the canvas.
+        /// </summary>
+        RawImage DecodeGridOfOutputs(HeifItem it, int depth)
+        {
+            var (_, cols, ow, oh) = GridLayout(it);
+            var refs = it.Refs("dimg");
+            RawImage? outp = null;
+            int tw = 0, th = 0;
+            for (int i = 0; i < refs.Length; i++)
+            {
+                if (!File.Items.TryGetValue(refs[i], out var ti)) throw new ImageFormatException("AVIF: missing grid tile");
+                var t = DecodeItem(ti, true, depth + 1, stored: ti.Type != "iden");
+                if (outp == null)
+                {
+                    tw = t.Width; th = t.Height;
+                    if ((long)tw * cols < ow || (long)th * (refs.Length / cols) < oh) throw new ImageFormatException("AVIF: grid tiles do not cover the canvas");
+                    outp = RawImage.Create(ow, oh, t.Color, t.SampleType, t.Channels);
+                    outp.Metadata = t.Metadata;
+                }
+                else if (t.Width != tw || t.Height != th || t.Color != outp.Color || t.SampleType != outp.SampleType)
+                    throw new ImageFormatException("AVIF: grid tiles differ in size or format");
+                int gx = (i % cols) * tw, gy = (i / cols) * th;
+                int bpp = t.GetBytes().Length / (tw * th);
+                var src = t.GetBytes();
+                var dst = outp.GetBytes();
+                int w = Math.Min(tw, ow - gx);
+                for (int y = 0; y < th && gy + y < oh; y++)
+                    if (w > 0) src.Slice(y * tw * bpp, w * bpp).CopyTo(dst.Slice(((gy + y) * ow + gx) * bpp));
+            }
+            return outp!;
+        }
+
         /// <summary>
         /// Decodes an item to its output image: colour + alpha, then its transformative properties (none at all with
         /// <paramref name="stored"/>, not even the clean aperture).
@@ -394,6 +445,11 @@ namespace Aardvark.ImageCodecs.Heif
                         break;
                     }
                 case "iovl": img = DecodeOverlay(it, depth); break;
+                case "grid" when HasIdenTile(it):
+                    CheckEssential(it);
+                    if (!opt.IgnoreAlpha && AlphaItem(it) != null) throw new ImageNotSupportedException("AVIF: an alpha item on a grid of iden tiles");
+                    img = DecodeGridOfOutputs(it, depth);
+                    break;
                 case "tmap":
                     {
                         var r = it.Refs("dimg");
