@@ -658,6 +658,10 @@ namespace Aardvark.ImageCodecs.JpegXl
                 int pst = planeStride >> hs[c];
                 if (hs[c] != 0 || vs[c] != 0)
                 {
+                    // J.1: subsampled chroma is upsampled (J.2) before any restoration filter. libjxl 0.12 differs with
+                    // vertical subsampling and Gaborish: on even rows its Gaborish takes chroma rows y + 1 and y + 3 as
+                    // neighbours (and varies with the thread count). That is a libjxl defect; we keep the text
+                    // (JxlAuditRenderTests.DjxlGaborishOnVerticallySubsampledChromaTakesWrongRows).
                     // the stored chroma covers ceil(size / 2) samples
                     int cw = (dims.XSize + (1 << hs[c]) - 1) >> hs[c], chh = (dims.YSize + (1 << vs[c]) - 1) >> vs[c];
                     var small = new float[cw * chh];

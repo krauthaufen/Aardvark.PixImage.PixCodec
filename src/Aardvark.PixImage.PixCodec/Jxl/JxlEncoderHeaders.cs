@@ -192,7 +192,12 @@ namespace Aardvark.ImageCodecs.JpegXl
             w.Write(2, (uint)f.EpfIters);
             if (f.EpfIters > 0)
             {
-                if (!modular) w.WriteBool(false);   // default sharpness LUT
+                if (!modular)
+                {
+                    bool customLut = !f.EpfSharpLut.AsSpan().SequenceEqual(new JxlRestorationFilter().EpfSharpLut);
+                    w.WriteBool(customLut);
+                    if (customLut) for (int i = 0; i < 8; i++) w.WriteF16(f.EpfSharpLut[i]);
+                }
                 bool customScales = f.EpfChannelScale[0] != 40 || f.EpfChannelScale[1] != 5 || f.EpfChannelScale[2] != 3.5f;
                 w.WriteBool(customScales);
                 if (customScales)

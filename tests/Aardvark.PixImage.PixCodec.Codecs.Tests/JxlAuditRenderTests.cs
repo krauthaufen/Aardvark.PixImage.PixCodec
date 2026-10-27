@@ -193,9 +193,10 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// The same with 4:2:0 chroma, where libjxl differs from the text (by up to 0.07, on every other row): the expected
-    /// image is libjxl's decode of the frame without filters (chroma upsampled as in J.2), taken back to Cb, Y, Cr,
-    /// filtered as in J.3 and converted as in L.3.
+    /// The same with 4:2:0 chroma, where libjxl 0.12 differs from the text by up to 0.07 on the even rows (see
+    /// <see cref="DjxlGaborishOnVerticallySubsampledChromaTakesWrongRows"/> for what it does instead). We keep J.1:
+    /// the expected image is libjxl's decode of the frame without filters (chroma upsampled as in J.2), taken back to
+    /// Cb, Y, Cr, filtered as in J.3 and converted as in L.3.
     /// </summary>
     [Fact]
     public void YCbCr420IsFilteredBeforeTheColourTransform()
@@ -242,6 +243,132 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         output.WriteLine($"4:2:0 with Gaborish: largest difference to J.3 / L.3 on libjxl's unfiltered decode: ours {m:g3}, libjxl {ml:g3} ({used} of {n} pixels)");
         Assert.True(used > n / 2);
         Assert.True(m < 1.5 / 255, $"{m}");
+    }
+
+    /// <summary>libjxl's float decode on one thread (tests/oracle/djxl_single_thread.py), interleaved; null without djxl.</summary>
+    static (float[] data, int w, int h)? DjxlSingleThread(byte[] encoded)
+    {
+        if (!PythonAvailable) return null;
+        var tmp = Path.Combine(FixtureDir, "_tmp");
+        Directory.CreateDirectory(tmp);
+        var f = Path.Combine(tmp, Guid.NewGuid().ToString("N") + ".jxl");
+        try
+        {
+            File.WriteAllBytes(f, encoded);
+            var (exit, text) = RunPython($"djxl_single_thread.py \"{f}\" \"{f}.ref\"");
+            if (CannotVerify(exit, text)) return null;
+            Assert.True(exit == 0, "djxl failed: " + text);
+            var r = LoadRef(f + ".ref");
+            Assert.Equal(SampleType.Float32, r.SampleType);
+            return ((float[])r.Data, r.Width, r.Height);
+        }
+        finally
+        {
+            File.Delete(f); File.Delete(f + ".ref");
+        }
+    }
+
+    /// <summary>Interleaved RGB (L.3 colour transform inverted) as Cb, Y, Cr planes, in double.</summary>
+    static double[][] ToYCbCr(float[] rgb, int n)
+    {
+        const double a = 0.344136286, b = 0.714136286, off = 128 / 255.0;
+        var ycc = new double[3][];
+        for (int c = 0; c < 3; c++) ycc[c] = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            double R = rgb[3 * i], G = rgb[3 * i + 1], B = rgb[3 * i + 2];
+            double y = (G + a * B / 1.772 + b * R / 1.402) / (1 + a / 1.772 + b / 1.402);
+            ycc[0][i] = (B - y) / 1.772; ycc[1][i] = y - off; ycc[2][i] = (R - y) / 1.402;
+        }
+        return ycc;
+    }
+
+    /// <summary>
+    /// J.3 Gaborish of plane <paramref name="p"/> (channel c of <see cref="GabWeights"/>) at (x, y), mirrored at the
+    /// edges, with the rows y + up and y + dn as the vertical neighbours (J.3: up = -1, dn = 1).
+    /// </summary>
+    static double Gab(double[] p, int c, int w, int h, int x, int y, int up = -1, int dn = 1)
+    {
+        static int M(int v, int len) => v < 0 ? -v - 1 : v >= len ? 2 * len - 1 - v : v;
+        double S(int dx, int dy) => p[M(y + dy, h) * w + M(x + dx, w)];
+        double w1 = GabWeights[2 * c], w2 = GabWeights[2 * c + 1];
+        return (S(0, 0) + w1 * (S(-1, 0) + S(1, 0) + S(0, up) + S(0, dn)) + w2 * (S(-1, up) + S(1, up) + S(-1, dn) + S(1, dn))) / (1 + 4 * (w1 + w2));
+    }
+
+    /// <summary>
+    /// J.1 (chroma upsampled as in J.2 "before any restoration filter is applied"), J.3, then L.3; against libjxl 0.12
+    /// on one thread, 4:2:0 chroma with Gaborish:
+    ///  - our decode is the text: libjxl's unfiltered decode taken back to Cb, Y, Cr, filtered as in J.3 (to 2e-4).
+    ///  - libjxl's Y and its odd chroma rows are the text too, but on an even row y (2 &lt;= y &lt; h - 5, away from
+    ///    the left and right edge) libjxl's Gaborish takes the upsampled chroma rows y + 1 and y + 3 as the vertical
+    ///    neighbours instead of y - 1 and y + 1 (exact to 2e-4; rows y - 1 and y + 3 share a slot of a four row
+    ///    buffer). The same holds for 4:4:0; horizontal subsampling (4:2:2) and EPF are not affected.
+    ///  - with several threads libjxl's output also varies from run to run near group borders and at the edge
+    ///    columns, hence the single threaded oracle.
+    /// This is a libjxl defect, not a reading of the text: we keep J.1 and differ from libjxl by up to 0.07 here.
+    /// </summary>
+    [Fact]
+    public void DjxlGaborishOnVerticallySubsampledChromaTakesWrongRows()
+    {
+        var plain = DjxlSingleThread(WithFilters("jpeg420.jxl", false, 0));
+        if (plain == null) return;
+        var (lp, w, h) = plain.Value;
+        var lg = DjxlSingleThread(WithFilters("jpeg420.jxl", true, 0))!.Value.data;
+        var ours = (float[])Jxl.Decode(WithFilters("jpeg420.jxl", true, 0), new JxlDecodeOptions { ForceFloat = true, ApplyOrientation = false }).Data;
+        int n = w * h;
+        Assert.Equal(3 * n, ours.Length);
+        var src = ToYCbCr(lp, n);
+        var lib = ToYCbCr(lg, n);
+        var our = ToYCbCr(ours, n);
+        // libjxl's float output is not clamped; a pixel out of [0, 1] would still invert, but stay away from them anyway
+        Assert.All(lp, v => Assert.InRange(v, -0.5f, 1.5f));
+        double oursToText = 0, libOddToText = 0, libEvenToText = 0, libEvenToRows13 = 0;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                for (int c = 0; c < 3; c++)
+                {
+                    int i = y * w + x;
+                    double text = Gab(src[c], c, w, h, x, y);
+                    oursToText = Math.Max(oursToText, Math.Abs(our[c][i] - text));
+                    bool interior = x > 0 && x < w - 1 && y >= 2 && y < h - 5;
+                    if (c == 1 || (y & 1) == 1) libOddToText = Math.Max(libOddToText, Math.Abs(lib[c][i] - text));
+                    else if (interior)
+                    {
+                        libEvenToText = Math.Max(libEvenToText, Math.Abs(lib[c][i] - text));
+                        libEvenToRows13 = Math.Max(libEvenToRows13, Math.Abs(lib[c][i] - Gab(src[c], c, w, h, x, y, 1, 3)));
+                    }
+                }
+        output.WriteLine($"ours to J.1/J.3 {oursToText:g3}; libjxl: Y and odd chroma rows to J.3 {libOddToText:g3}, even chroma rows to J.3 {libEvenToText:g3}, to rows y+1 / y+3 {libEvenToRows13:g3}");
+        Assert.True(oursToText < 2e-4, $"{oursToText}");
+        Assert.True(libOddToText < 2e-4, $"{libOddToText}");
+        Assert.True(libEvenToRows13 < 2e-4, $"{libEvenToRows13}");
+        Assert.True(libEvenToText > 0.01, $"{libEvenToText}");
+    }
+
+    /// <summary>
+    /// J.1, J.4: EPF on subsampled chroma (upsampled first) matches libjxl. A custom sharpness LUT switches EPF on for
+    /// these frames (their sharpness is 0, which the default LUT maps to sigma 0).
+    /// </summary>
+    [Theory]
+    [InlineData("jpeg420.jxl", 1)]
+    [InlineData("jpeg420.jxl", 3)]
+    [InlineData("jpeg422.jxl", 2)]
+    public void YCbCrSubsampledEpfMatchesLibjxl(string name, int epf)
+    {
+        var data = EditFrames(JxlFixture(name), fh =>
+        {
+            fh.Filter.EpfIters = epf;
+            fh.Filter.EpfSharpLut = new[] { 2f, 2, 2, 2, 2, 2, 2, 2 };
+        });
+        var off = DjxlSingleThread(EditFrames(JxlFixture(name), _ => { }));
+        var lib = DjxlSingleThread(data);
+        if (lib == null || off == null) return;
+        var ours = (float[])Jxl.Decode(data, new JxlDecodeOptions { ForceFloat = true, ApplyOrientation = false }).Data;
+        double m = 0, effect = 0;
+        for (int i = 0; i < ours.Length; i++) { m = Math.Max(m, Math.Abs(ours[i] - lib.Value.data[i])); effect = Math.Max(effect, Math.Abs(off.Value.data[i] - lib.Value.data[i])); }
+        output.WriteLine($"{name} epf {epf}: largest difference to libjxl {m:g3} (EPF changes up to {effect:g3})");
+        Assert.True(effect > 1e-3, $"EPF had no effect: {effect}");
+        Assert.True(m < 1e-4, $"{m}");
     }
 
     /// <summary>I.5.2: "If this adaptive smoothing procedure is applied, no channel is subsampled."</summary>
