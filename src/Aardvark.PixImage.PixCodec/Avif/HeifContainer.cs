@@ -118,6 +118,10 @@ namespace Aardvark.ImageCodecs.Heif
         public string Name = "";
         public string ContentType = "";
         public bool Hidden;
+        /// <summary>
+        /// 1 based index into ipro: a protected item. It is decoded as if it were not, as avifdec 1.4.2 does (HEIF 10.2.2.2:
+        /// readers should fail on items protected by a scheme they do not know).
+        /// </summary>
         public int ProtectionIndex;
         public int ConstructionMethod;
         public int DataReferenceIndex;

@@ -674,6 +674,24 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal((img.Width, img.Height), (hdr.Width, hdr.Height));
     }
 
+    /// <summary>
+    /// gen_avif.py container: an hvc1 primary item with an AV1 alternative in its altr group decodes the alternative
+    /// (MIAF 7.3.12.2; avifdec gives up), as avifdec decodes the AV1 item alone; a protected AV1 item (scheme 'cenc') is
+    /// decoded as plain AV1, as avifdec does (HEIF 10.2.2.2 says readers should fail).
+    /// </summary>
+    [Theory]
+    [InlineData("avif/container/altr_hvc1.avif", "avif/nat_420_s6.avif.ref")]
+    [InlineData("avif/container/protected.avif", "avif/container/protected.avif.ref")]
+    public void AlternativesAndProtection(string file, string reference)
+    {
+        var data = File.ReadAllBytes(Fixture(file));
+        var img = Avif.Decode(data);
+        var expected = LoadRef(Fixture(reference));
+        Assert.True(MaxDiff(expected, img) <= 1, $"max difference {MaxDiff(expected, img)}");
+        var info = Avif.GetInfo(data);
+        Assert.Equal((img.Width, img.Height, img.Color), (info.Width, info.Height, info.Color));
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]

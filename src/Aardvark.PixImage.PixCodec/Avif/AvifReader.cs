@@ -79,8 +79,37 @@ namespace Aardvark.ImageCodecs.Heif
             get
             {
                 if (!File.HasMeta) return null;
-                if (File.Items.TryGetValue(File.PrimaryItemId, out var p)) return p;
-                return null;
+                if (!File.Items.TryGetValue(File.PrimaryItemId, out var p)) return null;
+                if (CanDecode(p)) return p;
+                // an undecodable primary item (another codec): the first decodable alternative of its 'altr' group (MIAF
+                // 7.3.12.2, HEIF 10.2.6.3; avifdec 1.4.2 gives up instead)
+                foreach (var (type, _, entities) in File.Groups)
+                    if (type == "altr" && Array.IndexOf(entities, p.Id) >= 0)
+                        foreach (var id in entities)
+                            if (id != p.Id && File.Items.TryGetValue(id, out var a) && CanDecode(a)) return a;
+                return p;
+            }
+        }
+
+        /// <summary>Whether the item is an image this reader decodes: AV1, or a derivation of such images.</summary>
+        public bool CanDecode(HeifItem it, int depth = 0)
+        {
+            if (depth > 8) return false;
+            foreach (var p in it.Properties)
+                if (p.Essential && !knownEssential.Contains(File.Properties[p.Index].Type)) return false;
+            switch (it.Type)
+            {
+                case "av01": return File.Prop(it, "av1C") != null;
+                case "grid": case "iden": case "iovl": case "tmap":
+                    {
+                        var refs = it.Refs("dimg");
+                        if (refs.Length == 0) return false;
+                        // a tmap item needs its base image only (Decode returns that)
+                        foreach (var r in it.Type == "tmap" ? refs[..1] : refs)
+                            if (!File.Items.TryGetValue(r, out var s) || !CanDecode(s, depth + 1)) return false;
+                        return true;
+                    }
+                default: return false;
             }
         }
 

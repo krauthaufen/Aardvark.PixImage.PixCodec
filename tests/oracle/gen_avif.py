@@ -681,6 +681,11 @@ def gen_container():
     and from gainmap/irot.avif (base item 1 with irot 1, imir 1; tmap item 2; gain map item 3):
       * tmap_primary_irot.avif: the tmap item primary, with irot 2 of its own (avifdec rejects both): avifdec's output of
         gainmap/irot.avif (the base's output image) turned 180 degrees (HEIF Amd 1 6.6.2.4 and 6.6.1).
+    and from nat_420_s6.avif:
+      * altr_hvc1.avif: an hvc1 primary item (dummy data) in an altr group with the AV1 item (MIAF 7.3.12.2; avifdec
+        gives up): the reference is nat_420_s6.avif.ref.
+      * protected.avif: the AV1 item with protection_index 1 (ipro, scheme 'cenc', data not encrypted): avifdec's output,
+        which ignores the protection.
     """
     os.makedirs(CONTAINER, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
@@ -708,6 +713,15 @@ def gen_container():
     out = os.path.join(CONTAINER, 'tmap_primary_irot.avif')
     heif_write(out, items, refs, 2, compatible=(b'avif', b'mif1', b'miaf', b'tmap'), groups=[('altr', 4, [2, 1])])
     write_ref(out + '.ref', np.rot90(avifdec_png(src), 2))
+    items, refs, primary = heif_items(os.path.join(OUT, 'nat_420_s6.avif'))
+    av = items[primary]
+    ispe = next(p for p in av['props'] if p[0][4:8] == b'ispe')
+    hv = {'type': 'hvc1', 'hidden': 0, 'props': [(box('hvcC', bytes(23)), True), ispe], 'data': bytes(100)}
+    heif_write(os.path.join(CONTAINER, 'altr_hvc1.avif'), {1: hv, 2: av}, [], 1, groups=[('altr', 10, [1, 2])])
+    sinf = box('sinf', box('frma', b'av01') + fullbox('schm', 0, 0, b'cenc' + struct.pack('>I', 0x10000)) + box('schi', b''))
+    out = os.path.join(CONTAINER, 'protected.avif')
+    heif_write(out, {1: dict(av, protection=1)}, [], 1, ipro=[sinf])
+    write_ref(out + '.ref', avifdec_png(out))
     print('container')
 
 
