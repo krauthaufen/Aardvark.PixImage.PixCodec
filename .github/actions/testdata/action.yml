@@ -59,7 +59,7 @@ runs:
         fi
         magick -version | head -1
         # (Argon: 7 GB download, 30 GB unpacked; its test needs PIXCODEC_ARGON=1 and runs locally only)
-        for f in testdata/fetch/*.sh; do case "$f" in *argon*) continue ;; esac; sh "$f"; done
+        for f in testdata/fetch/*.sh; do case "$f" in *argon*) continue ;; esac; echo "== $f"; sh -x "$f"; done
         cd tests/oracle
         python fetch_tiff_samples.py
         python fetch_tiff_samples.py --aperio
