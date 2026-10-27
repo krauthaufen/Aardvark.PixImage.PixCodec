@@ -166,9 +166,16 @@ namespace Aardvark.ImageCodecs.JpegXl
             return new JxlDisplayedFrame { Canvas = canvas, Duration = fh.Duration, Timecode = fh.Timecode, Name = fh.Name };
         }
 
-        /// <summary>XYB to linear RGB (sRGB primaries); other frames are already in the output colour space.</summary>
+        /// <summary>XYB to linear RGB (sRGB primaries), YCbCr to RGB; other frames are already in the output colour space.</summary>
         JxlFrameImage ColourTransform(JxlFrameImage f)
         {
+            if (f.YCbCr)
+            {
+                var p = (float[][])f.Planes.Clone();
+                p[0] = (float[])p[0].Clone(); p[1] = (float[])p[1].Clone(); p[2] = (float[])p[2].Clone();
+                JxlColour.YCbCrToRgbInPlace(p[0], p[1], p[2], f.Width * f.Height);
+                return new JxlFrameImage { Width = f.Width, Height = f.Height, NumColour = f.NumColour, Planes = p };
+            }
             if (!Header.XybEncoded) return f;
             var r = new JxlFrameImage { Width = f.Width, Height = f.Height, NumColour = f.NumColour, Planes = (float[][])f.Planes.Clone() };
             var x = (float[])f.Planes[0].Clone(); var y = (float[])f.Planes[1].Clone(); var b = (float[])f.Planes[2].Clone();

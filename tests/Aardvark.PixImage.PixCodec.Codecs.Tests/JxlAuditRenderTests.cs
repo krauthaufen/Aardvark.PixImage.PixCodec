@@ -127,6 +127,129 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         Assert.True(m <= tol, $"{name}: {m} > {tol}");
     }
 
+    /// <summary>
+    /// The codestream of a file with the header of each frame changed by <paramref name="edit"/> (the sections kept, the
+    /// TOC rewritten in logical order). For frames of cjxl that differ from what our encoder writes.
+    /// </summary>
+    static byte[] EditFrames(byte[] file, Action<JxlFrameHeader> edit)
+    {
+        var cs = JxlContainer.Parse(file).Codestream(file);
+        var br = new JxlBitReader(cs);
+        var h = JxlImageHeader.Read(br);
+        if (h.Colour.WantIcc) JxlIcc.Read(br);
+        br.ZeroPadToByte();
+        Assert.False(h.HavePreview);
+        int pos = br.BytePosition;
+        var w = new JxlBitWriter();
+        w.AppendBytes(cs[..pos]);
+        while (pos < cs.Length)
+        {
+            br = new JxlBitReader(cs, pos, cs.Length - pos);
+            var fh = JxlFrameHeader.Read(br, h);
+            var toc = JxlToc.Read(br, JxlFrameDims.Of(fh));
+            int start = pos + br.BytePosition;
+            var sections = Enumerable.Range(0, toc.Size.Length).Select(i => cs[(start + toc.Offset[i])..(start + toc.Offset[i] + toc.Size[i])]).ToList();
+            edit(fh);
+            JxlHeaderWriter.WriteFrameHeader(w, fh, h, customGab: fh.Filter.Gab);
+            JxlHeaderWriter.WriteToc(w, sections.Select(s => s.Length).ToArray());
+            foreach (var s in sections) w.AppendBytes(s);
+            pos = start + toc.TotalSize;
+            if (fh.IsLast) break;
+        }
+        return w.ToArray();
+    }
+
+    static byte[] JxlFixture(string name) => File.ReadAllBytes(Path.Combine(FixtureDir, "jxl", name));
+
+    // ------------------------------------------------------------------ J.1, L.3 YCbCr frames
+
+    /// <summary>Per channel Gaborish weights (exact in F16) that do not commute with the YCbCr conversion.</summary>
+    static readonly float[] GabWeights = { 0.25f, 0.125f, 0.0625f, 0.03125f, 0.1875f, 0.125f };
+
+    static byte[] WithFilters(string name, bool gab, int epf) => EditFrames(JxlFixture(name), fh =>
+    {
+        Assert.True(fh.DoYCbCr && !fh.Filter.Gab && fh.Filter.EpfIters == 0);
+        fh.Filter.Gab = gab;
+        fh.Filter.GabWeights = (float[])GabWeights.Clone();
+        fh.Filter.EpfIters = epf;
+    });
+
+    /// <summary>
+    /// J.1, K.3.2, L.3: in a YCbCr frame chroma is upsampled first, then the restoration filters run on Cb, Y, Cr, and
+    /// only the colour transform makes RGB of them. cjxl's recompressed JPEGs (frames without filters) with Gaborish and
+    /// EPF switched on, against libjxl (EPF does nothing here: the sharpness of these frames is 0).
+    /// </summary>
+    [Theory]
+    [InlineData("jpeg444.jxl", 0)]
+    [InlineData("jpeg444.jxl", 3)]
+    [InlineData("jpeg422.jxl", 2)]
+    public void YCbCrIsFilteredBeforeTheColourTransform(string name, int epf)
+    {
+        var m = LossyDiff(WithFilters(name, true, epf), $"{name} gab epf {epf}");
+        Assert.True(m == null || m < 1.5 / 255, $"{m}");
+    }
+
+    /// <summary>
+    /// The same with 4:2:0 chroma, where libjxl differs from the text (by up to 0.07, on every other row): the expected
+    /// image is libjxl's decode of the frame without filters (chroma upsampled as in J.2), taken back to Cb, Y, Cr,
+    /// filtered as in J.3 and converted as in L.3.
+    /// </summary>
+    [Fact]
+    public void YCbCr420IsFilteredBeforeTheColourTransform()
+    {
+        var lib = JxlEncodeTests.Libjxl(WithFilters("jpeg420.jxl", false, 0));
+        if (lib == null) return;
+        var ours = Floats(Jxl.Decode(WithFilters("jpeg420.jxl", true, 0), new JxlDecodeOptions { ForceFloat = true }));
+        int w = lib.Width, h = lib.Height, n = w * h;
+        var src = Floats(lib);
+        const double a = 0.344136286, b = 0.714136286, off = 128 / 255.0;
+        var ycc = new double[3][];
+        for (int c = 0; c < 3; c++) ycc[c] = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            double R = src[3 * i], G = src[3 * i + 1], B = src[3 * i + 2];
+            double y = (G + a * B / 1.772 + b * R / 1.402) / (1 + a / 1.772 + b / 1.402);
+            ycc[0][i] = (B - y) / 1.772; ycc[1][i] = y - off; ycc[2][i] = (R - y) / 1.402;
+        }
+        int M(int v, int len) => v < 0 ? -v - 1 : v >= len ? 2 * len - 1 - v : v;
+        // where libjxl's 8 bit output clipped a sample its Cb, Y, Cr cannot be recovered: such neighbourhoods are skipped
+        bool Clipped(int x, int y) { int j = 3 * (M(y, h) * w + M(x, w)); return Enumerable.Range(j, 3).Any(k => src[k] <= 0 || src[k] >= 1); }
+        var libOn = Floats(JxlEncodeTests.Libjxl(WithFilters("jpeg420.jxl", true, 0))!);
+        double m = 0, ml = 0;
+        int used = 0;
+        for (int i = 0; i < n; i++)
+        {
+            int x = i % w, yy = i / w;
+            bool skip = false;
+            for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) skip |= Clipped(x + dx, yy + dy);
+            if (skip) continue;
+            used++;
+            var f = new double[3];
+            for (int c = 0; c < 3; c++)
+            {
+                double w1 = GabWeights[2 * c], w2 = GabWeights[2 * c + 1];
+                double S(int dx, int dy) => ycc[c][M(yy + dy, h) * w + M(x + dx, w)];
+                f[c] = (S(0, 0) + w1 * (S(-1, 0) + S(1, 0) + S(0, -1) + S(0, 1)) + w2 * (S(-1, -1) + S(1, -1) + S(-1, 1) + S(1, 1))) / (1 + 4 * (w1 + w2));
+            }
+            double Y = f[1] + off;
+            double[] rgb = { Y + 1.402 * f[2], Y - a * f[0] - b * f[2], Y + 1.772 * f[0] };
+            for (int c = 0; c < 3; c++) m = Math.Max(m, Math.Abs(Math.Clamp(ours[3 * i + c], 0, 1) - Math.Clamp(rgb[c], 0, 1)));
+            for (int c = 0; c < 3; c++) ml = Math.Max(ml, Math.Abs(libOn[3 * i + c] - Math.Clamp(rgb[c], 0, 1)));
+        }
+        output.WriteLine($"4:2:0 with Gaborish: largest difference to J.3 / L.3 on libjxl's unfiltered decode: ours {m:g3}, libjxl {ml:g3} ({used} of {n} pixels)");
+        Assert.True(used > n / 2);
+        Assert.True(m < 1.5 / 255, $"{m}");
+    }
+
+    /// <summary>I.5.2: "If this adaptive smoothing procedure is applied, no channel is subsampled."</summary>
+    [Fact]
+    public void AdaptiveLfSmoothingWithSubsampledChromaIsRefused()
+    {
+        var data = EditFrames(JxlFixture("jpeg420.jxl"), fh => fh.Flags &= ~JxlFrameHeader.FlagSkipAdaptiveLfSmoothing);
+        Dump("smoothing 420", data);
+        Assert.Throws<ImageFormatException>(() => Jxl.Decode(data));
+    }
+
     // ------------------------------------------------------------------ K.3 patches
 
     /// <summary>

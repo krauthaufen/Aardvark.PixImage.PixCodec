@@ -662,7 +662,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 for (int y = 0; y < dims.YSize; y++) Array.Copy(p, y * pst, o, y * dims.XSize, dims.XSize);
                 r[c] = o;
             }
-            if (fh.DoYCbCr) JxlColour.YCbCrToRgbInPlace(r[0], r[1], r[2], dims.XSize * dims.YSize);
+            // YCbCr stays Cb, Y, Cr until the colour transform (J.1, L.3)
             return r;
         }
     }
