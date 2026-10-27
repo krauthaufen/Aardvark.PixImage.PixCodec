@@ -82,7 +82,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                             {
                                 float a = fa != null ? fa[fr + x] : 1;
                                 float b = ba != null ? ba[cr + x] : 0;
-                                if (bi.Clamp) { a = Math.Clamp(a, 0, 1); b = Math.Clamp(b, 0, 1); }
+                                if (bi.Clamp) a = Math.Clamp(a, 0, 1);   // new_alpha only (F.2)
                                 if (isAlpha) { o[cr + x] = a + b * (1 - a); continue; }
                                 if (premul) { o[cr + x] = fg[fr + x] + bg[cr + x] * (1 - a); continue; }
                                 float na = a + b * (1 - a);

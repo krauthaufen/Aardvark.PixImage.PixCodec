@@ -139,7 +139,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 state.LfFrames[fh.LfLevel - 1] = frame;
                 return null;
             }
-            bool canReference = !fh.IsLast && fh.Type != JxlFrameType.LfFrame;
+            bool canReference = !fh.IsLast && (fh.Duration == 0 || fh.SaveAsReference != 0) && fh.Type != JxlFrameType.LfFrame;
             if (fh.SaveBeforeColourTransform && canReference)
             {
                 state.References[fh.SaveAsReference] = frame;

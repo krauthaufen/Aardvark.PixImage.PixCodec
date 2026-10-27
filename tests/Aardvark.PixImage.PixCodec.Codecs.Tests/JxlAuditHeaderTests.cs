@@ -250,4 +250,92 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
         Assert.Equal(130, JxlIcc.Unpredict(IccStream(130, new byte[] { 0, 1, 2 }, new byte[130])).Length);
         Assert.Equal(100, JxlIcc.Unpredict(IccStream(100, Array.Empty<byte>(), new byte[100])).Length);
     }
+
+    // ------------------------------------------------------------------ F.2 frame header and blending
+
+    const int W = 24, H = 20;
+
+    /// <summary>A first frame replacing the canvas (values beyond [0, 1] too), saved as Reference[slot].</summary>
+    static void Background(JxlBitWriter w, JxlImageHeader h, int slot, uint duration = 0)
+    {
+        var f = NewFrame(h, W, H);
+        f.IsLast = false; f.SaveAsReference = slot; f.Duration = duration;
+        Frame(w, h, f, Enumerable.Range(0, 3 + h.ExtraChannels.Length).Select(c => Fill(W, H, (x, y) => Rand(7 + c, x, y) * 1.9f - 0.3f)).ToArray());
+    }
+
+    /// <summary>
+    /// Table F.7 reads clamp when "extra and (mode == kBlend or kMulAdd or kMul)"; libjxl (djxl 0.12) reads it for kMul
+    /// without extra channels too, and refuses the stream without that bit (checked by hand). We read and write it as
+    /// libjxl does, so that its kMul frames decode.
+    /// </summary>
+    [Fact]
+    public void MulWithoutExtraChannelsHasAClampBitLikeLibjxl()
+    {
+        var h = FloatHeader(W, H);
+        var w = Start(h);
+        Background(w, h, 1);
+        var f = NewFrame(h, W, H);
+        f.IsLast = true; f.Blending = new JxlBlendingInfo { Mode = JxlBlendMode.Mul, Source = 1, Clamp = false };
+        Frame(w, h, f, Planes(W, H, 3, 30).Select(p => p.Select(v => v * 2).ToArray()).ToArray());
+        AssertLikeLibjxl(w.ToArray(), "kMul without extra channels");
+    }
+
+    /// <summary>
+    /// Table F.7 reads source when !resets_canvas, which F.2 defines as full_frame and blending_info.mode == kReplace (the
+    /// colour channels' mode). libjxl (djxl 0.12) decides it in ec_blending_info by the extra channel's own mode, and
+    /// refuses these streams written with the colour mode (checked by hand). We follow libjxl.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 2)]   // kReplace, kBlend
+    [InlineData(1, 0)]   // kAdd, kReplace
+    [InlineData(0, 1)]
+    public void ExtraChannelSourceFollowsItsOwnModeLikeLibjxl(int colourMode, int extraMode)
+    {
+        var colour = (JxlBlendMode)colourMode;
+        var extra = (JxlBlendMode)extraMode;
+        var h = FloatHeader(W, H, 1);
+        var w = Start(h);
+        Background(w, h, 0);
+        var f = NewFrame(h, W, H);
+        f.IsLast = true;
+        // source 0, where the background is (also when it is not coded)
+        f.Blending = new JxlBlendingInfo { Mode = colour, Source = 0 };
+        f.EcBlending[0] = new JxlBlendingInfo { Mode = extra, Source = 0 };
+        Frame(w, h, f, Planes(W, H, 4, 40));
+        AssertLikeLibjxl(w.ToArray(), $"colour {colour}, extra channel {extra}");
+    }
+
+    /// <summary>
+    /// F.2: can_reference is !is_last and (duration == 0 or save_as_reference != 0) and frame_type != kLFFrame: an
+    /// animation frame with a duration saved as slot 0 is not recorded, the next frame adds to an empty Reference[0].
+    /// </summary>
+    [Fact]
+    public void ShownFrameIsNotRecordedInSlotZero()
+    {
+        var h = FloatHeader(W, H, 0, new JxlAnimationHeader { TpsNumerator = 1000, TpsDenominator = 1 });
+        var w = Start(h);
+        Background(w, h, 0, duration: 10);
+        var f = NewFrame(h, W, H);
+        f.IsLast = true; f.Duration = 10; f.Blending = new JxlBlendingInfo { Mode = JxlBlendMode.Add, Source = 0 };
+        Frame(w, h, f, Planes(W, H, 3, 50));
+        AssertLikeLibjxl(w.ToArray(), "shown frame in slot 0");
+    }
+
+    /// <summary>
+    /// Table F.8 with clamp: only new_alpha is clamped to [0, 1]; the old alpha of the source frame (here beyond [0, 1])
+    /// enters the kBlend formulas as it is.
+    /// </summary>
+    [Fact]
+    public void BlendClampsOnlyTheNewAlpha()
+    {
+        var h = FloatHeader(W, H, 1);
+        var w = Start(h);
+        Background(w, h, 1);
+        var f = NewFrame(h, W, H);
+        f.IsLast = true;
+        f.Blending = new JxlBlendingInfo { Mode = JxlBlendMode.Blend, AlphaChannel = 0, Clamp = true, Source = 1 };
+        f.EcBlending[0] = new JxlBlendingInfo { Mode = JxlBlendMode.Blend, AlphaChannel = 0, Clamp = true, Source = 1 };
+        Frame(w, h, f, Planes(W, H, 4, 60).Select(p => p.Select(v => v * 1.6f - 0.3f).ToArray()).ToArray());
+        AssertLikeLibjxl(w.ToArray(), "kBlend clamped", 1e-5);
+    }
 }
