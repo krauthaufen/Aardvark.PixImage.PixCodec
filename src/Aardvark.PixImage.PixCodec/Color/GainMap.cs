@@ -145,6 +145,9 @@ namespace Aardvark.ImageCodecs
             if (!(o.Gamma > 0) || !double.IsFinite(o.Gamma)) throw new ArgumentException("gain map gamma must be above 0");
             if (!(o.BaseOffset >= 0) || !(o.AlternateOffset >= 0) || o.BaseOffset == 0 && o.AlternateOffset == 0)
                 throw new ArgumentException("gain map offsets must not be negative (and not both 0)");
+            // (both metadata forms store headrooms as unsigned values: ISO 21496-1 C.2.3, Ultra HDR HDRCapacityMin / Max)
+            if (!(o.BaseHeadroom >= 0) || !double.IsFinite(o.BaseHeadroom) || o.AlternateHeadroom is double ah && (!(ah >= 0) || !double.IsFinite(ah)))
+                throw new ArgumentException("gain map headrooms must not be negative");
             if (baseline.Width != alternate.Width || baseline.Height != alternate.Height) throw new ArgumentException("baseline and alternate differ in size");
             int w = baseline.Width, h = baseline.Height;
             var b = Linearize(baseline, out bool ba);

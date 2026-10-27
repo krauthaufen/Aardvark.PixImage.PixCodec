@@ -140,8 +140,31 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.Null(GainMapMetadata.FromIso21496(With(9, 0, 0, 0, 0)));     // base headroom denominator 0
         Assert.Null(GainMapMetadata.FromIso21496(With(13, 0, 0, 0, 0)));    // alternate headroom numerator 0 = base headroom
         Assert.Null(GainMapMetadata.FromIso21496(With(37, 0, 0, 0, 0)));    // gamma numerator 0
-        var neg = new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMin = new[] { 1.0, 1, 1 }, GainMapMax = new[] { 0.5, 0.5, 0.5 } };
-        Assert.Null(GainMapMetadata.FromIso21496(neg.ToIso21496()));      // max(G) < min(G)
+        var neg = new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMin = new[] { 1.0, 1, 1 }, GainMapMax = new[] { 2.0, 2, 2 } }.ToIso21496();
+        neg.AsSpan(29, 4).Clear();
+        Assert.Null(GainMapMetadata.FromIso21496(neg));                     // max(G) 0 < min(G) 1
+    }
+
+    /// <summary>
+    /// What the binary form cannot hold is refused instead of written wrongly: headrooms are unsigned rationals (C.2.3),
+    /// they differ (5.2.7), γ is above 0 (5.2.5.6) with a numerator that is not 0 (C.2.3).
+    /// </summary>
+    [Fact]
+    public void IsoMetadataWritingRefusesWhatCannotBeStored()
+    {
+        var max = new[] { 2.0, 2, 2 };
+        Assert.Throws<ArgumentException>(() => new GainMapMetadata { BaseHdrHeadroom = -1, AlternateHdrHeadroom = 2, GainMapMax = max }.ToIso21496());
+        Assert.Throws<ArgumentException>(() => new GainMapMetadata { BaseHdrHeadroom = 2, AlternateHdrHeadroom = -0.5, GainMapMax = max }.ToIso21496());
+        Assert.Throws<ArgumentException>(() => new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMax = max, Gamma = new[] { 1e-10, 1e-10, 1e-10 } }.ToIso21496());
+        Assert.Throws<ArgumentException>(() => new GainMapMetadata { BaseHdrHeadroom = 1, AlternateHdrHeadroom = 1 + 1e-12, GainMapMax = max }.ToIso21496());
+        Assert.Throws<ArgumentException>(() => new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMax = max, Gamma = new[] { 0.0, 0, 0 } }.ToIso21496());
+        // small but representable values are kept
+        var tiny = GainMapMetadata.FromIso21496(new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMax = max, Gamma = new[] { 1 / 1048576.0, 1, 1 } }.ToIso21496())!;
+        Assert.Equal(1 / 1048576.0, tiny.Gamma[0]);
+        // Compute does not make metadata with a negative headroom
+        var hdr = SyntheticHdr(16, 16);
+        Assert.Throws<ArgumentException>(() => GainMap.Compute(SyntheticSdr(hdr), hdr, new GainMapOptions { BaseHeadroom = -1 }));
+        Assert.Throws<ArgumentException>(() => GainMap.Compute(SyntheticSdr(hdr), hdr, new GainMapOptions { BaseHeadroom = 2, AlternateHeadroom = -1 }));
     }
 
     static XmpData Xmp(string description)

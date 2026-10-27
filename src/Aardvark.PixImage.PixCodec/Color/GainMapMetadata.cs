@@ -117,9 +117,16 @@ namespace Aardvark.ImageCodecs
             return m.IsValid() ? m : null;
         }
 
-        /// <summary>The GainMapMetadata structure of ISO 21496-1 C.2.2 (minimum_version 0).</summary>
+        /// <summary>
+        /// The GainMapMetadata structure of ISO 21496-1 C.2.2 (minimum_version 0). Throws <see cref="ArgumentException"/> for
+        /// values the structure cannot hold: those clause 5 forbids, negative headrooms (unsigned rationals, C.2.3), γ too
+        /// small for a numerator other than 0, headrooms that become equal as rationals (5.2.7).
+        /// </summary>
         public byte[] ToIso21496()
         {
+            if (!IsValid()) throw new ArgumentException("invalid gain map metadata");
+            if (BaseHdrHeadroom < 0 || AlternateHdrHeadroom < 0) throw new ArgumentException("ISO 21496-1 headrooms are unsigned (C.2.3)");
+            if (Rational(BaseHdrHeadroom, false) == Rational(AlternateHdrHeadroom, false)) throw new ArgumentException("the headrooms are equal as rationals (ISO 21496-1 5.2.7)");
             int channels = IsMultichannel ? 3 : 1;
             var b = new byte[5 + 16 + channels * 40];
             int p = 0;
@@ -127,12 +134,18 @@ namespace Aardvark.ImageCodecs
             void U32(uint v) { BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(p), v); p += 4; }
             void Unsigned(double v) { var (n, d) = Rational(v, false); U32((uint)n); U32(d); }
             void Signed(double v) { var (n, d) = Rational(v, true); U32((uint)(int)n); U32(d); }
+            void WriteGamma(double v)
+            {
+                var (n, d) = Rational(v, false);
+                if (n == 0) throw new ArgumentException($"gain map gamma {v} is too small for ISO 21496-1 (numerator 0, C.2.3)");
+                U32((uint)n); U32(d);
+            }
             U16(0); U16(WriterVersion);
             b[p++] = (byte)((IsMultichannel ? 0x80 : 0) | (UseBaseColourSpace ? 0x40 : 0));
             Unsigned(BaseHdrHeadroom); Unsigned(AlternateHdrHeadroom);
             for (int c = 0; c < channels; c++)
             {
-                Signed(GainMapMin[c]); Signed(GainMapMax[c]); Unsigned(Gamma[c]); Signed(BaseOffset[c]); Signed(AlternateOffset[c]);
+                Signed(GainMapMin[c]); Signed(GainMapMax[c]); WriteGamma(Gamma[c]); Signed(BaseOffset[c]); Signed(AlternateOffset[c]);
             }
             return b;
         }
@@ -142,12 +155,12 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// A fraction for <paramref name="v"/>: the largest power of two denominator (up to 2^30) that keeps the numerator in
-        /// range, then reduced. Signed numerators are int32, unsigned ones uint32 (negative values clamp to 0).
+        /// range, then reduced. Signed numerators are int32, unsigned ones uint32 (negative values are refused).
         /// </summary>
         static (long Num, uint Den) Rational(double v, bool signed)
         {
             if (!double.IsFinite(v)) throw new ArgumentException("gain map metadata values must be finite");
-            if (!signed && v < 0) v = 0;
+            if (!signed && v < 0) throw new ArgumentException($"gain map metadata value {v} has to be unsigned");
             double limit = signed ? int.MaxValue : uint.MaxValue;
             if (Math.Abs(v) > limit) throw new ArgumentException($"gain map metadata value {v} is out of range");
             long den = 1L << 30;
