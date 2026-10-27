@@ -46,6 +46,67 @@ namespace Aardvark.ImageCodecs
             stages.AddRange(back);
             Stages = IccPipeline.Optimize(stages);
             Stride = Math.Max(IccPipeline.MaxChannels(Stages, InputChannels), 1);
+            whiteFix = WhiteFix();
+        }
+
+        // ------------------------------------------------------------------ paper white
+
+        /// <summary>Device white (paper, no light absorbed): 0 for CMYK, 1 for RGB and Gray; null for the other colour spaces.</summary>
+        static float? DeviceWhite(IccColorSpace cs) => cs switch
+        {
+            IccColorSpace.Cmyk => 0f,
+            IccColorSpace.Rgb or IccColorSpace.Gray => 1f,
+            _ => null,
+        };
+
+        /// <summary>What the outputs need added at source device white to land on destination device white; null when nothing.</summary>
+        readonly float[]? whiteFix;
+
+        /// <summary>
+        /// LittleCMS 2.16 (run as a black box, through PIL.ImageCms and liblcms2) maps source device white exactly to
+        /// destination device white (CMYK 0000, RGB and Gray at their maximum) in its 8 and 16 bit transforms, for the
+        /// perceptual, relative colorimetric and saturation intents, with or without black point compensation, whatever the
+        /// tables give for it; absolute colorimetric is left alone, and so are its float transforms. Neither ICC.1 nor ISO 18619
+        /// asks for that: the tables alone define where white goes. We follow LittleCMS: images with integer samples in and
+        /// out get (unless <see cref="ColorConvertOptions.MapWhiteToWhite"/> is off) <see cref="whiteFix"/> scaled by <see cref="WhiteWeight"/>, so the correction fades out next to white as it
+        /// does there; float images and <see cref="Transform(float[])"/> keep the tables' white
+        /// (IccBpcTests.WhiteMapsToPaperWhite, IccBpcTests.NearWhiteAsLittleCms).
+        /// </summary>
+        float[]? WhiteFix()
+        {
+            if (Intent == IccRenderingIntent.AbsoluteColorimetric) return null;
+            if (DeviceWhite(Source.ColorSpace) is not float sw || DeviceWhite(Destination.ColorSpace) is not float dw) return null;
+            var white = new float[InputChannels];
+            Array.Fill(white, sw);
+            var o = Transform(white);
+            var fix = new float[OutputChannels];
+            bool any = false;
+            for (int c = 0; c < fix.Length; c++)
+            {
+                // from the value clamped to 0..1, as integer results are: white beyond the range is white already
+                fix[c] = dw - Math.Clamp(o[c], 0, 1);
+                if (!(Math.Abs(fix[c]) <= 2e-6f)) any = true;
+            }
+            return any ? fix : null;
+        }
+
+        /// <summary>
+        /// The share of the white correction an input gets. LittleCMS's correction fades linearly over 1/16 of the range for
+        /// CMYK and 1/32 for RGB and Gray (measured through PIL.ImageCms), shaped as the weight of the white corner in a CMYK
+        /// interpolation linear in C and tetrahedral in M, Y, K, resp. a tetrahedral one for RGB: (1 - tC) (1 - max(tM, tY, tK))
+        /// with t the distance from white in cells, resp. 1 - max t. 0 beyond that.
+        /// </summary>
+        static float WhiteWeight(ReadOnlySpan<float> x, bool cmyk)
+        {
+            if (cmyk)
+            {
+                float c = x[0] * 16, m = Math.Max(x[1], Math.Max(x[2], x[3])) * 16;
+                if (!(c < 1 && m < 1)) return 0;
+                return (1 - Math.Max(c, 0)) * (1 - Math.Max(m, 0));
+            }
+            float t = 0;
+            for (int i = 0; i < x.Length; i++) t = Math.Max(t, (1 - x[i]) * 32);
+            return t < 1 ? 1 - t : 0;
         }
 
         static void Check(IccProfile p)

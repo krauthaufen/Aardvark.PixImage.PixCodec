@@ -132,7 +132,9 @@ public class IccTests
         var intent = IntentOf(c.intent);
         var dst = Profile(dir, c.dst!);
         var outType = c.@out switch { "u8" => SampleType.UInt8, "u16" => SampleType.UInt16, _ => SampleType.Float32 };
-        var res = ImageOps.ConvertColor(input, src, dst, new ColorConvertOptions { Intent = intent, BlackPointCompensation = c.bpc, OutputType = outType });
+        // the references are LittleCMS float conversions, which keep the tables' white even for integer cases (no white fixup)
+        var res = ImageOps.ConvertColor(input, src, dst,
+            new ColorConvertOptions { Intent = intent, BlackPointCompensation = c.bpc, OutputType = outType, MapWhiteToWhite = false });
         var got = ToDoubles(res);
         Assert.Equal(expected.Length, got.Length);
         double max = 0, outMax = outType == SampleType.UInt8 ? 255 : outType == SampleType.UInt16 ? 65535 : 1;

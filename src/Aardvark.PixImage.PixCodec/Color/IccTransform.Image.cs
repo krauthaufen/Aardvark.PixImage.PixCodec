@@ -93,8 +93,9 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Converts an image whose colour channels match <see cref="Source"/> (plus an optional trailing alpha channel) to
         /// <paramref name="outType"/>. <paramref name="inverted"/>: the input samples are inverted (max = 0), as in Adobe CMYK JPEGs.
+        /// <paramref name="whiteToWhite"/>: integer in and out take the white correction (<see cref="WhiteFix"/>).
         /// </summary>
-        internal RawImage Apply(RawImage image, SampleType outType, bool inverted, bool clip)
+        internal RawImage Apply(RawImage image, SampleType outType, bool inverted, bool clip, bool whiteToWhite)
         {
             int ni = InputChannels, no = OutputChannels;
             int sch = image.Channels;
@@ -134,8 +135,11 @@ namespace Aardvark.ImageCodecs
             int blocks = (int)Math.Min((pixels + 16383) / 16384, Environment.ProcessorCount * 4L);
             if (blocks < 1) blocks = 1;
             long per = (pixels + blocks - 1) / blocks;
-            Parallel.For(0, blocks, () => new float[chunk * Stride], (blk, _, buf) =>
+            // LittleCMS pins white in its integer transforms only, not in its float ones (WhiteFix)
+            var fix = whiteToWhite && inMax > 0 && outMax > 0 ? whiteFix : null;
+            Parallel.For(0, blocks, () => new Scratch(chunk, Stride, ni, fix != null), (blk, _, scratch) =>
             {
+                var buf = scratch.Buf;
                 long p0 = blk * per, p1 = Math.Min(pixels, p0 + per);
                 int stride = Stride;
                 for (long start = p0; start < p1; start += chunk)
@@ -174,6 +178,22 @@ namespace Aardvark.ImageCodecs
                                 for (int i = 0, q = so + c, p = c; i < cnt; i++, q += sch, p += stride)
                                     buf[p] = (float)(inverted ? 1 - d[q] : d[q]);
                             break;
+                    }
+                    // pixels next to white take the white correction (WhiteFix): they go through all the stages separately
+                    int nfix = 0;
+                    if (fix != null)
+                    {
+                        var raw = scratch.Raw!;
+                        bool cmyk = Source.ColorSpace == IccColorSpace.Cmyk;
+                        for (int i = 0; i < cnt; i++)
+                        {
+                            for (int c = 0; c < ni; c++) raw[c] = RawSample(src, so + i * sch + c, inMax, inverted);
+                            float wt = WhiteWeight(raw, cmyk);
+                            if (!(wt > 0)) continue;
+                            Array.Copy(buf, i * stride, scratch.FixBuf!, nfix * stride, stride);
+                            scratch.FixIndex![nfix] = i; scratch.FixWeight![nfix] = wt;
+                            nfix++;
+                        }
                     }
                     for (int s = stageStart; s < stageEnd; s++) Stages[s].Apply(buf, cnt, stride);
                     // store
@@ -218,11 +238,50 @@ namespace Aardvark.ImageCodecs
                                 break;
                         }
                     }
+                    if (nfix > 0)
+                    {
+                        var fb = scratch.FixBuf!;
+                        for (int s = stageStart; s < Stages.Count; s++) Stages[s].Apply(fb, nfix, stride);
+                        for (int k = 0; k < nfix; k++)
+                            for (int c = 0; c < no; c++)
+                                Store(dst, dob + scratch.FixIndex![k] * dch + c, fb[k * stride + c] + scratch.FixWeight![k] * fix![c]);
+                    }
                     if (alpha) CopyAlpha(src, dst, so + sch - 1, dob + dch - 1, sch, dch, cnt, alphaIn, outScale, outMax > 0);
                 }
-                return buf;
+                return scratch;
             }, _ => { });
             return new RawImage(w, h, color, dst, dch);
+        }
+
+        sealed class Scratch
+        {
+            public readonly float[] Buf;
+            public readonly float[]? FixBuf, FixWeight, Raw;
+            public readonly int[]? FixIndex;
+
+            public Scratch(int chunk, int stride, int ni, bool fix)
+            {
+                Buf = new float[chunk * stride];
+                if (!fix) return;
+                FixBuf = new float[chunk * stride];
+                FixWeight = new float[chunk];
+                FixIndex = new int[chunk];
+                Raw = new float[ni];
+            }
+        }
+
+        /// <summary>An integer source sample normalised to 0..1 (after the inversion of inverted input).</summary>
+        static float RawSample(Array src, int q, int max, bool inverted)
+        {
+            int v = src is byte[] b ? b[q] : ((ushort[])src)[q];
+            return (inverted ? max - v : v) / (float)max;
+        }
+
+        /// <summary>Stores one device value rounded and clamped to an integer output.</summary>
+        static void Store(Array dst, int q, float v)
+        {
+            if (dst is byte[] db) { float r = v * 255f + 0.5f; db[q] = r >= 255f ? (byte)255 : r > 0 ? (byte)r : (byte)0; }
+            else { float r = v * 65535f + 0.5f; ((ushort[])dst)[q] = r >= 65535f ? (ushort)65535 : r > 0 ? (ushort)r : (ushort)0; }
         }
 
         static void CopyAlpha(Array src, Array dst, int so, int dob, int sch, int dch, int cnt, float inScale, float outScale, bool intOut)

@@ -22,6 +22,13 @@ namespace Aardvark.ImageCodecs
         public bool Trilinear { get; set; }
         /// <summary>Clamp float results to 0..1 (integer results are always clamped).</summary>
         public bool Clip { get; set; }
+        /// <summary>
+        /// Integer images (UInt8 / UInt16 in and out), all intents but absolute colorimetric: source paper white (CMYK 0000,
+        /// RGB and Gray at their maximum) becomes exactly destination paper white, fading out over the colours next to white,
+        /// as LittleCMS's integer transforms do (its cmsFLAGS_NOWHITEONWHITEFIXUP turns that off). Off: the profiles' tables
+        /// alone decide, as for float images. Default on.
+        /// </summary>
+        public bool MapWhiteToWhite { get; set; } = true;
     }
 
     public static partial class ImageOps
@@ -54,7 +61,8 @@ namespace Aardvark.ImageCodecs
             ArgumentNullException.ThrowIfNull(image);
             ArgumentNullException.ThrowIfNull(transform);
             options ??= new ColorConvertOptions();
-            var r = transform.Apply(image, OutputTypeFor(image, options.OutputType), options.InvertedInput, options.Clip);
+            var r = transform.Apply(image, OutputTypeFor(image, options.OutputType), options.InvertedInput, options.Clip,
+                options.MapWhiteToWhite);
             var m = CopyAllMetadata(image.Metadata);
             m.IccProfile = transform.Destination.ToBytes();
             (m.Transfer, m.Gamma) = TransferOf(transform.Destination);
@@ -118,7 +126,7 @@ namespace Aardvark.ImageCodecs
                 r.Metadata = meta;
                 return r;
             }
-            var res = t.Apply(image, outType, false, clip);
+            var res = t.Apply(image, outType, false, clip, true);
             res.Metadata = meta;
             return res;
         }

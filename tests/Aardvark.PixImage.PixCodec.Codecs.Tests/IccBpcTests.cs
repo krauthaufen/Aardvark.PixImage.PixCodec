@@ -265,6 +265,115 @@ public class IccBpcTests
         }
     }
 
+    // ------------------------------------------------------------------ paper white
+
+    static IccProfile LcmsProfile(string name) => IccProfile.Parse(File.ReadAllBytes(
+        name.StartsWith("lcms_") ? Path.Combine(TestUtil.FixtureDir, "icc", "profiles", name + ".icc")
+            : Path.Combine(TestUtil.TestDataFixtureDir!, "icc", "colord", name + ".icc")));
+
+    static RawImage Pixels(IccProfile p, byte[] data) => p.Channels switch
+    {
+        1 => new RawImage(data.Length, 1, ColorModel.Gray, data),
+        3 => new RawImage(data.Length / 3, 1, ColorModel.Rgb, data),
+        _ => new RawImage(data.Length / p.Channels, 1, ColorModel.Other, data, p.Channels),
+    };
+
+    static byte[] Convert(IccProfile src, IccProfile dst, IccRenderingIntent intent, bool bpc, byte[] data)
+        => ImageOps.ConvertColor(Pixels(src, data), src, dst, new ColorConvertOptions { Intent = intent, BlackPointCompensation = bpc }).GetData<byte>();
+
+    /// <summary>Device white of the source through intents 0 - 3, each without and with BPC, from PIL.ImageCms (LittleCMS 2.16,
+    /// 8 bit).</summary>
+    static void WhiteCase(string src, string dst, byte[] expected)
+    {
+        var s = LcmsProfile(src); var d = LcmsProfile(dst);
+        var white = Enumerable.Repeat(s.ColorSpace == IccColorSpace.Cmyk ? (byte)0 : (byte)255, s.Channels).ToArray();
+        int k = 0;
+        for (int it = 0; it < 4; it++)
+            foreach (var bpc in new[] { false, true })
+            {
+                var exp = expected.AsSpan(k, d.Channels).ToArray();
+                k += d.Channels;
+                Assert.Equal(exp, Convert(s, d, (IccRenderingIntent)it, bpc, white));
+                // 16 bit as well (LittleCMS 16 bit transforms through liblcms2: device white for intents 0 - 2 on all these pairs)
+                var white16 = white.Select(v => (ushort)(v * 257)).ToArray();
+                var img16 = s.Channels switch
+                {
+                    1 => new RawImage(1, 1, ColorModel.Gray, white16),
+                    3 => new RawImage(1, 1, ColorModel.Rgb, white16),
+                    _ => new RawImage(1, 1, ColorModel.Other, white16, s.Channels),
+                };
+                var r16 = ImageOps.ConvertColor(img16, s, d, new ColorConvertOptions
+                    { Intent = (IccRenderingIntent)it, BlackPointCompensation = bpc, OutputType = SampleType.UInt16 }).GetData<ushort>();
+                if (it != 3) Assert.Equal(exp.Select(v => (ushort)(v * 257)), r16);
+            }
+    }
+
+    [Fact]
+    public void FloatTransformsKeepTheTablesWhite()
+    {
+        // LittleCMS 2.16 float transforms (liblcms2 through ctypes, TYPE_CMYK_FLT, with or without cmsFLAGS_NOOPTIMIZE) do
+        // not pin white: v2 -> v4 relative colorimetric gives C, M, Y = 1.54, 1.89, 6.82 / 255 at CMYK 0000
+        var s = LcmsProfile("lcms_cmyk_v2"); var d = LcmsProfile("lcms_cmyk_v4");
+        var f = new IccTransform(s, d, IccRenderingIntent.RelativeColorimetric).Transform(0, 0, 0, 0);
+        float[] lcms = { 1.54f / 255, 1.89f / 255, 6.82f / 255, 0 };
+        for (int c = 0; c < 4; c++) Assert.True(Math.Abs(f[c] - lcms[c]) < 0.02f / 255, $"channel {c}: {f[c] * 255}");
+        var img = new RawImage(1, 1, ColorModel.Other, new float[4], 4);
+        var g = ImageOps.ConvertColor(img, s, d, new ColorConvertOptions { Intent = IccRenderingIntent.RelativeColorimetric }).GetData<float>();
+        Assert.Equal(f, g);
+    }
+
+    [Theory]
+    [InlineData("lcms_cmyk_v2", "lcms_cmyk_v4", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 7, 0, 2, 2, 7, 0 })]
+    [InlineData("lcms_cmyk_v4", "lcms_cmyk_v2", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 3, 4, 0, 4, 3, 4, 0 })]
+    [InlineData("lcms_srgb_v2", "lcms_cmyk_v4", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 19, 0, 2, 0, 19, 0 })]
+    [InlineData("lcms_rgblut_v4", "lcms_cmyk_v2", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 16, 0, 4, 0, 16, 0 })]
+    [InlineData("lcms_rgblut_v4", "lcms_srgb_v4", new byte[] { 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 253, 253, 253, 253, 253, 253 })]
+    [InlineData("lcms_gray22_v4", "lcms_cmyk_v4", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 19, 0, 2, 0, 19, 0 })]
+    public void WhiteMapsToPaperWhite(string src, string dst, byte[] expected)
+    {
+        // LittleCMS puts source paper white exactly on destination paper white for every intent but absolute colorimetric,
+        // where the tables say otherwise (2 2 7 0 for v2 -> v4 here); ICC.1 and ISO 18619 have no such rule
+        WhiteCase(src, dst, expected);
+    }
+
+    [TestDataTheory("fixtures/icc/colord/FOGRA29L_uncoated.icc", "fixtures/icc/colord/FOGRA39L_coated.icc", "fixtures/icc/colord/IFRA26S_2004_newsprint.icc")]
+    [InlineData("FOGRA29L_uncoated", "FOGRA39L_coated", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0 })]
+    [InlineData("FOGRA39L_coated", "FOGRA29L_uncoated", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 2, 3, 0, 3, 2, 3, 0 })]
+    [InlineData("FOGRA39L_coated", "IFRA26S_2004_newsprint", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 14, 6, 0, 0, 14, 6, 0, 0 })]
+    [InlineData("IFRA26S_2004_newsprint", "FOGRA39L_coated", new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 29, 28, 48, 0, 29, 28, 48, 0 })]
+    public void PrinterWhiteMapsToPaperWhite(string src, string dst, byte[] expected) => WhiteCase(src, dst, expected);
+
+    static readonly byte[] NearWhiteCmyk = { 0, 0, 0, 0, 4, 0, 0, 0, 8, 0, 0, 0, 12, 0, 0, 0, 0, 8, 0, 0, 0, 0, 8, 0, 0, 0, 0, 8, 8, 8, 0, 0, 0, 8, 0, 8, 4, 4, 4, 4, 8, 8, 8, 8, 2, 6, 10, 3, 16, 0, 0, 0, 0, 0, 0, 16 };
+    static readonly byte[] NearWhiteRgb = { 255, 255, 255, 251, 255, 255, 247, 247, 247, 255, 249, 253, 243, 255, 255, 239, 239, 239, 223, 255, 255 };
+
+    [Theory]
+    [InlineData("lcms_cmyk_v2", "lcms_cmyk_v4",
+        new byte[] { 0, 0, 0, 0, 3, 1, 1, 0, 5, 1, 2, 0, 8, 2, 3, 0, 4, 7, 5, 0, 1, 1, 9, 0, 3, 4, 7, 0, 8, 7, 7, 0, 6, 10, 9, 0, 5, 6, 7, 0, 10, 11, 13, 0, 5, 7, 12, 0, 10, 2, 3, 0, 6, 8, 13, 0 },
+        new byte[] { 2, 2, 7, 0, 4, 2, 6, 0, 6, 2, 5, 0, 8, 2, 4, 0, 4, 8, 8, 0, 1, 2, 12, 0, 4, 5, 10, 0, 8, 8, 9, 0, 7, 11, 12, 0, 6, 7, 11, 0, 10, 12, 15, 0, 5, 8, 14, 0, 10, 2, 3, 0, 6, 8, 13, 0 })]
+    [InlineData("lcms_cmyk_v4", "lcms_cmyk_v2",
+        new byte[] { 0, 0, 0, 0, 5, 2, 2, 0, 10, 4, 5, 0, 14, 5, 7, 0, 6, 8, 7, 0, 3, 2, 8, 0, 5, 5, 7, 0, 13, 10, 11, 0, 9, 12, 11, 0, 8, 7, 8, 0, 15, 14, 16, 0, 8, 9, 13, 0, 19, 7, 9, 0, 10, 11, 14, 0 },
+        new byte[] { 4, 3, 4, 0, 8, 4, 6, 0, 11, 5, 7, 0, 15, 6, 8, 0, 8, 10, 9, 0, 5, 4, 10, 0, 7, 7, 9, 0, 14, 11, 12, 0, 11, 13, 13, 0, 10, 9, 11, 0, 16, 15, 17, 0, 10, 10, 14, 0, 19, 7, 9, 0, 10, 11, 14, 0 })]
+    [InlineData("lcms_rgblut_v4", "lcms_srgb_v4",
+        new byte[] { 255, 255, 255, 250, 254, 253, 245, 245, 247, 253, 247, 252, 242, 253, 252, 236, 238, 241, 223, 253, 251 },
+        new byte[] { 253, 253, 253, 249, 253, 253, 245, 245, 247, 253, 247, 252, 242, 253, 252, 236, 238, 241, 223, 253, 251 })]
+    public void NearWhiteAsLittleCms(string src, string dst, byte[] relative, byte[] absolute)
+    {
+        // Next to white the LittleCMS correction fades out (over 1/16 of the range for CMYK: linear in C, tetrahedral in M,
+        // Y, K; over 1/32 for RGB and Gray). These pairs share their media white, so relative and absolute colorimetric differ
+        // by the white correction alone; that difference must be LittleCMS's. (LittleCMS's own sampled device link departs
+        // from the profiles by a few levels near white in both intents, which we do not copy.)
+        var s = LcmsProfile(src); var d = LcmsProfile(dst);
+        var input = s.Channels == 4 ? NearWhiteCmyk : NearWhiteRgb;
+        var rel = Convert(s, d, IccRenderingIntent.RelativeColorimetric, false, input);
+        var abs = Convert(s, d, IccRenderingIntent.AbsoluteColorimetric, false, input);
+        for (int i = 0; i < rel.Length; i++)
+        {
+            int ours = rel[i] - abs[i], lcms = relative[i] - absolute[i];
+            Assert.True(Math.Abs(ours - lcms) <= 1, $"sample {i / d.Channels} channel {i % d.Channels}: correction {ours}, LittleCMS {lcms}");
+        }
+        Assert.Equal(relative.AsSpan(0, d.Channels).ToArray(), rel.AsSpan(0, d.Channels).ToArray());
+    }
+
     // ------------------------------------------------------------------ n-colour profiles
 
     [Fact]
