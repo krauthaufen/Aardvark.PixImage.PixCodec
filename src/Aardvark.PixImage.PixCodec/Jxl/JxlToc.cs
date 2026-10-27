@@ -61,17 +61,32 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (v >= size - i) throw new ImageFormatException("JPEG XL: bad permutation entry");
                 lehmer[i] = (int)v;
             }
-            // Lehmer code to permutation
-            var temp = new int[size];
-            for (int i = 0; i < size; i++) temp[i] = i;
-            var perm = new int[size];
-            int n = size;
-            for (int i = 0; i < size; i++)
+            return LehmerToPermutation(lehmer);
+        }
+
+        /// <summary>
+        /// The permutation of a Lehmer code (lehmer[i] &lt; length - i): entry i is the lehmer[i]-th of the values not yet
+        /// taken, found in O(log n) with a Fenwick tree of the remaining values.
+        /// </summary>
+        internal static int[] LehmerToPermutation(int[] lehmer)
+        {
+            int n = lehmer.Length;
+            // fen[j] (1 based) counts the remaining values in (j - lowbit(j), j]; all present at the start
+            var fen = new int[n + 1];
+            for (int j = 1; j <= n; j++) fen[j] = j & -j;
+            int top = n == 0 ? 0 : 1 << (31 - System.Numerics.BitOperations.LeadingZeroCount((uint)n));
+            var perm = new int[n];
+            for (int i = 0; i < n; i++)
             {
-                int k = lehmer[i];
-                perm[i] = temp[k];
-                Array.Copy(temp, k + 1, temp, k, n - k - 1);
-                n--;
+                // the largest pos with fewer than k + 1 remaining values in [1, pos]: value pos is the k-th (0 based)
+                int k = lehmer[i], pos = 0;
+                for (int step = top; step > 0; step >>= 1)
+                {
+                    int next = pos + step;
+                    if (next <= n && fen[next] <= k) { pos = next; k -= fen[next]; }
+                }
+                perm[i] = pos;
+                for (int j = pos + 1; j <= n; j += j & -j) fen[j]--;
             }
             return perm;
         }

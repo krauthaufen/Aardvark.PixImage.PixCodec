@@ -338,8 +338,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             if (index >= nbTotal)
             {
                 index -= nbTotal;
-                if (index < 64)
-                    return ((index >> (2 * c)) % 4) * ((1L << bitDepth) - 1) / 4 + (1L << Math.Max(0, bitDepth - 3));
+                if (index < 64)   // (index >> 2c) Umod 4 is 0 from c = 3 on (C# would mask a shift by 64 to 0)
+                    return (c < 3 ? (index >> (2 * c)) % 4 : 0) * ((1L << bitDepth) - 1) / 4 + (1L << Math.Max(0, bitDepth - 3));
                 index -= 64;
                 for (int i = 0; i < c; i++) index /= 5;
                 return (index % 5) * ((1L << bitDepth) - 1) / 4;
@@ -348,7 +348,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             index = -(index + 1);
             index %= 143;
             long r = DeltaPalette[((index + 1) >> 1) * 3 + c] * ((index & 1) != 0 ? 1 : -1);
-            if (bitDepth > 8) r <<= bitDepth - 8;
+            if (bitDepth > 8) r <<= Math.Min(bitDepth, 24) - 8;
             return r;
         }
 

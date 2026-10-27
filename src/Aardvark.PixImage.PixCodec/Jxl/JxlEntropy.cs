@@ -124,6 +124,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                 int shift = (int)(br.ReadBits(len) | (1u << len)) - 1;
                 if (shift > 13) throw new ImageFormatException("JPEG XL: bad ANS distribution shift");
                 int length = ReadU8(br) + 3;
+                // D has 1 << log_alphabet_size entries (C.2.5) and the alias mapping of C.2.6 is only defined for
+                // alphabet_size <= table_size (it fills cutoffs[alphabet_size .. table_size)); libjxl rejects it too
                 if (length > alphaSize) throw new ImageFormatException("JPEG XL: ANS alphabet too large");
                 var logCounts = new int[length];
                 var same = new int[length];
@@ -161,7 +163,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                     total += freq[i];
                 }
-                if (total >= TabSize) throw new ImageFormatException("JPEG XL: ANS distribution sums above 4096");
+                // D[omit_pos] >= 0: the omitted symbol may get probability 0 (libjxl rejects that, the standard does not)
+                if (total > TabSize) throw new ImageFormatException("JPEG XL: ANS distribution sums above 4096");
                 freq[omitPos] = TabSize - total;
             }
             return Build(freq, logAlphaSize);
@@ -289,13 +292,16 @@ namespace Aardvark.ImageCodecs.JpegXl
             }
         }
 
-        public static JxlEntropyCode Read(JxlBitReader br, int numDist, int depth = 0)
+        public static JxlEntropyCode Read(JxlBitReader br, int numDist, int depth = 0, bool lz77Allowed = true)
         {
             if (depth > 2) throw new ImageFormatException("JPEG XL: nested context maps too deep");
             var e = new JxlEntropyCode { NumContexts = numDist };
             e.Lz77 = br.ReadBool();
             if (e.Lz77)
             {
+                // C.2.2: the code of a context map of two distributions has lz77.enabled false (the bit is still
+                // there; libjxl rejects a 1). This also bounds the nesting to two levels.
+                if (!lz77Allowed) throw new ImageFormatException("JPEG XL: LZ77 in the code of a context map of two distributions");
                 e.Lz77MinSymbol = br.ReadU32(Val(224), Val(512), Val(4096), BitsOffset(15, 8));
                 e.Lz77MinLength = br.ReadU32(Val(3), Val(4), BitsOffset(2, 5), BitsOffset(8, 9));
                 e.Lz77LenConf = JxlHybridUint.Read(br, 8);
@@ -345,7 +351,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             else
             {
                 bool mtf = br.ReadBool();
-                var code = Read(br, 1, depth + 1);
+                var code = Read(br, 1, depth + 1, lz77Allowed: numDist != 2);
                 var r = new JxlSymbolReader(code, br, 0);
                 for (int i = 0; i < numDist; i++)
                 {
@@ -368,6 +374,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                 }
             }
+            // C.2.2 states num_clusters < 256; libjxl decodes 256 clusters, and so do we (a cluster id is a byte)
             int max = 0;
             for (int i = 0; i < numDist; i++) max = Math.Max(max, map[i]);
             numClusters = max + 1;
@@ -526,7 +533,8 @@ namespace Aardvark.ImageCodecs.JpegXl
         readonly bool lz77;
         uint[]? window;
         const int WindowSize = 1 << 20, WindowMask = WindowSize - 1;
-        int numToCopy, copyPos, numDecoded;
+        long numToCopy;
+        int copyPos, numDecoded;
         readonly int distMultiplier;
         readonly int lzCtx;
 
@@ -615,8 +623,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             uint token = ReadToken(br, cl);
             if (token >= code.Lz77MinSymbol)
             {
-                numToCopy = (int)code.Lz77LenConf.Decode(token - code.Lz77MinSymbol, br) + (int)code.Lz77MinLength;
-                if (numToCopy < 0 || numToCopy > (1 << 28)) throw new ImageFormatException("JPEG XL: LZ77 length too large");
+                // any length is valid (a copy allocates nothing; what the stream does not ask for is never produced)
+                numToCopy = (long)code.Lz77LenConf.Decode(token - code.Lz77MinSymbol, br) + code.Lz77MinLength;
                 int lc = code.ContextMap[lzCtx];
                 uint dtok = ReadToken(br, lc);
                 uint distance = code.Configs[lc].Decode(dtok, br);
@@ -630,7 +638,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 else d = (long)distance - 119;
                 if (d > numDecoded) d = numDecoded;
                 if (d > WindowSize) d = WindowSize;
-                if (d == 0) throw new ImageFormatException("JPEG XL: LZ77 copy before any decoded symbol");
+                // d == 0 (nothing decoded yet) copies from the window as initialized: zeros
                 copyPos = numDecoded - (int)d;
                 uint r = window[copyPos++ & WindowMask];
                 numToCopy--;
