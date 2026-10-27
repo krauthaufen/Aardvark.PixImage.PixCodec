@@ -319,6 +319,11 @@ namespace Aardvark.ImageCodecs
             double gamma = img.Metadata?.Gamma ?? 0;
             var curves = new Func<double, double>[3];
             var icc = img.Metadata?.IccProfile is { } ib ? IccProfile.TryParse(ib) : null;
+            // a cicp tag (the HDR profiles of ISO 21496-1 C.4.4 / C.4.7 carry one) says the transfer, over the profile's curves
+            if (icc?.Cicp is { } cicp && Heif.AvifReader.TransferOf(cicp.TransferCharacteristics, out double cg) is var ct && ct != TransferFunction.Unknown)
+            {
+                t = ct; gamma = cg;
+            }
             if (icc != null && !isFloat && icc.IsMatrixShaper && t is not (TransferFunction.Pq or TransferFunction.Hlg or TransferFunction.Linear))
             {
                 var trc = colours == 1 ? new[] { icc.GrayTrc, icc.GrayTrc, icc.GrayTrc } : new[] { icc.RedTrc, icc.GreenTrc, icc.BlueTrc };
@@ -398,10 +403,18 @@ namespace Aardvark.ImageCodecs
             return e <= 0.5 ? e * e / 3 : (Math.Exp((e - c) / a) + b) / 12;
         }
 
-        /// <summary>RGB -> PCS XYZ (D50) matrix, row-major, of an RGB matrix profile; sRGB when there is none (or another kind).</summary>
+        /// <summary>
+        /// RGB -> PCS XYZ (D50) matrix, row-major, of an RGB profile: the primaries its cicp tag names (H.273), else its
+        /// colorants; sRGB when there is neither (or another kind of profile).
+        /// </summary>
         internal static double[] Primaries(byte[]? iccBytes)
         {
             var icc = iccBytes != null ? IccProfile.TryParse(iccBytes) : null;
+            if (icc is { ColorSpace: IccColorSpace.Rgb, Cicp: { } cicp } && cicp.ColourPrimaries is not (0 or 2) && Heif.AvifColor.Primaries(cicp.ColourPrimaries, out var xy))
+            {
+                var white = new CieXy(xy[6], xy[7]);
+                return IccMath.Mul(IccMath.BradfordAdaptation(white.ToXyz(), CieXyz.D50), IccMath.RgbToXyz(white, new CieXy(xy[0], xy[1]), new CieXy(xy[2], xy[3]), new CieXy(xy[4], xy[5])));
+            }
             if (icc is not { ColorSpace: IccColorSpace.Rgb } || icc.RedColorant is not { } r || icc.GreenColorant is not { } g || icc.BlueColorant is not { } b)
             {
                 var s = IccProfile.Srgb;

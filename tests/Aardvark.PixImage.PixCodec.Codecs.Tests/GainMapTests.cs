@@ -246,6 +246,73 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.Equal(1.363404449, r[2], 5);   // 2^0.4472136
     }
 
+    /// <summary>An ICC profile with a cicp tag (ICC.1:2022: 'cicp', 4 reserved bytes, primaries, transfer, matrix, full range) added at its end.</summary>
+    internal static byte[] WithCicp(byte[] icc, byte primaries, byte transfer)
+    {
+        int n = (int)BinaryPrimitives.ReadUInt32BigEndian(icc.AsSpan(128));
+        var r = new List<byte>();
+        r.AddRange(icc.AsSpan(0, 132 + 12 * n).ToArray());
+        r.AddRange(new byte[12]);                              // the new directory entry
+        r.AddRange(icc.AsSpan(132 + 12 * n).ToArray());        // tag data, 12 bytes further on
+        var b = r.ToArray();
+        for (int i = 0; i < n; i++)
+        {
+            int e = 132 + 12 * i + 4;
+            BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(e), BinaryPrimitives.ReadUInt32BigEndian(b.AsSpan(e)) + 12);
+        }
+        int at = b.Length;
+        b = b.Concat("cicp"u8.ToArray()).Concat(new byte[] { 0, 0, 0, 0, primaries, transfer, 0, 1 }).ToArray();
+        "cicp"u8.CopyTo(b.AsSpan(132 + 12 * n));
+        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(132 + 12 * n + 4), (uint)at);
+        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(132 + 12 * n + 8), 12);
+        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(128), (uint)n + 1);
+        BinaryPrimitives.WriteUInt32BigEndian(b, (uint)b.Length);
+        b[8] = 4; b[9] = 0x40;
+        return b;
+    }
+
+    /// <summary>
+    /// A cicp tag in the baseline's profile (C.4.4: HDR baselines carry one) gives its transfer and primaries over the
+    /// profile's curves and colorants. PQ: 203 cd/m² (code 0.58069, BT.2408) is HDR reference white, 1.0 (3.4); 1000 cd/m²
+    /// is 1000 / 203. HLG: 75 % (BT.2408 reference white on a 1000 cd/m² display) is 1.0.
+    /// </summary>
+    [Fact]
+    public void CicpTagOfTheBaselineProfile()
+    {
+        var zero = new[] { 0.0, 0, 0 };
+        var m = new GainMapMetadata { AlternateHdrHeadroom = 1, GainMapMax = zero, BaseOffset = zero, AlternateOffset = zero };
+        var gain = new RawImage(1, 1, ColorModel.Gray, new byte[] { 0 });
+        // a BT.2020 profile with the sRGB curve, the cicp tag says BT.2020 PQ
+        var pqIcc = WithCicp(IccProfile.CreateRgb("2020", CieXy.D65, new(0.708, 0.292), new(0.170, 0.797), new(0.131, 0.046), IccCurve.Srgb).ToBytes(), 9, 16);
+        Assert.Equal(new IccCicp(9, 16, 0, true), IccProfile.Parse(pqIcc).Cicp);
+        ushort Pq(double nits) => (ushort)Math.Round(PqInverseEotf(nits / 10000) * 65535);
+        var pq = new RawImage(1, 1, ColorModel.Rgb, new[] { Pq(203), Pq(1000), (ushort)0 }) { Metadata = new ImageMetadata { IccProfile = pqIcc } };
+        var a = GainMap.Apply(pq, gain, m);
+        var r = (float[])a.Data;
+        Assert.Equal(1, r[0], 3);
+        Assert.Equal(1000 / 203.0, r[1], 3);
+        Assert.Equal(0, r[2], 6);
+        // the result is labelled with the (linear) BT.2020 primaries
+        var label = IccProfile.Parse(a.Metadata!.IccProfile!);
+        var bt2020 = IccProfile.LinearRec2020;
+        Assert.Equal(bt2020.RedColorant!.Value.X, label.RedColorant!.Value.X, 1e-3);
+        Assert.Equal(bt2020.GreenColorant!.Value.Y, label.GreenColorant!.Value.Y, 1e-3);
+        // HLG: the profile's colorants are sRGB's, the tag says BT.2020
+        var hlgIcc = WithCicp(IccProfile.Srgb.ToBytes(), 9, 18);
+        var hlg = new RawImage(1, 1, ColorModel.Rgb, new ushort[] { 49151, 49151, 49151 }) { Metadata = new ImageMetadata { IccProfile = hlgIcc } };
+        var h = GainMap.Apply(hlg, gain, m);
+        Assert.All((float[])h.Data, v => Assert.InRange(v, 0.998, 1.003));   // 75 %: 203.2 cd/m²
+        Assert.Equal(bt2020.BlueColorant!.Value.Z, IccProfile.Parse(h.Metadata!.IccProfile!).BlueColorant!.Value.Z, 1e-3);
+    }
+
+    /// <summary>SMPTE ST 2084 inverse EOTF: luminance relative to 10000 cd/m² -> code value.</summary>
+    static double PqInverseEotf(double y)
+    {
+        const double m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128, c1 = 3424.0 / 4096, c2 = 2413.0 / 4096 * 32, c3 = 2392.0 / 4096 * 32;
+        double p = Math.Pow(y, m1);
+        return Math.Pow((c1 + c2 * p) / (1 + c3 * p), m2);
+    }
+
     /// <summary>A gain map smaller than the baseline is resampled bilinearly at co-sited positions (6.2.2, NOTE 1).</summary>
     [Fact]
     public void SmallGainMapIsResampledCosited()

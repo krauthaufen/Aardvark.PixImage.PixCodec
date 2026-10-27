@@ -48,6 +48,12 @@ namespace Aardvark.ImageCodecs
         Color12 = 0x43434C52, Color13 = 0x44434C52, Color14 = 0x45434C52, Color15 = 0x46434C52,
     }
 
+    /// <summary>
+    /// The coding-independent code points of an ICC cicp tag (ICC.1:2022, ITU-T H.273): colour primaries, transfer
+    /// characteristics, matrix coefficients and the video full range flag.
+    /// </summary>
+    public readonly record struct IccCicp(int ColourPrimaries, int TransferCharacteristics, int MatrixCoefficients, bool FullRange);
+
     /// <summary>CIE 1931 XYZ tristimulus values (Y = 1 for the reference white).</summary>
     public readonly record struct CieXyz(double X, double Y, double Z)
     {
@@ -97,6 +103,8 @@ namespace Aardvark.ImageCodecs
         public static readonly uint RTrc = Make("rTRC"), GTrc = Make("gTRC"), BTrc = Make("bTRC"), KTrc = Make("kTRC");
         public static readonly uint Wtpt = Make("wtpt"), Bkpt = Make("bkpt"), Chad = Make("chad"), Desc = Make("desc"), Cprt = Make("cprt");
         public static readonly uint Dmnd = Make("dmnd"), Dmdd = Make("dmdd");
+        /// <summary>The cicp tag (ICC.1:2022, v4.4) and its type, which have the same signature.</summary>
+        public static readonly uint Cicp = Make("cicp");
         // types
         public static readonly uint TXyz = Make("XYZ "), TCurv = Make("curv"), TPara = Make("para"), TMft1 = Make("mft1"), TMft2 = Make("mft2");
         public static readonly uint TMab = Make("mAB "), TMba = Make("mBA "), TDesc = Make("desc"), TMluc = Make("mluc"), TText = Make("text");

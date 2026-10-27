@@ -172,6 +172,22 @@ namespace Aardvark.ImageCodecs
 
         IccCurve? Trc(uint sig) => HasTag(sig) ? IccCurve.Read(Tag(sig), 0, out _) : null;
 
+        /// <summary>
+        /// The cicp tag (ICC.1:2022): the H.273 code points of the colour encoding, which ISO 21496-1 requires in the profiles of
+        /// HDR images (C.4.4, C.4.7); null when absent or malformed.
+        /// </summary>
+        public IccCicp? Cicp
+        {
+            get
+            {
+                if (!HasTag(IccSig.Cicp)) return null;
+                var t = Tag(IccSig.Cicp);
+                // type signature 'cicp', 4 reserved bytes, then the four code points of one byte each
+                if (t.Length < 12 || IccRead.U32(t, 0) != IccSig.Cicp) return null;
+                return new IccCicp(t[8], t[9], t[10], t[11] != 0);
+            }
+        }
+
         /// <summary>Whether the profile holds the LUT (A2Bn or B2An) for an intent itself, without falling back to another.</summary>
         public bool HasLut(IccRenderingIntent intent, bool toPcs)
         {
