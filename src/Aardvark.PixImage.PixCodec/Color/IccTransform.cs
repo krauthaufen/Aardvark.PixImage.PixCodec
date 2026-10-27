@@ -248,6 +248,8 @@ namespace Aardvark.ImageCodecs
                 if (pcs == IccColorSpace.Xyz) back.Insert(0, new LabToXyzStage());
                 device = IccPipeline.Eval(back, new float[] { 0, 0, 0 });
             }
+            else if (p.ColorSpace == IccColorSpace.Lab)
+                device = LabBlack(p, intent);
             else
             {
                 device = new float[p.Channels];
@@ -259,6 +261,15 @@ namespace Aardvark.ImageCodecs
             double l = Math.Clamp((double)lab[0], 0, 50);
             var (x, y, z) = IccMath.LabToXyz(l, 0, 0);
             return new CieXyz(x, y, z);
+        }
+
+        /// <summary>Lab (0, 0, 0) as the normalised device values of a profile with a Lab data colour space (ISO 18619 4.2.3):
+        /// a* = b* = 0 is 0x8000 in the lut16 encoding, 128 / 255 in the others (ICC.1 6.3.4).</summary>
+        static float[] LabBlack(IccProfile p, IccRenderingIntent intent)
+        {
+            uint sig = PickLut(p, intent, true);
+            float ab = sig != 0 && IccRead.U32(p.Tag(sig), 0) == IccSig.TMft2 ? 32768f / 65535 : 128f / 255;
+            return new[] { 0f, ab, ab };
         }
 
         // ------------------------------------------------------------------ evaluation
