@@ -455,6 +455,28 @@ public class JxlTests(ITestOutputHelper output)
         return (data, shape);
     }
 
+    /// <summary>
+    /// Whether two matrix / TRC (or gray TRC) profiles describe the same colour space: the same media white and colorants
+    /// up to the rounding of their fixed point chromatic adaptation (different encoders of the same primaries differ by
+    /// some 1e-4, sRGB's cyan then converts to a red of 1e-3, more than the lossless tolerances), the same curves.
+    /// </summary>
+    static bool SameColourSpace(IccProfile a, IccProfile b)
+    {
+        static bool Lut(IccProfile p) => p.HasLut(IccRenderingIntent.RelativeColorimetric, true) || p.HasLut(IccRenderingIntent.RelativeColorimetric, false);
+        if (a.ColorSpace != b.ColorSpace || !a.IsMatrixShaper || !b.IsMatrixShaper || Lut(a) || Lut(b)) return false;
+        static bool Near(CieXyz? x, CieXyz? y) => x is { } p && y is { } q && Math.Max(Math.Abs(p.X - q.X), Math.Max(Math.Abs(p.Y - q.Y), Math.Abs(p.Z - q.Z))) <= 1e-3;
+        static bool SameCurve(IccCurve? x, IccCurve? y)
+        {
+            if (x == null || y == null) return false;
+            for (int i = 0; i <= 4096; i++) if (Math.Abs(x.Evaluate(i / 4096.0) - y.Evaluate(i / 4096.0)) > 1e-6) return false;
+            return true;
+        }
+        if (!Near(a.MediaWhitePoint, b.MediaWhitePoint)) return false;
+        if (a.ColorSpace == IccColorSpace.Gray) return SameCurve(a.GrayTrc, b.GrayTrc);
+        return Near(a.RedColorant, b.RedColorant) && Near(a.GreenColorant, b.GreenColorant) && Near(a.BlueColorant, b.BlueColorant)
+            && SameCurve(a.RedTrc, b.RedTrc) && SameCurve(a.GreenTrc, b.GreenTrc) && SameCurve(a.BlueTrc, b.BlueTrc);
+    }
+
     [TestDataTheory("downloads/jxl-conformance/bike/test.json"), MemberData(nameof(ConformanceCases))]
     public void Conformance(string name)
     {
@@ -464,12 +486,11 @@ public class JxlTests(ITestOutputHelper output)
         var data = File.ReadAllBytes(Path.Combine(dir, "input.jxl"));
         var (refData, shape) = LoadNpy(Path.Combine(dir, "reference_image.npy"));
         var refIcc = File.ReadAllBytes(Path.Combine(dir, "reference.icc"));
+        var refProfile = IccProfile.Parse(refIcc);
         var sw = Stopwatch.StartNew();
         // every channel as decoded, as the suite's references hold them (premultiplied colour, spot colours not rendered)
         var anim = Jxl.DecodeAnimation(data, new JxlDecodeOptions { ForceFloat = true, AllChannels = true, RenderSpotColours = false });
         long ms = sw.ElapsedMilliseconds;
-        var container = JpegXl.JxlContainer.Parse(data);
-        bool fileHasIcc = JpegXl.JxlImageHeader.Read(new JpegXl.JxlBitReader(container.CodestreamPrefix(data, int.MaxValue))).Colour.WantIcc;
         Assert.Equal(frames.Length, anim.Frames.Count);
         Assert.Equal(shape[0], anim.Frames.Count);
         int h = shape[1], w = shape[2], nc = shape[3];
@@ -482,21 +503,31 @@ public class JxlTests(ITestOutputHelper output)
             Assert.True(img.Channels == nc, $"frame {k}: {img.Channels} channels, reference {nc}");
             var a = (float[])img.Data;
             int ac = img.Channels;
-            int ncol = nc is 1 or 2 ? 1 : 3;
-            // a file with an enumerated colour encoding is decoded to exactly that encoding, which reference.icc describes;
-            // only an embedded profile needs converting (the profile Decode builds for an enumerated encoding is skipped)
-            var icc = fileHasIcc ? img.Metadata?.IccProfile : null;
             double peakTol = frames[k].GetProperty("peak_error").GetDouble(), rmsTol = frames[k].GetProperty("rms_error").GetDouble();
-            float[]? col = null;
-            var t = icc != null && !icc.AsSpan().SequenceEqual(refIcc) && peakTol > 0
-                ? new IccTransform(IccProfile.Parse(icc), IccProfile.Parse(refIcc), IccRenderingIntent.RelativeColorimetric) : null;
-            if (t != null && !t.IsIdentity)
+            // A.3: compared in reference.icc's colour space. The decoded samples are in the one the image describes (its ICC
+            // profile, else sRGB / linear sRGB), converted unclamped unless that is checked to be reference.icc's space
+            var dec = img.Metadata?.IccProfile;
+            int ncol = refProfile.Channels;
+            var src = dec != null ? IccProfile.Parse(dec) : img.Metadata?.Transfer switch
             {
+                TransferFunction.Srgb => ncol == 1 ? IccProfile.GraySrgb : IccProfile.Srgb,
+                TransferFunction.Linear => ncol == 1 ? IccProfile.GrayLinear : IccProfile.LinearSrgb,
+                _ => null,
+            };
+            Assert.True(src != null, $"frame {k}: the decoded image does not describe its colour space");
+            Assert.Equal(refProfile.ColorSpace, src!.ColorSpace);
+            float[]? col = null;
+            string? space = dec != null && dec.AsSpan().SequenceEqual(refIcc) ? "same profile" : SameColourSpace(src, refProfile) ? "same space" : null;
+            if (space == null)
+            {
+                space = $"converted from {src.Description}";
+                var t = new IccTransform(src, refProfile, IccRenderingIntent.RelativeColorimetric);
                 var inp = new float[w * h * ncol];
-                for (int i = 0; i < w * h; i++) for (int c = 0; c < ncol; c++) inp[i * ncol + c] = Math.Clamp(a[(long)i * ac + c], 0, 1);
+                for (int i = 0; i < w * h; i++) for (int c = 0; c < ncol; c++) inp[i * ncol + c] = a[(long)i * ac + c];
                 col = new float[w * h * ncol];
                 t.Transform(inp, col);
             }
+            if (k == 0) lines.Add(space);
             var sq = new double[nc];
             double peak = 0;
             long off = (long)k * w * h * nc;
