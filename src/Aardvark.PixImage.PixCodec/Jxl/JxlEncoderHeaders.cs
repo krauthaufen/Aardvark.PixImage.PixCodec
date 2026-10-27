@@ -193,7 +193,13 @@ namespace Aardvark.ImageCodecs.JpegXl
             if (f.EpfIters > 0)
             {
                 if (!modular) w.WriteBool(false);   // default sharpness LUT
-                w.WriteBool(false);                 // default channel scales
+                bool customScales = f.EpfChannelScale[0] != 40 || f.EpfChannelScale[1] != 5 || f.EpfChannelScale[2] != 3.5f;
+                w.WriteBool(customScales);
+                if (customScales)
+                {
+                    for (int i = 0; i < 3; i++) w.WriteF16(f.EpfChannelScale[i]);
+                    w.Write(32, 0);                 // ignored
+                }
                 w.WriteBool(false);                 // default sigma parameters
                 if (modular) w.WriteF16(f.EpfSigmaForModular);
             }

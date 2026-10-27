@@ -338,4 +338,51 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
         Frame(w, h, f, Planes(W, H, 4, 60).Select(p => p.Select(v => v * 1.6f - 0.3f).ToArray()).ToArray());
         AssertLikeLibjxl(w.ToArray(), "kBlend clamped", 1e-5);
     }
+
+    // ------------------------------------------------------------------ J.1 restoration filter
+
+    /// <summary>A modular frame with the edge preserving filter and custom channel scales (the last one given).</summary>
+    static byte[] EpfStream(float scale2)
+    {
+        var h = FloatHeader(W, H);
+        var w = Start(h);
+        var f = NewFrame(h, W, H);
+        f.IsLast = true;
+        f.Filter = new JxlRestorationFilter { Gab = false, EpfIters = 1, EpfChannelScale = new[] { 30f, 6f, scale2 } };
+        Frame(w, h, f, Planes(W, H, 3, 70));
+        return w.ToArray();
+    }
+
+    /// <summary>
+    /// Table J.1 (2024): after the custom channel scales, epf_weight_custom has a u(32) that is ignored, not two F16 values.
+    /// With the bits of two F16 ones libjxl decodes the stream as with zeros (it ignores the value too); with all bits
+    /// set (F16 NaNs, which ReadF16 refuses) libjxl 0.12 refuses the stream, the text allows any value: we decode it.
+    /// </summary>
+    [Fact]
+    public void EpfWeightsHaveAnIgnoredU32()
+    {
+        // the third scale starts where the streams for 3.5 and the next F16 (one more in the lowest bit) first differ
+        var a = EpfStream(3.5f);
+        var b = EpfStream(3.501953125f);
+        Assert.Equal(a.Length, b.Length);
+        int bit = 0;
+        while ((a[bit >> 3] >> (bit & 7) & 1) == (b[bit >> 3] >> (bit & 7) & 1)) bit++;
+        byte[] WithIgnored(uint v)
+        {
+            var s = (byte[])a.Clone();
+            for (int k = 0; k < 32; k++)
+            {
+                int p = bit + 16 + k;
+                s[p >> 3] = (byte)(s[p >> 3] & ~(1 << (p & 7)) | (int)(v >> k & 1) << (p & 7));
+            }
+            return s;
+        }
+        var ones = WithIgnored(0x3C003C00);
+        Assert.NotEqual(a, ones);
+        var expected = (float[])Jxl.Decode(a).Data;
+        Assert.Equal(expected, (float[])Jxl.Decode(ones).Data);
+        Assert.Equal(expected, (float[])Jxl.Decode(WithIgnored(0xFFFFFFFF)).Data);
+        AssertLikeLibjxl(a, "epf custom weights", 1e-5);
+        AssertLikeLibjxl(ones, "epf custom weights, ignored bits set", 1e-5);
+    }
 }

@@ -373,7 +373,6 @@ namespace Aardvark.ImageCodecs.JpegXl
         public int EpfIters = 2;
         public float[] EpfSharpLut = { 0, 1 / 7f, 2 / 7f, 3 / 7f, 4 / 7f, 5 / 7f, 6 / 7f, 1 };
         public float[] EpfChannelScale = { 40.0f, 5.0f, 3.5f };
-        public float EpfPass1ZeroFlush = 0.45f, EpfPass2ZeroFlush = 0.6f;
         public float EpfQuantMul = 0.46f, EpfPass0SigmaScale = 0.9f, EpfPass2SigmaScale = 6.5f, EpfBorderSadMul = 2 / 3f;
         public float EpfSigmaForModular = 1.0f;
 
@@ -392,8 +391,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (br.ReadBool())
                 {
                     for (int i = 0; i < 3; i++) f.EpfChannelScale[i] = br.ReadF16();
-                    f.EpfPass1ZeroFlush = br.ReadF16();
-                    f.EpfPass2ZeroFlush = br.ReadF16();
+                    br.ReadBits(32);   // ignored (Table J.1)
                 }
                 if (br.ReadBool())
                 {
