@@ -155,7 +155,10 @@ namespace Aardvark.ImageCodecs.JpegXl
             }
             else
             {
-                if (!any) return;   // nothing coded, not even the tree
+                // H.2 reads the tree (and starts the stream) even with nothing to decode; libjxl and our encoder write
+                // nothing then, and libjxl ignores whatever is there. Such a stream ends its section (GlobalModular, or a
+                // group whose channels all have data), so skipping cannot lose sync with what follows.
+                if (!any) return;
                 // a local tree may have 1024 + (samples of the stream) nodes, up to 2^20 (18181-1:2024 Table M.1)
                 long samples = 0;
                 for (int i = 0; i < end; i++) samples += (long)Channels[i].W * Channels[i].H;
@@ -184,7 +187,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                 case JxlTransformKind.Rct:
                     {
                         int b = t.BeginC;
-                        if (b < NbMetaChannels || b + 3 > Channels.Count) throw new ImageFormatException("JPEG XL: RCT channels out of range");
+                        // H.6.3: three data channels, or three meta channels
+                        if (b < NbMetaChannels ? b + 3 > NbMetaChannels : b + 3 > Channels.Count) throw new ImageFormatException("JPEG XL: RCT channels out of range");
                         var c0 = Channels[b];
                         for (int i = 1; i < 3; i++)
                         {
@@ -225,8 +229,14 @@ namespace Aardvark.ImageCodecs.JpegXl
                         foreach (var p in ps)
                         {
                             int b = p.BeginC, e = p.BeginC + p.NumC - 1;
-                            if (b < NbMetaChannels || e >= Channels.Count || p.NumC <= 0) throw new ImageFormatException("JPEG XL: squeeze channels out of range");
+                            if (e >= Channels.Count || p.NumC <= 0) throw new ImageFormatException("JPEG XL: squeeze channels out of range");
                             int offset = p.InPlace ? e + 1 : Channels.Count;
+                            // H.6.2.1: squeezing meta channels (in place only) adds the residuals to the meta channels
+                            if (b < NbMetaChannels)
+                            {
+                                if (!p.InPlace || e >= NbMetaChannels) throw new ImageFormatException("JPEG XL: squeeze across meta and data channels");
+                                NbMetaChannels += p.NumC;
+                            }
                             for (int c = b; c <= e; c++)
                             {
                                 var ch = Channels[c];

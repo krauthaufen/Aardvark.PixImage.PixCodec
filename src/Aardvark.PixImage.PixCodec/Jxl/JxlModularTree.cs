@@ -38,11 +38,12 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (prop.Count >= limit) throw new ImageFormatException("JPEG XL: MA tree too large");
                 toDecode--;
                 uint p = r.ReadUint(br, 1);
-                if (p > 255) throw new ImageFormatException("JPEG XL: MA tree property out of range");
                 if (p > 0)
                 {
                     int v = JxlBitReader.UnpackSigned(r.ReadUint(br, 0));
-                    prop.Add((int)p - 1); val.Add(v); left.Add(nextIndex); right.Add(nextIndex + 1);
+                    // any property index is valid, those not defined (H.4.1) read as 0; all beyond int.MaxValue are
+                    // such (libjxl rejects e.g. 300)
+                    prop.Add((int)Math.Min(p - 1, int.MaxValue)); val.Add(v); left.Add(nextIndex); right.Add(nextIndex + 1);
                     pred.Add(0); off.Add(0); mul.Add(0); ctx.Add(0);
                     nextIndex += 2;
                     toDecode += 2;
