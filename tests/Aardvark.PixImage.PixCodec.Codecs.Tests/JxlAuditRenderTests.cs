@@ -529,6 +529,55 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
 
     // ------------------------------------------------------------------ I.2 dequantization matrices
 
+    /// <summary>A RAW (mode 7) encoding of the 8 x 8 table: F16 denominator, then a modular image of the given values.</summary>
+    static void RawDct8(JxlBitWriter w, float denominator, int[] perChannel)
+    {
+        for (int t = 0; t < 17; t++)
+        {
+            if (t != 0) { w.Write(3, 0); continue; }
+            w.Write(3, 7);
+            w.WriteF16(denominator);
+            var chans = Enumerable.Range(0, 3).Select(c =>
+            {
+                var ch = new JxlChannel(8, 8, 0, 0);
+                for (int i = 0; i < 64; i++) ch.Data[i] = perChannel[c] * (1 + (i % 8 + i / 8) / 4);
+                return ch;
+            }).ToList();
+            var tree = new JxlEncTree();
+            tree = tree.Finish(tree.AddLeaf(0));
+            var tok = new JxlTokens();
+            for (int c = 0; c < 3; c++) JxlModularTokenizer.EncodeChannel(chans, c, tree.Specialize(c, 0), JxlWpHeader.Default, tok);
+            var code = new JxlEntropyEncoder(tree.NumLeaves) { MaxClusters = 1 };
+            code.Build(new[] { tok }, false);
+            JxlTransformEnc.WriteHeader(w, Array.Empty<JxlTransformEnc>(), globalTree: false);
+            tree.Write(w);
+            code.WriteCode(w);
+            code.WriteTokens(w, tok);
+        }
+    }
+
+    /// <summary>
+    /// I.2.4: a RAW matrix is params times params.denominator, with no condition on the denominator; the products have
+    /// to be positive. A negative denominator with negative params decodes like the positive pair (which matches
+    /// libjxl). libjxl 0.12 refuses the negative denominator; the text does not, and we accept it.
+    /// </summary>
+    [Fact]
+    public void RawQuantTableWithNegativeDenominator()
+    {
+        var img = JxlEncodeTests.Synthetic(64, 48, ColorModel.Rgb, SampleType.UInt8, 0);
+        byte[] Enc(float den, int s) => Jxl.Encode(img, new JxlEncodeOptions
+        {
+            Distance = 1, ForceStrategy = 0, DequantMatrices = w => RawDct8(w, den, new[] { s, 3 * s, 3 * s }),
+        });
+        var pos = Enc(1 / 1024f, 1);
+        var neg = Enc(-1 / 1024f, -1);
+        var m = LossyDiff(pos, "raw quant table");
+        Assert.True(m == null || m < 2 / 255.0, $"{m}");
+        Assert.Equal((float[])Jxl.Decode(pos, new JxlDecodeOptions { ForceFloat = true }).Data, (float[])Jxl.Decode(neg, new JxlDecodeOptions { ForceFloat = true }).Data);
+        // a product that is not positive is refused
+        Assert.Throws<ImageFormatException>(() => Jxl.Decode(Enc(-1 / 1024f, 1)));
+    }
+
     /// <summary>Table I.6: DCT128x256 (and DCT256x128), channel B, starts at 12979.84647584004484.</summary>
     [Fact]
     public void Dct128x256BandOfBIsTheSpecs()

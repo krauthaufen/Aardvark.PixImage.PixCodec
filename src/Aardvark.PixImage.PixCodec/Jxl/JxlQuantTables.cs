@@ -189,8 +189,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                 case Dct: q.Bands = ReadDctParams(br); break;
                 default:
                     {
+                        // any sign: only the products with the params have to be positive (I.2.4), see Matrix
                         q.RawDen = br.ReadF16();
-                        if (!(q.RawDen > 0)) throw new ImageFormatException("JPEG XL: bad raw quantization table");
                         q.RawTable = readRaw(table, JxlAcStrategy.TableCols[table], JxlAcStrategy.TableRows[table]);
                         break;
                     }
@@ -339,7 +339,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                         for (int i = 0; i < m.Length; i++)
                         {
                             double v = (double)RawDen * t[i];
-                            if (!(v > 0)) throw new ImageFormatException("JPEG XL: raw quantization value not positive");
+                            if (!(v > 0) || !float.IsFinite((float)v)) throw new ImageFormatException("JPEG XL: raw quantization value not positive");
                             m[i] = (float)v;
                         }
                         return m;
