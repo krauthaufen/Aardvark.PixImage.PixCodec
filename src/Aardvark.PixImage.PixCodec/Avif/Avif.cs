@@ -48,7 +48,7 @@ namespace Aardvark.ImageCodecs
         public int Width { get; internal set; }
         public int Height { get; internal set; }
         public bool IsAnimated { get; internal set; }
-        /// <summary>Number of repetitions, 0 = forever (an edit list with the repeat flag), 1 otherwise.</summary>
+        /// <summary>Number of times to play, 0 = forever (MIAF Amd 1 Table C.1 of the edit list and track duration).</summary>
         public int LoopCount { get; internal set; } = 1;
         /// <summary>Time units per second of the track.</summary>
         public uint Timescale { get; internal set; }
@@ -240,12 +240,10 @@ namespace Aardvark.ImageCodecs
                 bool mono = cfg?.Monochrome ?? false;
                 bool alpha = !opt.IgnoreAlpha && rd.AlphaTrack(track) != null;
                 var color = mono ? (alpha ? ColorModel.GrayAlpha : ColorModel.Gray) : (alpha ? ColorModel.Rgba : ColorModel.Rgb);
+                // the tkhd size (frames are scaled to it, see DecodeTrack), else the sample entry's; cropped by its clap
                 int w = track.Width, h = track.Height;
-                if (w == 0 || h == 0)
-                {
-                    // the visual sample entry
-                    (w, h) = SampleEntrySize(data, track);
-                }
+                if (w == 0 || h == 0) (w, h) = SampleEntrySize(data, track);
+                if (track.Clap != null && rd.ApplyCrop && AvifReader.Clap(track.Clap, w, h) is var (_, _, cw, ch)) (w, h) = (cw, ch);
                 var colr = new HeifColour();
                 if (track.Colr is IsoBox cb) AvifReader.ReadColr(data, cb.Payload, cb.End, colr);
                 if (track.ColrIcc is IsoBox ib) AvifReader.ReadColr(data, ib.Payload, ib.End, colr);
@@ -455,6 +453,11 @@ namespace Aardvark.ImageCodecs
                     }
                 }
                 var img = AvifColor.ToRaw(y, a, prem, opt.Multithreaded);
+                // a tkhd size other than the coded one: scaled to it, as avifdec 1.4.2 does (ISO/IEC 14496-12 8.3.2
+                // presentation size), before the clap (unverified order: avifdec does not scale a cropped track of the coded size)
+                if (track.Width > 0 && track.Height > 0 && (track.Width, track.Height) != (img.Width, img.Height))
+                    img = ImageOps.Resize(img, track.Width, track.Height, ResampleFilter.Bilinear);
+                if (track.Clap != null && opt.ApplyCrop && AvifReader.Clap(track.Clap, img.Width, img.Height) is var (cx, cy, cw, ch)) img = ImageOps.Crop(img, cx, cy, cw, ch);
                 img.Metadata = AvifReader.ColourMetadata(y, colr);
                 img.Metadata.Orientation = 1;
                 double ms = track.Timescale > 0 ? s.Duration * 1000.0 / track.Timescale : 0;

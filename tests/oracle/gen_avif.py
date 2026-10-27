@@ -653,10 +653,10 @@ def gen_gainmap_tonemap():
 CONTAINER = os.path.join(OUT, 'container')
 
 
-def avifdec_png(path):
-    """avifdec's 8 bit output (1.4.2 applies clap, irot and imir)."""
+def avifdec_png(path, index=0):
+    """avifdec's 8 bit output (1.4.2 applies clap, irot and imir, and a sequence's sample entry clap)."""
     png = os.path.join(TMP, 'c.png')
-    run(tool('avifdec'), '-c', 'dav1d', '-u', 'bilinear', '-d', 8, path, png)
+    run(tool('avifdec'), '-c', 'dav1d', '-u', 'bilinear', '-d', 8, '--index', index, path, png)
     return np.asarray(Image.open(png))
 
 
@@ -666,6 +666,47 @@ def item_alone(items, iid, out):
     it['hidden'] = 0
     heif_write(out, {iid: it}, [], iid)
     return avifdec_png(out)
+
+
+TRACK_PATH = ['moov', 'trak', 'mdia', 'minf', 'stbl', 'stsd', 'av01']
+TRACK_HDR = {'stsd': 8, 'av01': 78}
+
+
+def with_entry_box(d, extra):
+    """The file with a box appended to the first av01 sample entry (the chunk offsets moved along)."""
+    def rebuild(s, e, depth):
+        t = TRACK_PATH[depth]
+        h = TRACK_HDR.get(t, 0)
+        kids = b''
+        for kt, ks, kp, ke in boxes(d, s + 8 + h, e):
+            kids += rebuild(ks, ke, depth + 1) if depth + 1 < len(TRACK_PATH) and kt == TRACK_PATH[depth + 1] else d[ks:ke]
+        return box(t, d[s + 8:s + 8 + h] + kids + (extra if depth == len(TRACK_PATH) - 1 else b''))
+    r = bytearray(b''.join(rebuild(s, e, 0) if t == 'moov' else d[s:e] for t, s, p, e in boxes(d, 0, len(d))))
+    delta = len(r) - len(d)
+    i = r.find(b'stco')   # mdat follows moov
+    for k in range(struct.unpack('>I', r[i + 8:i + 12])[0]):
+        o = i + 12 + 4 * k
+        r[o:o + 4] = struct.pack('>I', struct.unpack('>I', r[o:o + 4])[0] + delta)
+    return bytes(r)
+
+
+def patch_track(d, duration=None, repeat=None, no_edts=False, matrix=None, size=None):
+    """A sequence (tkhd and elst of version 1, as libavif writes) with the tkhd duration / matrix, the edit list's
+    RepeatEdits flag or the tkhd width and height changed, or the edit list renamed to a free box."""
+    d = bytearray(d)
+    moov = next(b for b in boxes(d, 0, len(d)) if b[0] == 'moov')
+    trak = next(b for b in boxes(d, moov[2], moov[3]) if b[0] == 'trak')
+    sub = {t: (s, p, e) for t, s, p, e in boxes(d, trak[2], trak[3])}
+    tk = sub['tkhd'][1]
+    assert d[tk] == 1
+    if duration is not None: d[tk + 28:tk + 36] = struct.pack('>Q', duration)
+    if matrix is not None: d[tk + 52:tk + 88] = struct.pack('>9i', *matrix)
+    if size is not None: d[tk + 88:tk + 96] = struct.pack('>II', size[0] << 16, size[1] << 16)
+    s, p, e = sub['edts']
+    if no_edts: d[s + 4:s + 8] = b'free'
+    el = next(b for b in boxes(d, p, e) if b[0] == 'elst')[2]
+    if repeat is not None: d[el + 1:el + 4] = bytes([0, 0, repeat])
+    return bytes(d)
 
 
 def gen_container():
@@ -686,6 +727,11 @@ def gen_container():
         gives up): the reference is nat_420_s6.avif.ref.
       * protected.avif: the AV1 item with protection_index 1 (ipro, scheme 'cenc', data not encrypted): avifdec's output,
         which ignores the protection.
+    and from seq.avif (128x80, 8 frames; tkhd duration indefinite, edit list with RepeatEdits):
+      * seq_clap.avif: a clap in the sample entry (MIAF 7.4.4.1): avifdec's frames 0 and 7, cropped (.N.ref).
+      * seq_matrix.avif: a tkhd matrix turning 90 degrees and a tkhd size of 200x100 (MIAF 7.4.3): avifdec's frames 0
+        and 7, which ignore both.
+      * seq_loop_*.avif: edit list cases of MIAF Amd 1 Table C.1 for the loop count (the test has avifdec's counts).
     """
     os.makedirs(CONTAINER, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
@@ -722,6 +768,15 @@ def gen_container():
     out = os.path.join(CONTAINER, 'protected.avif')
     heif_write(out, {1: dict(av, protection=1)}, [], 1, ipro=[sinf])
     write_ref(out + '.ref', avifdec_png(out))
+    seq = open(os.path.join(OUT, 'seq.avif'), 'rb').read()
+    for name, d in [('seq_clap', with_entry_box(seq, clap(96, 64, (-8, 1), (4, 1)))),
+                    ('seq_matrix', patch_track(seq, matrix=(0, 0x10000, 0, -0x10000, 0, 0, 0, 0, 0x40000000), size=(200, 100)))]:
+        out = os.path.join(CONTAINER, name + '.avif')
+        with open(out, 'wb') as f: f.write(d)
+        for i in (0, 7): write_ref(f'{out}.{i}.ref', avifdec_png(out, i))
+    for name, kw in [('none', dict(no_edts=True)), ('once', dict(repeat=0)), ('r3_25', dict(duration=26)), ('r0_5', dict(duration=4)),
+                     ('r4', dict(duration=32))]:
+        with open(os.path.join(CONTAINER, f'seq_loop_{name}.avif'), 'wb') as f: f.write(patch_track(seq, **kw))
     print('container')
 
 

@@ -171,8 +171,11 @@ namespace Aardvark.ImageCodecs.Heif
         public readonly List<TrackSample> Samples = new();
         public readonly List<(string type, uint[] ids)> References = new();
         public bool HasEditList;
-        public int LoopCount = 1;              // from the edit list: 0 = forever
+        public int LoopCount = 1;              // times to play, 0 = forever (MIAF Amd 1 Table C.1)
+        /// <summary>The tkhd matrix. Not applied, as avifdec 1.4.2 does not (MIAF 7.4.3 allows rotations and mirroring in it).</summary>
         public int[] Matrix = { 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000 };
+        /// <summary>The clap of the sample entry (MIAF 7.4.4.1), as in <see cref="HeifTransform.Clap"/>.</summary>
+        public int[]? Clap;
     }
 
     /// <summary>
@@ -516,12 +519,13 @@ namespace Aardvark.ImageCodecs.Heif
         {
             var t = new HeifTrack();
             var children = IsoBoxes.List(d, trak.Payload, trak.End);
+            ulong tkhdDuration = ulong.MaxValue;   // all 1s: indefinite
             if (IsoBoxes.Find(children, "tkhd") is IsoBox tkhd)
             {
                 var r = new IsoReader(d, tkhd.Payload, tkhd.End);
                 var (v, _) = r.FullBox();
-                if (v == 1) { r.U64(); r.U64(); t.TrackId = r.U32(); r.U32(); r.U64(); }
-                else { r.U32(); r.U32(); t.TrackId = r.U32(); r.U32(); r.U32(); }
+                if (v == 1) { r.U64(); r.U64(); t.TrackId = r.U32(); r.U32(); tkhdDuration = r.U64(); }
+                else { r.U32(); r.U32(); t.TrackId = r.U32(); r.U32(); uint du = r.U32(); tkhdDuration = du == uint.MaxValue ? ulong.MaxValue : du; }
                 r.Skip(8 + 2 + 2 + 2 + 2);
                 for (int i = 0; i < 9; i++) t.Matrix[i] = r.I32();
                 t.Width = (int)(r.U32() >> 16);
@@ -539,10 +543,21 @@ namespace Aardvark.ImageCodecs.Heif
             {
                 t.HasEditList = true;
                 var r = new IsoReader(d, elst.Payload, elst.End);
-                var (_, flags) = r.FullBox();
-                // flags & 1: repeat the edit list (AVIF / MIAF image sequences loop forever then)
-                t.LoopCount = (flags & 1) != 0 ? 0 : 1;
+                var (v, flags) = r.FullBox();
+                // MIAF Amd 1 A.2, Table C.1: RepeatEdits (flags & 1) repeats the edit list R = tkhd duration / edit list
+                // duration times, played ceil(R) times; forever with an indefinite tkhd duration (avifdec 1.4.2 agrees)
+                ulong total = 0;
+                uint n = r.U32();
+                for (uint i = 0; i < n && !r.AtEnd; i++)
+                {
+                    total += v == 1 ? r.U64() : r.U32();
+                    r.Skip(v == 1 ? 8 + 4 : 4 + 4);
+                }
+                if ((flags & 1) == 0) t.LoopCount = 1;
+                else if (tkhdDuration == ulong.MaxValue || total == 0) t.LoopCount = 0;
+                else t.LoopCount = (int)Math.Min(int.MaxValue, (tkhdDuration + total - 1) / total);
             }
+            else t.LoopCount = 0;   // no edit list: forever (Table C.1; avifdec 1.4.2 reports an unknown count)
             var mdia = IsoBoxes.Find(children, "mdia");
             if (mdia is not IsoBox md) return null;
             var mc = IsoBoxes.List(d, md.Payload, md.End);
@@ -602,6 +617,14 @@ namespace Aardvark.ImageCodecs.Heif
                                         break;
                                     }
                                 case "pixi": t.Pixi = cb; break;
+                                case "clap":
+                                    {
+                                        var cr = new IsoReader(d, cb.Payload, cb.End);
+                                        var f = new int[8];
+                                        for (int i = 0; i < 8; i++) f[i] = cr.I32();
+                                        t.Clap = f;
+                                        break;
+                                    }
                             }
                         }
                 }

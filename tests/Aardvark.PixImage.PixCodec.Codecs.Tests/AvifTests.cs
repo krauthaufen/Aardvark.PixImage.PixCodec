@@ -692,6 +692,53 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal((img.Width, img.Height, img.Color), (info.Width, info.Height, info.Color));
     }
 
+    /// <summary>
+    /// Sequences (gen_avif.py container, from seq.avif): a sample entry clap crops the frames (MIAF 7.4.4.1); a tkhd
+    /// matrix turning 90 degrees is ignored, as avifdec 1.4.2 does (MIAF 7.4.3 allows it), and a tkhd size of 200x100
+    /// scales the 128x80 frames to it, as avifdec does (bilinearly here: libavif's scaler differs a little). Frames 0 and
+    /// 7 against avifdec.
+    /// </summary>
+    [Theory]
+    [InlineData("avif/container/seq_clap.avif", 96, 64, 1)]
+    [InlineData("avif/container/seq_matrix.avif", 200, 100, 8)]
+    public void SequenceTransforms(string file, int w, int h, double tolerance)
+    {
+        var path = Fixture(file);
+        var data = File.ReadAllBytes(path);
+        var a = Avif.DecodeAnimation(data);
+        Assert.Equal(8, a.Frames.Count);
+        Assert.Equal((w, h), (a.Width, a.Height));
+        foreach (int i in new[] { 0, 7 })
+        {
+            var expected = LoadRef($"{path}.{i}.ref");
+            double d = MaxDiff(expected, a.Frames[i].Image);
+            output.WriteLine($"{file} frame {i}: max difference {d}");
+            Assert.True(d <= tolerance, $"frame {i}: max difference {d}");
+        }
+        // the track alone (no primary item): GetInfo has the sample entry's size, cropped
+        var noMeta = (byte[])data.Clone();
+        noMeta[data.AsSpan().IndexOf("meta"u8) + 1] = (byte)'x';   // the meta box renamed "mxta"
+        Assert.Equal((w, h), (Avif.GetInfo(noMeta).Width, Avif.GetInfo(noMeta).Height));
+        Assert.Equal((w, h), (Avif.Decode(noMeta).Width, Avif.Decode(noMeta).Height));
+    }
+
+    /// <summary>
+    /// The loop count of MIAF Amd 1 Table C.1 (gen_avif.py container, from seq.avif with edit list duration 8): avifdec
+    /// 1.4.2 reports the repeat counts Infinite (seq.avif), Unknown (no edit list: played forever per Table C.1), 0 (no
+    /// RepeatEdits), 0 (R = 0.5), 3 (R = 3.25: ceil(R) plays), 3 (R = 4); LoopCount counts plays, 0 = forever.
+    /// </summary>
+    [Theory]
+    [InlineData("avif/seq.avif", 0)]
+    [InlineData("avif/container/seq_loop_none.avif", 0)]
+    [InlineData("avif/container/seq_loop_once.avif", 1)]
+    [InlineData("avif/container/seq_loop_r0_5.avif", 1)]
+    [InlineData("avif/container/seq_loop_r3_25.avif", 4)]
+    [InlineData("avif/container/seq_loop_r4.avif", 4)]
+    public void SequenceLoopCount(string file, int plays)
+    {
+        Assert.Equal(plays, Avif.DecodeAnimation(File.ReadAllBytes(Fixture(file))).LoopCount);
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]
