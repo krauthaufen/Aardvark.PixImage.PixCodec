@@ -196,6 +196,26 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         }
     }
 
+    /// <summary>
+    /// K.3.2: "the blending is performed according to patch[i].blending[j].mode[c]", so the alpha channel blends by its
+    /// own mode even when the colour alpha-blends with it. libjxl instead gives that alpha channel the composited alpha
+    /// whenever the colour uses kBlendAbove / kBlendBelow. Colour modes 4 and 5 with each alpha mode, against libjxl.
+    /// </summary>
+    [Theory]
+    [InlineData(4, 0)]
+    [InlineData(4, 1)]
+    [InlineData(4, 2)]
+    [InlineData(4, 3)]
+    [InlineData(4, 6)]
+    [InlineData(5, 2)]
+    [InlineData(5, 7)]
+    [InlineData(6, 2)]
+    public void PatchAlphaModeWithBlendedColour(int colourMode, int alphaMode)
+    {
+        var data = PatchStream(new[] { JxlExtraChannelType.Alpha }, new[] { colourMode, alphaMode }, _ => null, clamp: true);
+        AssertClose(data, $"patch colour {colourMode} alpha {alphaMode}", 1e-4);
+    }
+
     // ------------------------------------------------------------------ K.2 upsampling weights
 
     /// <summary>d_up2, d_up4 and d_up8 of K.2 as printed in 18181-1:2024.</summary>

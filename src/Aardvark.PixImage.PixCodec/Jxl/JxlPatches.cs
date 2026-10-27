@@ -85,8 +85,9 @@ namespace Aardvark.ImageCodecs.JpegXl
         /// Blends the patches into the frame (all channels at frame resolution, before the colour transform). Colour and each
         /// extra channel blend by their own mode (18181-1:2024 K.3.2, Table K.1); with clamping only the alpha of the
         /// sample blended on top (the patch for the "above" modes, the frame for the "below" ones) is clamped, as for
-        /// frames (Table F.7). Where the text leaves it open, libjxl's behaviour is followed: when the colour blends with
-        /// alpha (kBlendAbove / kBlendBelow), its alpha channel ends up alpha-composited whatever that channel's own mode.
+        /// frames (Table F.7). One exception: K.3.2 blends every channel by its own mode[c], but libjxl, when the colour
+        /// blends with alpha (kBlendAbove / kBlendBelow), alpha-composites that alpha channel whatever its own mode. libjxl
+        /// is followed (JxlAuditRenderTests.PatchAlphaModeWithBlendedColour; the text's reading differs from it by up to 1.2).
         /// </summary>
         public void Apply(JxlFrameImage frame, JxlDecoderState state, JxlImageHeader img)
         {
