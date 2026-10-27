@@ -227,4 +227,30 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
             Assert.True(bad.Length == 0, $"d_up{2 << t}: {bad.Length} weights differ, first at {bad.FirstOrDefault()}");
         }
     }
+
+    // ------------------------------------------------------------------ I.2 dequantization matrices
+
+    /// <summary>Table I.6: DCT128x256 (and DCT256x128), channel B, starts at 12979.84647584004484.</summary>
+    [Fact]
+    public void Dct128x256BandOfBIsTheSpecs()
+    {
+        Assert.Equal(12979.84647584004484, JxlQuantEncoding.Default(16).Bands![2][0]);
+    }
+
+    /// <summary>I.2.4: in the Hornuss encoding coefficient (0, 0) is 1, (0, 1) and (1, 0) params(c, 1), (1, 1) params(c, 2).</summary>
+    [Fact]
+    public void HornussWeightAtZeroIsOne()
+    {
+        var q = JxlQuantEncoding.Default(1);
+        for (int c = 0; c < 3; c++)
+        {
+            var m = q.Matrix(1, c);
+            var p = q.Params![c];
+            Assert.Equal(1f, m[0]);
+            Assert.Equal((float)(1 / p[1]), m[1]);
+            Assert.Equal((float)(1 / p[1]), m[8]);
+            Assert.Equal((float)(1 / p[2]), m[9]);
+            Assert.Equal((float)(1 / p[0]), m[63]);
+        }
+    }
 }

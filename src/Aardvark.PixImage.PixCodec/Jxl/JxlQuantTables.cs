@@ -119,7 +119,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 case 13: return Big(47932.3330596897210, 16760.38296780180828, 8986.04756019695412);
                 case 14: return Big(30717.796098664792, 11194.72103230130598, 5839.92323792002242);
                 case 15: return Big(95864.6661193794420, 33520.76593560361656, 17972.09512039390824);
-                default: return Big(61435.5921973295970, 24209.44206460261196, 12979.84647586003);
+                default: return Big(61435.5921973295970, 24209.44206460261196, 12979.84647584004484);
             }
         }
 
@@ -174,6 +174,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     q.Params = ReadParams(br, 6, true); break;
                 case Dct4:
                     Check8x8(table);
+                    // I.2.4 says to multiply these by 64 as well; libjxl does not (an erratum: the default params of
+                    // Table I.6 are {1, 1}, unscaled). JxlSpecTests.EightByEightEncodingsOnOtherTables(0, 3) settles it.
                     q.Params = ReadParams(br, 2, false); q.Bands = ReadDctParams(br); break;
                 case Dct4x8:
                     Check8x8(table);
@@ -252,6 +254,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                         var p = Params![c];
                         w = new double[64];
                         for (int i = 0; i < 64; i++) w[i] = p[0];
+                        w[0] = 1;
                         w[1] = p[1]; w[8] = p[1]; w[9] = p[2];
                         break;
                     }
