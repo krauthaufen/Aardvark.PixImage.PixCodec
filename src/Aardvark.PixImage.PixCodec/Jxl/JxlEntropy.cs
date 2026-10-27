@@ -288,7 +288,10 @@ namespace Aardvark.ImageCodecs.JpegXl
                 ContextMap.CopyTo(map, 0);
                 var cfg = GC.AllocateUninitializedArray<JxlHybridUint>(Configs.Length, pinned: true);
                 Configs.CopyTo(cfg, 0);
-                return fast = new FastTables { Ans = tab, Map = map, Cfg = cfg };
+                // groups decode in parallel and readers keep raw pointers into these arrays: publish once, so no
+                // reader holds tables that only it references (a GC would free them under it)
+                var built = new FastTables { Ans = tab, Map = map, Cfg = cfg };
+                return System.Threading.Interlocked.CompareExchange(ref fast, built, null) ?? built;
             }
         }
 
