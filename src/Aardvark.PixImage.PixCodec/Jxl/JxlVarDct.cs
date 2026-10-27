@@ -253,7 +253,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                             dc![c][y * dcw[c] + x] = lf.Planes[c][Math.Min(y, lf.Height - 1) * lf.Width + Math.Min(x, lf.Width - 1)];
                 return;
             }
-            if (fh.Has(JxlFrameHeader.FlagSkipAdaptiveLfSmoothing) || !Is444) return;
+            if (fh.Has(JxlFrameHeader.FlagSkipAdaptiveLfSmoothing)) return;
+            // "If this adaptive smoothing procedure is applied, no channel is subsampled" (I.5.2); libjxl refuses it too
+            if (!Is444) throw new ImageFormatException("JPEG XL: adaptive LF smoothing with subsampled chroma");
             int W = dims.XBlocks, H = dims.YBlocks;
             if (W < 3 || H < 3) return;
             float mul = InvGlobalScale / quantLf;
