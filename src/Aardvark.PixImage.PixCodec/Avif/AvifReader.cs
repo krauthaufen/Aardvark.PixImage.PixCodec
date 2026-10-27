@@ -327,6 +327,8 @@ namespace Aardvark.ImageCodecs.Heif
             }
             var y = FromPicture(pic);
             var c = Colour(it);
+            // without an nclx property the AV1 sequence header's colour description stays, as avifdec 1.4.2 does (MIAF
+            // 7.3.6.4 defaults to nclx 1 / 13 / 6, full range, and ignores the bitstream's)
             if (c.HasNclx)
             {
                 y.ColorPrimaries = c.Primaries; y.TransferCharacteristics = c.Transfer; y.MatrixCoefficients = c.Matrix; y.FullRange = c.FullRange;
