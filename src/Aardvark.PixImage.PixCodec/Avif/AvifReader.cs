@@ -15,7 +15,7 @@ namespace Aardvark.ImageCodecs.Heif
         public byte[]? Icc;
     }
 
-    /// <summary>The geometric transforms of an item in association order (clap, irot, imir).</summary>
+    /// <summary>A geometric transform of an item (clap, irot, imir).</summary>
     internal sealed class HeifTransform
     {
         public readonly char Kind;   // 'c' clap, 'r' irot, 'm' imir
@@ -192,7 +192,12 @@ namespace Aardvark.ImageCodecs.Heif
                     case "imir": list.Add(new HeifTransform('m', r.U8() & 1)); break;
                 }
             }
-            return list;
+            // clap, then irot, then imir whatever the association order, as avifdec 1.4.2 does (and MIAF 7.3.6.7 requires
+            // of files; HEIF 6.5.1 applies them in association order): the clap is on the stored image
+            static int Rank(HeifTransform t) => t.Kind == 'c' ? 0 : t.Kind == 'r' ? 1 : 2;
+            var ordered = new List<HeifTransform>(list.Count);
+            for (int k = 0; k < 3; k++) foreach (var t in list) if (Rank(t) == k) ordered.Add(t);
+            return ordered;
         }
 
         /// <summary>The crop rectangle of a clap on an image of the given size (ISO/IEC 14496-12 12.1.4), null if it is invalid.</summary>

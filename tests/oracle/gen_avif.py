@@ -654,7 +654,7 @@ CONTAINER = os.path.join(OUT, 'container')
 
 
 def avifdec_png(path):
-    """avifdec's 8 bit output (the stored pixels: no transform applied)."""
+    """avifdec's 8 bit output (1.4.2 applies clap, irot and imir)."""
     png = os.path.join(TMP, 'c.png')
     run(tool('avifdec'), '-c', 'dav1d', '-u', 'bilinear', '-d', 8, path, png)
     return np.asarray(Image.open(png))
@@ -674,6 +674,10 @@ def gen_container():
       * grid_iden.avif: the tiles through 'iden' items with irot 2 (MIAF 7.3.11.4.1; avifdec refuses it): the reference is
         avifdec's decode of each coded tile turned 180 degrees (irot, HEIF 6.5.10) and pasted.
       * grid_tile_irot.avif: irot 2 on the coded tiles themselves: avifdec's output, which ignores them.
+    and from nat_420_s6.avif (160x112):
+      * transform_order.avif: imir 0, irot 1, then clap 64x48 (in this association order). avifdec takes the clap on the
+        stored image, (28, 62), and orders clap, irot, imir (as MIAF 7.3.6.7 requires; HEIF 6.5.1 says association
+        order): avifdec's output, which is the stored pixels of nat_420_s6.avif cropped, turned and mirrored so.
     """
     os.makedirs(CONTAINER, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
@@ -689,6 +693,11 @@ def gen_container():
     for t in tiles: it[t]['props'].append((irot(2), True))
     out = os.path.join(CONTAINER, 'grid_tile_irot.avif')
     heif_write(out, it, refs, primary)
+    write_ref(out + '.ref', avifdec_png(out))
+    items, refs, primary = heif_items(os.path.join(OUT, 'nat_420_s6.avif'))
+    items[primary]['props'] += [(imir(0), True), (irot(1), True), (clap(64, 48, (-20, 1), (30, 1)), True)]
+    out = os.path.join(CONTAINER, 'transform_order.avif')
+    heif_write(out, items, refs, primary)
     write_ref(out + '.ref', avifdec_png(out))
     print('container')
 

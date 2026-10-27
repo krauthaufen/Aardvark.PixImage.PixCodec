@@ -628,6 +628,27 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal((img.Width, img.Height, img.Color), (info.Width, info.Height, info.Color));
     }
 
+    /// <summary>
+    /// imir, irot, clap in that association order (gen_avif.py container): applied as avifdec 1.4.2 does, clap on the stored
+    /// image, then irot, then imir. Without ApplyOrientation the stored order of that crop, which the reported
+    /// orientation turns upright; GetInfo reports the sizes of either.
+    /// </summary>
+    [Fact]
+    public void TransformOrder()
+    {
+        var path = Fixture("avif/container/transform_order.avif");
+        var data = File.ReadAllBytes(path);
+        var expected = LoadRef(path + ".ref");
+        var img = Avif.Decode(data);
+        Assert.True(MaxDiff(expected, img) <= 1, $"max difference {MaxDiff(expected, img)}");
+        Assert.Equal((48, 64), (Avif.GetInfo(data).Width, Avif.GetInfo(data).Height));
+        var opt = new AvifDecodeOptions { ApplyOrientation = false };
+        var kept = Avif.Decode(data, opt);
+        Assert.Equal((64, 48), (kept.Width, kept.Height));
+        Assert.Equal((64, 48), (Avif.GetInfo(data, opt).Width, Avif.GetInfo(data, opt).Height));
+        AssertEqual(img, ImageOps.ApplyOrientation(kept, kept.Metadata!.Orientation));
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]
