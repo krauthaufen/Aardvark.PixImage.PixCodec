@@ -1,0 +1,114 @@
+{
+ "what": "NAD83 / California zone 3 (EPSG:2227): US survey feet",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    2.0,
+    0.0,
+    6000000.0,
+    0.0,
+    -2.0,
+    2100000.0
+   ],
+   "epsg": 2227,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  },
+  "standard": {
+   "transform": [
+    2.0,
+    0.0,
+    6000000.0,
+    0.0,
+    -2.0,
+    2100000.0
+   ],
+   "epsg": 2227,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   2.0,
+   2.0,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   6000000.0,
+   2100000.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1026,
+    "location": 34737,
+    "count": 33,
+    "text": "NAD83 / California zone 3 (ftUS)"
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 6,
+    "text": "NAD83"
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     2227
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9003
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   0,
+   7
+  ]
+ }
+}

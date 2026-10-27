@@ -1,0 +1,44 @@
+{
+ "what": "no georeferencing at all",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": null,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  },
+  "standard": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": null,
+   "nodata": null,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  }
+ },
+ "raw": {
+  "pixelScale": null,
+  "tiepoints": null,
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": null
+ }
+}

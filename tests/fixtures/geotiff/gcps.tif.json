@@ -1,0 +1,102 @@
+{
+ "what": "three tiepoints and no scale: ground control points, no affine",
+ "writer": "tifffile",
+ "gdal": {
+  "default": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": 32633,
+   "nodata": null,
+   "gcps": 3,
+   "width": 9,
+   "height": 7
+  },
+  "standard": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": 32633,
+   "nodata": null,
+   "gcps": 3,
+   "width": 9,
+   "height": 7
+  }
+ },
+ "raw": {
+  "pixelScale": null,
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   600000.0,
+   5300000.0,
+   0.0,
+   8.0,
+   0.0,
+   0.0,
+   600080.0,
+   5300000.0,
+   0.0,
+   0.0,
+   6.0,
+   0.0,
+   600000.0,
+   5299940.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     32633
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9001
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   1,
+   4
+  ]
+ }
+}

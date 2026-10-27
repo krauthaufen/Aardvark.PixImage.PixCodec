@@ -1,0 +1,31 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 2,
+ "dtype": "uint16",
+ "transform": null,
+ "epsg": null,
+ "geographic": null,
+ "projected": null,
+ "linearFactor": null,
+ "nodata": null,
+ "descriptions": [
+  null,
+  null
+ ],
+ "wavelengths": null,
+ "wavelengthUnits": null,
+ "fields": {
+  "samples": "7",
+  "lines": "5",
+  "bands": "2",
+  "header_offset": "333",
+  "file_type": "ENVI Standard",
+  "data_type": "12",
+  "interleave": "bsq",
+  "byte_order": "0"
+ },
+ "complex": false,
+ "dataFile": "hand_header_offset.img",
+ "headerFile": "hand_header_offset.hdr"
+}

@@ -1,0 +1,94 @@
+{
+ "what": "the tiepoint ties raster (2, 3), not (0, 0)",
+ "writer": "tifffile",
+ "gdal": {
+  "default": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 32633,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  },
+  "standard": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 32633,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   10.0,
+   10.0,
+   0.0
+  ],
+  "tiepoints": [
+   2.0,
+   3.0,
+   0.0,
+   600020.0,
+   5299970.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     32633
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9001
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   1,
+   4
+  ]
+ }
+}

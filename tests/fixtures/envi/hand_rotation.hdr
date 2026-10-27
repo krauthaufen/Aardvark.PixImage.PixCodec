@@ -1,0 +1,10 @@
+ENVI
+samples = 7
+lines = 5
+bands = 1
+header offset = 0
+file type = ENVI Standard
+data type = 1
+interleave = bsq
+byte order = 0
+map info = {UTM, 3, 2, 500000, 4000000, 10, 20, 33, North, WGS-84, rotation=30}

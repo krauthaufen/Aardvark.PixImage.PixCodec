@@ -145,3 +145,9 @@ section 7.1. The decoder is written from the RFC's prose.
 RFC 7932: Copyright (c) 2016 IETF Trust and the persons identified as the document authors (J. Alakuijala, Z. Szabadka).
 Code components extracted from the RFC are available under the Simplified BSD License as described in section 4.e of
 the Trust Legal Provisions (https://trustee.ietf.org/license-info).
+
+## EPSG geodetic parameter registry - units of measure
+
+`src/Aardvark.PixImage.PixCodec/Geo/GeoReference.cs` (`GeoUnits`) lists fourteen EPSG unit-of-measure codes with their
+names and conversion factors, read from the EPSG registry as PROJ distributes it (`proj.db`). EPSG dataset: Copyright
+IOGP, https://epsg.org, terms of use at https://epsg.org/terms-of-use.html.

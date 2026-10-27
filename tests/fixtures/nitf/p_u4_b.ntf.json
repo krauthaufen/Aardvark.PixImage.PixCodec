@@ -1,0 +1,10 @@
+{
+ "gdal": {
+  "error": "Read failed. See previous exception for details.",
+  "status": "fails"
+ },
+ "gdalDiffers": "GDAL (3.12) reads packed samples (NBPP not a multiple of 8) the standard way only for one band in one block; for 12 bits it takes the bytes in another order than 5.1.9.1c (most significant bit first), and several band orders it refuses",
+ "spec": "5.4.3.3.1: one bit stream per block, zero-filled at the end of the block only",
+ "what": "NBPP 4, three bands, IMODE B, 3 x 3 blocks",
+ "writer": "pack"
+}

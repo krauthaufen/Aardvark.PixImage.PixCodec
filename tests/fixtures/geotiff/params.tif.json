@@ -1,0 +1,139 @@
+{
+ "what": "GeoKeys in every location: inline, GeoKeyDirectory shorts, GeoDoubleParams, GeoAsciiParams",
+ "writer": "tifffile",
+ "gdal": {
+  "default": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  },
+  "standard": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   10.0,
+   10.0,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   600000.0,
+   5300000.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     2
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1026,
+    "location": 34737,
+    "count": 14,
+    "text": "my world file"
+   },
+   {
+    "id": 2048,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     4326
+    ]
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 7,
+    "text": "WGS 84"
+   },
+   {
+    "id": 2050,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     6326
+    ]
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 2057,
+    "location": 34736,
+    "count": 1,
+    "doubles": [
+     6378137.0
+    ]
+   },
+   {
+    "id": 2059,
+    "location": 34736,
+    "count": 1,
+    "doubles": [
+     298.257223563
+    ]
+   },
+   {
+    "id": 4096,
+    "location": 34735,
+    "count": 2,
+    "shorts": [
+     2057,
+     34736
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   1,
+   10
+  ]
+ }
+}

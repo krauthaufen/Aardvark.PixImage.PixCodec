@@ -124,4 +124,22 @@ public class VolumeLoaderTests
         Assert.Equal(Col.Format.RGB, back.Format);
         Assert.Equal(t[3, 1, 0, 0], ((PixVolume<byte>)back).Tensor4[3, 1, 0, 2]);
     }
+
+    [Fact]
+    public void LoadsEnviRasters()
+    {
+        // the sample file and the header both name the pair; the bands become channels, or the z axis of a volume
+        var data = Fixture("envi/gdal_u16_utm33n_bsq.img");
+        var raw = ImageCodec.Decode(data);
+        foreach (var p in new[] { data, Fixture("envi/gdal_u16_utm33n_bsq.hdr") })
+        {
+            var img = (PixImage<ushort>)PixCodec.Load(p);
+            Assert.Equal(new V2i(9, 7), img.Size);
+            Assert.Equal(3, img.ChannelCount);
+            Assert.Equal(raw.GetData<ushort>()[(2 * 9 + 4) * 3 + 1], img.Volume[4, 2, 1]);
+        }
+        var v = (PixVolume<ushort>)PixCodec.LoadVolume(data);
+        Assert.Equal(new V3i(9, 7, 3), v.Size);
+        Assert.Equal(raw.GetData<ushort>()[(2 * 9 + 4) * 3 + 1], v.Tensor4[4, 2, 1, 0]);
+    }
 }

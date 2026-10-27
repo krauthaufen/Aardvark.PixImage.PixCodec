@@ -1,0 +1,42 @@
+{
+ "width": 7,
+ "height": 5,
+ "bands": 3,
+ "dtype": "float32",
+ "transform": null,
+ "epsg": null,
+ "geographic": null,
+ "projected": null,
+ "linearFactor": null,
+ "nodata": -9999.0,
+ "descriptions": [
+  "b1 (450.5 Nanometers)",
+  "b2 (550 Nanometers)",
+  "b3 (650.25 Nanometers)"
+ ],
+ "wavelengths": [
+  450.5,
+  550.0,
+  650.25
+ ],
+ "wavelengthUnits": "Nanometers",
+ "fields": {
+  "samples": "7",
+  "lines": "5",
+  "bands": "3",
+  "header_offset": "0",
+  "file_type": "ENVI Standard",
+  "data_type": "4",
+  "interleave": "bip",
+  "byte_order": "0",
+  "wavelength_units": "Nanometers",
+  "wavelength": "450.5, 550, 650.25",
+  "fwhm": "10, 12.5, 15",
+  "bbl": "1, 0, 1",
+  "data_ignore_value": "-9999",
+  "band_names": "b1, b2, b3"
+ },
+ "complex": false,
+ "dataFile": "hand_spectral.img",
+ "headerFile": "hand_spectral.hdr"
+}

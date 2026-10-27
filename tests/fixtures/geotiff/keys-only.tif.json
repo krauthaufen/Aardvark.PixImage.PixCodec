@@ -1,0 +1,83 @@
+{
+ "what": "GeoKeys without model tags: a CRS but no placement",
+ "writer": "tifffile",
+ "gdal": {
+  "default": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  },
+  "standard": {
+   "transform": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "epsg": 4326,
+   "nodata": null,
+   "gcps": 0,
+   "width": 9,
+   "height": 7
+  }
+ },
+ "raw": {
+  "pixelScale": null,
+  "tiepoints": null,
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": null,
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     2
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 2048,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     4326
+    ]
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   1,
+   4
+  ]
+ }
+}

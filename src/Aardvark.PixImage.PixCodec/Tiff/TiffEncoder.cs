@@ -234,6 +234,7 @@ namespace Aardvark.ImageCodecs
                 var m = Image.Metadata;
                 worst += 8192 + 24L * N + (m?.IccProfile?.Length ?? 0) + (m?.Exif?.Length ?? 0) + (m?.Xmp?.Length ?? 0) + (ColorMap?.Length ?? 0) * 2;
                 foreach (var t in Options.ExtraTags) worst += 64 + (long)t.Count * 16;
+                worst += 4096;   // GeoTIFF tags (Options.Geo or the image's own)
                 return worst;
             }
         }
@@ -306,6 +307,7 @@ namespace Aardvark.ImageCodecs
                 // masks: 1 bit, deflate, same strips / tiles; NewSubfileType 4 (+ 1 on overviews)
                 var mo = po.Clone();
                 mo.ExtraTags = new List<TiffTag>();
+                mo.NoGeo = true;   // masks are not georeferenced
                 mo.Compression = TiffCompression.Deflate; mo.Bilevel = true; mo.Photometric = TiffPhotometric.TransparencyMask;
                 mo.Palette = null; mo.BitsPerSample = 0; mo.Planar = false; mo.ExtraSamples = null;
 
@@ -313,15 +315,21 @@ namespace Aardvark.ImageCodecs
                 if (page.Mask != null) yield return new TiffPage(Binary(page.Mask), mo) { SubfileType = page.ReducedResolution ? 5 : 4 };
                 if (!cog && !po.BuildOverviews) continue;
                 // overviews carry the pixel layout options but not the tags that describe the full resolution image
-                var oo = po.Clone();
-                oo.ExtraTags = new List<TiffTag>();
+                var geo = po.NoGeo ? null : po.Geo ?? page.Image.Metadata?.Geo;
                 int min = Math.Max(1, po.OverviewMinSize);
                 if (cog) min = Math.Max(min, Math.Min((po.TileWidth + 15) / 16 * 16, (po.TileHeight + 15) / 16 * 16));
                 RawImage img = page.Image;
                 RawImage? mask = page.Mask == null ? null : Binary(page.Mask);
+                double factor = 1;
                 while (img.Width > min || img.Height > min)
                 {
                     img = po.Palette != null || po.Photometric == TiffPhotometric.Palette ? TiffOverview.Decimate(img) : TiffOverview.Halve(img);
+                    // sample i of an overview covers samples 2^k i .. 2^k (i + 1) of the image: same corner, larger cells
+                    factor *= 2;
+                    var oo = po.Clone();
+                    oo.ExtraTags = new List<TiffTag>();
+                    oo.Geo = geo?.Reduced(factor);
+                    oo.NoGeo = geo == null;
                     yield return new TiffPage(img, oo) { ReducedResolution = true };
                     if (mask != null)
                     {
@@ -633,6 +641,10 @@ namespace Aardvark.ImageCodecs
             }
             if (meta?.IccProfile is { Length: > 0 } icc) n.Set(new TiffField { Tag = 34675, Type = 7, Count = icc.Length, Data = icc });
             if (ExifTags.XmpForWriting(meta) is { Length: > 0 } xmp) n.Set(new TiffField { Tag = 700, Type = 1, Count = xmp.Length, Data = xmp });
+
+            // georeferencing before ExtraTags, which may override single GeoTIFF tags
+            if (!o.NoGeo && (o.Geo ?? meta?.Geo) is { } geo)
+                foreach (var t in GeoTiff.BuildTags(geo)) n.Set(TiffField.FromTag(t, big));
 
             foreach (var t in o.ExtraTags)
             {

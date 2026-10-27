@@ -1,0 +1,114 @@
+{
+ "what": "float32 with GDAL_NODATA -9999",
+ "writer": "gdal",
+ "gdal": {
+  "default": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 32633,
+   "nodata": -9999.0,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  },
+  "standard": {
+   "transform": [
+    10.0,
+    0.0,
+    600000.0,
+    0.0,
+    -10.0,
+    5300000.0
+   ],
+   "epsg": 32633,
+   "nodata": -9999.0,
+   "gcps": 0,
+   "width": 11,
+   "height": 9
+  }
+ },
+ "raw": {
+  "pixelScale": [
+   10.0,
+   10.0,
+   0.0
+  ],
+  "tiepoints": [
+   0.0,
+   0.0,
+   0.0,
+   600000.0,
+   5300000.0,
+   0.0
+  ],
+  "modelTransformation": null,
+  "orientation": null,
+  "noData": "-9999",
+  "keys": [
+   {
+    "id": 1024,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1025,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     1
+    ]
+   },
+   {
+    "id": 1026,
+    "location": 34737,
+    "count": 22,
+    "text": "WGS 84 / UTM zone 33N"
+   },
+   {
+    "id": 2049,
+    "location": 34737,
+    "count": 7,
+    "text": "WGS 84"
+   },
+   {
+    "id": 2054,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9102
+    ]
+   },
+   {
+    "id": 3072,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     32633
+    ]
+   },
+   {
+    "id": 3076,
+    "location": 0,
+    "count": 1,
+    "shorts": [
+     9001
+    ]
+   }
+  ],
+  "keyDirectory": [
+   1,
+   1,
+   0,
+   7
+  ]
+ }
+}

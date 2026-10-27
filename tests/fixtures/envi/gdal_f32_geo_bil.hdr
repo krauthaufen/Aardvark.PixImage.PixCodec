@@ -1,0 +1,17 @@
+ENVI
+description = {
+/home/schorsch/projects/Aardvark.PixImage.PixCodec/.claude/worktrees/agent-a7ea44915b199865d/tests/oracle/../fixtures/envi/gdal_f32_geo_bil.img}
+samples = 9
+lines   = 7
+bands   = 3
+header offset = 0
+file type = ENVI Standard
+data type = 4
+interleave = bil
+byte order = 0
+map info = {Geographic Lat/Lon, 1, 1, 10, 50, 0.1, 0.05,WGS-84}
+coordinate system string = {GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]}
+band names = {
+Band 1,
+Band 2,
+Band 3}

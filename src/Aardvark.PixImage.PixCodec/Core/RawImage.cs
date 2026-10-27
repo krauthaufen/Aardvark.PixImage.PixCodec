@@ -90,6 +90,10 @@ namespace Aardvark.ImageCodecs
         Avif,
         /// <summary>DICOM medical images (.dcm, also files without extension and DICOMDIR media).</summary>
         Dicom,
+        /// <summary>NITF 2.0 / 2.1 and NSIF 1.0 (.ntf, .nitf, .nsf): defence and remote sensing imagery.</summary>
+        Nitf,
+        /// <summary>ENVI raster: a text header (.hdr) and the raw samples in a file next to it.</summary>
+        Envi,
     }
 
     /// <summary>
@@ -143,6 +147,8 @@ namespace Aardvark.ImageCodecs
         /// scientific formats (NRRD, NIfTI, MetaImage, FITS); null otherwise.
         /// </summary>
         public PhysicalMetadata? Physical;
+        /// <summary>Placement of the grid in world coordinates (GeoTIFF, ENVI, NITF), null when the file has none.</summary>
+        public GeoReference? Geo;
         /// <summary>
         /// The file ended early and was decoded as far as its data goes (only when the format's decode options allow
         /// that, such as <see cref="JpegDecodeOptions.AllowTruncated"/>): part of the image is missing.

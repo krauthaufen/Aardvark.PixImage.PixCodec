@@ -155,6 +155,16 @@ namespace Aardvark.ImageCodecs
         public IList<TiffTag> ExtraTags { get; set; } = new List<TiffTag>();
 
         /// <summary>
+        /// Georeferencing to write as GeoTIFF tags (<see cref="GeoTiff.BuildTags"/>); null takes the image's
+        /// <see cref="ImageMetadata.Geo"/>, so a decoded GeoTIFF keeps its placement. Overviews get the same placement
+        /// with their cell size, masks none. <see cref="ExtraTags"/> override single tags.
+        /// </summary>
+        public GeoReference? Geo { get; set; }
+
+        /// <summary>Write no georeferencing at all, not even the image's <see cref="ImageMetadata.Geo"/>.</summary>
+        internal bool NoGeo;
+
+        /// <summary>
         /// Append overviews to the image: reduced resolution pages (NewSubfileType 1), each half the size of the one
         /// before (2 x 2 box average, alpha averaged like any other sample), until both sides are at most
         /// <see cref="OverviewMinSize"/>. This is the pyramid layout GDAL and other GIS software read as overviews.
@@ -168,7 +178,7 @@ namespace Aardvark.ImageCodecs
         /// Write a file laid out for range requests the way Cloud Optimized GeoTIFF asks for: tiled (512 x 512 unless
         /// tile sizes are set), with overviews, all directories at the start of the file, then the tile data of the
         /// smallest overview up to the full resolution image last. Single image only. The compressed data is held in
-        /// memory until the directories are written. Georeferencing tags go in through <see cref="ExtraTags"/>.
+        /// memory until the directories are written. Georeferencing goes in through <see cref="Geo"/>.
         /// </summary>
         public bool CloudOptimized { get; set; }
 
@@ -441,6 +451,27 @@ namespace Aardvark.ImageCodecs
             return Guard(() => TagsCore(src, imageIndex), seekableStream, src.Origin);
         }
 
+        /// <summary>
+        /// The GeoTIFF georeferencing of an image directory (see <see cref="GeoTiff"/>), null when it has none of the GeoTIFF
+        /// tags. No pixel data is read. The placement refers to the image as stored; <see cref="Decode(ReadOnlySpan{byte}, TiffDecodeOptions?)"/>
+        /// returns it in <see cref="ImageMetadata.Geo"/> fitted to the image it returns (region, orientation).
+        /// </summary>
+        public static GeoTiffInfo? ReadGeo(ReadOnlySpan<byte> data, int imageIndex = 0, int[]? subImagePath = null)
+        {
+            fixed (byte* p = data)
+            {
+                var src = new TiffMemorySource(p, data.Length);
+                return Guard(() => GeoTagsCore(src, imageIndex, subImagePath));
+            }
+        }
+
+        /// <inheritdoc cref="ReadGeo(ReadOnlySpan{byte}, int, int[])"/>
+        public static GeoTiffInfo? ReadGeo(Stream seekableStream, int imageIndex = 0, int[]? subImagePath = null)
+        {
+            var src = new TiffStreamSource(seekableStream);
+            return Guard(() => GeoTagsCore(src, imageIndex, subImagePath), seekableStream, src.Origin);
+        }
+
         /// <summary>Tags of a sub-image (see <see cref="GetSubImageInfos(ReadOnlySpan{byte}, int, int[])"/>).</summary>
         public static TiffTag[] ReadTags(ReadOnlySpan<byte> data, int imageIndex, int[] subImagePath)
         {
@@ -593,7 +624,31 @@ namespace Aardvark.ImageCodecs
             if (options.MaxPixels > 0 && (long)w * h > options.MaxPixels)
                 throw new ImageNotSupportedException($"TIFF image of {w}x{h} exceeds TiffDecodeOptions.MaxPixels ({options.MaxPixels})");
             var raw = img.Decode(x, y, w, h, options);
-            return o > 1 ? ImageOps.ApplyOrientation(raw) : raw;
+            var result = o > 1 ? ImageOps.ApplyOrientation(raw) : raw;
+            // the placement refers to the stored grid; it follows the region and the turn to upright
+            if (GeoCore(file, img.Entries) is { HasTransform: true } geo)
+                (result.Metadata ??= new ImageMetadata()).Geo = GeoTiff.Oriented(GeoTiff.Shifted(geo.Reference, x, y), o, w, h);
+            return result;
+        }
+
+        // the GeoTIFF tags of a directory, without reading its other tags' values
+        static GeoTiffInfo? GeoCore(TiffFile file, TiffEntry[] entries)
+        {
+            var tags = new List<TiffTag>();
+            foreach (var e in entries)
+            {
+                if (e.Tag is not (GeoTiff.TagModelPixelScale or GeoTiff.TagModelTiepoint or GeoTiff.TagModelTransformation
+                    or GeoTiff.TagGeoKeyDirectory or GeoTiff.TagGeoDoubleParams or GeoTiff.TagGeoAsciiParams or GeoTiff.TagGdalNoData)) continue;
+                try { tags.Add(new TiffTag(e.Tag, (TiffTagType)e.Type, (int)e.Count, file.ReadValue(e))); }
+                catch (ImageFormatException) { }   // a tag pointing outside of the file is left out, as ReadTags does
+            }
+            return tags.Count == 0 ? null : GeoTiff.FromTags(tags);
+        }
+
+        static GeoTiffInfo? GeoTagsCore(TiffSource src, int index, int[]? path)
+        {
+            var file = new TiffFile(src);
+            return GeoCore(file, file.ReadIfd(Locate(file, index, path)));
         }
 
         /// <summary>Safety net: whatever a corrupt file manages to trip inside the decoder surfaces as ImageFormatException.</summary>
