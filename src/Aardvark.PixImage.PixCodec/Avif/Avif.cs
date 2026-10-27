@@ -83,6 +83,32 @@ namespace Aardvark.ImageCodecs
         internal bool ApplyOrientation = true, TmapIsPrimary;
 
         /// <summary>
+        /// The gain map of a tmap item (null without both inputs or a payload), for the image of its base (with
+        /// <paramref name="ofTmap"/>: of the tmap item's output image, the tmap item's transforms included).
+        /// </summary>
+        internal static AvifGainMap? Of(AvifReader rd, HeifItem it, bool ofTmap, bool applyOrientation)
+        {
+            var refs = it.Refs("dimg");
+            if (refs.Length < 2 || !rd.File.Items.ContainsKey(refs[0]) || !rd.File.Items.ContainsKey(refs[1])) return null;
+            var payload = rd.File.ItemData(rd.Data, it);
+            if (payload.Length < 1) return null;
+            var c = rd.Colour(it);
+            var size = rd.Ispe(it);
+            return new AvifGainMap
+            {
+                Version = payload[0],
+                Metadata = payload.AsSpan(1).ToArray(),
+                AlternatePrimaries = c.HasNclx ? c.Primaries : 2,
+                AlternateTransferCharacteristics = c.HasNclx ? c.Transfer : 2,
+                AlternateTransfer = c.HasNclx ? AvifReader.TransferOf(c.Transfer, out _) : TransferFunction.Unknown,
+                AlternateIcc = c.Icc,
+                Width = size?.w ?? 0, Height = size?.h ?? 0,
+                Reader = rd, GainMapItemId = refs[1], BaseItemId = refs[0], TmapItemId = it.Id, TmapIsPrimary = ofTmap,
+                ApplyOrientation = applyOrientation,
+            };
+        }
+
+        /// <summary>
         /// Decodes the gain map image: its stored pixels, which match the base image's stored pixels (scaled), without any
         /// transformative property (libavif repeats the base image's on the gain map item).
         /// </summary>
@@ -486,22 +512,7 @@ namespace Aardvark.ImageCodecs
                 if (refs.Length < 2 || !rd.File.Items.ContainsKey(refs[0]) || !rd.File.Items.ContainsKey(refs[1])) continue;
                 // a gain map of the image Decode returns: the tmap item itself or its base image is the primary item
                 if (rd.Primary is HeifItem p && p.Id != it.Id && p.Id != refs[0]) continue;
-                var payload = rd.File.ItemData(rd.Data, it);
-                if (payload.Length < 1) continue;
-                var c = rd.Colour(it);
-                var size = rd.Ispe(it);
-                return new AvifGainMap
-                {
-                    Version = payload[0],
-                    Metadata = payload.AsSpan(1).ToArray(),
-                    AlternatePrimaries = c.HasNclx ? c.Primaries : 2,
-                    AlternateTransferCharacteristics = c.HasNclx ? c.Transfer : 2,
-                    AlternateTransfer = c.HasNclx ? AvifReader.TransferOf(c.Transfer, out _) : TransferFunction.Unknown,
-                    AlternateIcc = c.Icc,
-                    Width = size?.w ?? 0, Height = size?.h ?? 0,
-                    Reader = rd, GainMapItemId = refs[1], BaseItemId = refs[0], TmapItemId = it.Id, TmapIsPrimary = rd.Primary?.Id == it.Id,
-                    ApplyOrientation = opt.ApplyOrientation,
-                };
+                if (AvifGainMap.Of(rd, it, rd.Primary?.Id == it.Id, opt.ApplyOrientation) is AvifGainMap g) return g;
             }
             return null;
         }
@@ -511,14 +522,36 @@ namespace Aardvark.ImageCodecs
         /// reference white, for a display with HDR headroom <paramref name="headroom"/> (log2; null = fully applied):
         /// <see cref="Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/> plus <see cref="GainMap.Apply(RawImage, GainMap, double?)"/>
         /// with <see cref="AvifGainMap.ToGainMap"/>, as for JPEG and JPEG XL. Without a usable gain map the image converted
-        /// to linear light is returned.
+        /// to linear light is returned. A derived primary item (iden, grid, iovl) over tmap items is derived from their
+        /// alternate renditions at that headroom (HEIF Amd 1 6.6.2.4.1), where <see cref="Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/>
+        /// takes their base images.
         /// </summary>
         public static RawImage DecodeHdr(ReadOnlySpan<byte> data, double? headroom = null, AvifDecodeOptions? options = null)
         {
+            var copy = data.ToArray();
+            var opt = options ?? AvifDecodeOptions.Default;
+            if (Guard(() => DerivedHdr(copy, headroom, opt)) is RawImage derived) return derived;
             var baseline = Decode(data, options);
             var gm = GetGainMap(data, options);
             var g = gm == null ? null : Guard(() => gm.ToGainMap());
             return g == null ? GainMap.LinearRgb(baseline) : GainMap.Apply(baseline, g, headroom);
+        }
+
+        /// <summary>The HDR rendition of a derived primary item with tmap inputs; null for every other file.</summary>
+        static RawImage? DerivedHdr(byte[] data, double? headroom, AvifDecodeOptions opt)
+        {
+            var rd = new AvifReader(data, opt);
+            if (rd.Primary is not HeifItem p || p.Type == "tmap" || rd.TmapInput(p) == null) return null;
+            var img = rd.DecodeItemHdr(p, headroom);
+            // without ApplyOrientation: the primary item's irot / imir undone, reported in the metadata (as Decode)
+            if (!opt.ApplyOrientation && rd.Orientation(p) is int o && o > 1)
+            {
+                var meta = img.Metadata;
+                img = ImageOps.ApplyOrientation(img, AvifReader.InverseOrientation(o));
+                img.Metadata = meta;
+                if (meta != null) meta.Orientation = o;
+            }
+            return img;
         }
 
         /// <summary>The raw Exif (from the TIFF header on) and XMP items describing the primary image.</summary>

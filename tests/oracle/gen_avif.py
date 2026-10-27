@@ -938,7 +938,54 @@ def gen_container():
     for name, kw in [('none', dict(no_edts=True)), ('once', dict(repeat=0)), ('r3_25', dict(duration=26)), ('r0_5', dict(duration=4)),
                      ('r4', dict(duration=32))]:
         with open(os.path.join(CONTAINER, f'seq_loop_{name}.avif'), 'wb') as f: f.write(patch_track(seq, **kw))
+    gen_tmap_inputs()
     print('container')
+
+
+def gen_tmap_inputs():
+    """
+    Derived items whose input is the tmap item of gainmap.avif (base 1, tmap 2 (hidden here), gain map 3), the derived
+    item primary and in an altr group with the base. HEIF Amd 1 6.6.2.4.1: the derivation takes the tmap item's
+    reconstructed image with the gain map fully applied, in the tmap item's colour (BT.2100 PQ). avifdec and
+    avifgainmaputil 1.4.2 read none of them ("Primary item not found" for iden / iovl, "Not implemented" for the grid),
+    so the references are the derivation done on avifgainmaputil's tonemap of gainmap.avif at headroom 2.5 (PQ 16 bit,
+    gainmap.avif.tonemap.ref) and on avifdec's decode of gainmap.avif, the base (gainmap.avif.ref); the test derives them
+    from those but for the overlay's (.tonemap.ref and .ref):
+      * iden_tmap.avif: an iden item with irot 1 (90 degrees anti-clockwise).
+      * iovl_tmap.avif: an iovl of 160x120 with the tmap at (16, 12) on fill (13107, 26214, 39321, 65535), which is a PQ
+        signal for the HDR rendition (the overlay has the colour of its inputs, MIAF 7.3.11.3), sRGB for the base.
+      * grid_tmap.avif: a 2x1 grid of two tmap items (both of base 1 and gain map 3; HEIF 6.6.1 allows derived inputs).
+    """
+    src = os.path.join(OUT, 'gainmap.avif')
+    tonemap_ref(src, os.path.join(TMP, 'tm.ref'), 2.5)
+    import imagecodecs
+    tm = imagecodecs.png_decode(open(os.path.join(TMP, 'tm.png'), 'rb').read())
+    sdr = avifdec_png(src)
+    items, refs, primary = heif_items(src)
+    assert primary == 1 and refs == [('dimg', 2, [1, 3])]
+    ispe = lambda w, h: fullbox('ispe', 0, 0, struct.pack('>II', w, h))
+    brands = (b'avif', b'mif1', b'miaf', b'tmap')
+
+    def write(name, extra, derived_refs, hdr=None, base=None):
+        it = {k: dict(v) for k, v in items.items()}
+        it[2]['hidden'] = 1
+        it.update(extra)
+        out = os.path.join(CONTAINER, name)
+        heif_write(out, it, refs + derived_refs, 4, compatible=brands, groups=[('altr', 10, [4, 1])])
+        if hdr is not None: write_ref(out + '.tonemap.ref', hdr)
+        if base is not None: write_ref(out + '.ref', base)
+        print(name, os.path.getsize(out))
+    write('iden_tmap.avif', {4: {'type': 'iden', 'hidden': 0, 'props': [(ispe(128, 96), False), (irot(1), True)], 'data': b''}},
+          [('dimg', 4, [2])])
+    fill = (13107, 26214, 39321, 65535)
+    iovl = struct.pack('>BB4HHH', 0, 0, *fill, 160, 120) + struct.pack('>hh', 16, 12)
+    hdr = np.empty((120, 160, 3), np.uint16); hdr[:] = fill[:3]; hdr[12:108, 16:144] = tm
+    base = np.empty((120, 160, 3), np.uint8); base[:] = [round(v / 257) for v in fill[:3]]; base[12:108, 16:144] = sdr
+    write('iovl_tmap.avif', {4: {'type': 'iovl', 'hidden': 0, 'props': [(ispe(160, 120), False)], 'data': iovl}},
+          [('dimg', 4, [2])], hdr, base)
+    grid = struct.pack('>BBBBHH', 0, 0, 0, 1, 256, 96)
+    write('grid_tmap.avif', {5: dict(items[2], hidden=1), 4: {'type': 'grid', 'hidden': 0, 'props': [(ispe(256, 96), False)], 'data': grid}},
+          [('dimg', 5, [1, 3]), ('dimg', 4, [2, 5])])
 
 
 def gen_mini():

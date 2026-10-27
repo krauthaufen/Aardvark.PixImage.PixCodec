@@ -674,6 +674,78 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal((img.Width, img.Height), (hdr.Width, hdr.Height));
     }
 
+    /// <summary>The images side by side (same height, sample type and channels).</summary>
+    static RawImage SideBySide(RawImage a, RawImage b)
+    {
+        var r = RawImage.Create(a.Width + b.Width, a.Height, a.Color, a.SampleType, a.Channels);
+        int bpp = a.GetBytes().Length / (a.Width * a.Height);
+        for (int y = 0; y < a.Height; y++)
+        {
+            a.GetBytes().Slice(y * a.Width * bpp, a.Width * bpp).CopyTo(r.GetBytes().Slice(y * r.Width * bpp));
+            b.GetBytes().Slice(y * b.Width * bpp, b.Width * bpp).CopyTo(r.GetBytes().Slice((y * r.Width + a.Width) * bpp));
+        }
+        r.Metadata = a.Metadata;
+        return r;
+    }
+
+    /// <summary>
+    /// Derived items whose input is the tmap item of gainmap.avif (gen_avif.py gen_tmap_inputs; avifdec and avifgainmaputil
+    /// 1.4.2 read none of them). HEIF Amd 1 6.6.2.4.1: the derivation takes the tmap item's image with the gain map applied,
+    /// in the tmap item's colour, so DecodeHdr applies the gain map to the tmap input (at the requested headroom) and then
+    /// the derivation: the references are the derivations of avifgainmaputil's tonemap of gainmap.avif (headroom 2.5,
+    /// co-sited resampling tolerance as in <see cref="GainMapAppliedLikeLibavif"/>). Decode keeps the base image as input.
+    /// </summary>
+    [Theory]
+    [InlineData("iden")]
+    [InlineData("iovl")]
+    [InlineData("grid")]
+    public void DerivedItemOfTmapIsHdr(string kind)
+    {
+        var plain = File.ReadAllBytes(Fixture("avif/gainmap.avif"));
+        var tm = PqToLinear(LoadRef(Fixture("avif/gainmap.avif.tonemap.ref")));
+        var sdr = LoadRef(Fixture("avif/gainmap.avif.ref"));
+        var path = Fixture($"avif/container/{kind}_tmap.avif");
+        var data = File.ReadAllBytes(path);
+        Func<RawImage, RawImage> derive = kind switch
+        {
+            "iden" => ImageOps.Rotate270,   // irot 1
+            "grid" => i => SideBySide(i, i),
+            _ => i => i,
+        };
+        RawImage expectedSdr = kind == "iovl" ? LoadRef(path + ".ref") : derive(sdr);
+        RawImage expectedHdr = kind == "iovl" ? PqToLinear(LoadRef(path + ".tonemap.ref")) : derive(tm);
+        var img = Avif.Decode(data);
+        Assert.True(MaxDiff(expectedSdr, img) <= 1, $"max difference {MaxDiff(expectedSdr, img)}");
+        var info = Avif.GetInfo(data);
+        Assert.Equal((img.Width, img.Height), (info.Width, info.Height));
+        var hdr = Avif.DecodeHdr(data, 2.5);
+        TestUtil.AssertEqual(hdr, ImageCodec.DecodeHdr(data, 2.5));
+        Assert.Equal((img.Width, img.Height, ColorModel.Rgb), (hdr.Width, hdr.Height, hdr.Color));
+        Assert.Equal(IccProfile.LinearRec2020.RedColorant!.Value.X, IccProfile.Parse(hdr.Metadata!.IccProfile!).RedColorant!.Value.X, 1e-3);
+        AssertStops(expectedHdr, hdr, 0.6, 0.08, kind + ", co-sited resampling");
+        // the derivation of the plain file's HDR rendition, at any headroom
+        foreach (double? h in new double?[] { 2.5, 0, null })
+        {
+            var tmap = Avif.DecodeHdr(plain, h);
+            var mine = Avif.DecodeHdr(data, h);
+            if (kind == "iovl") mine = ImageOps.Crop(mine, 16, 12, 128, 96);
+            TestUtil.AssertEqual(derive(tmap), mine, 1e-6);
+        }
+        if (kind == "iovl")
+        {
+            // the fill is a PQ signal (the overlay has its inputs' colour, MIAF 7.3.11.3): ST 2084 with 203 cd/m² = 1.0
+            var f = (float[])hdr.Data;
+            var e = (float[])expectedHdr.Data;
+            for (int c = 0; c < 3; c++) Assert.Equal(e[c], f[c], 1e-4);
+        }
+        if (kind == "iden")
+        {
+            var kept = Avif.DecodeHdr(data, 2.5, new AvifDecodeOptions { ApplyOrientation = false });
+            Assert.Equal((128, 96), (kept.Width, kept.Height));
+            TestUtil.AssertEqual(hdr, ImageOps.ApplyOrientation(kept, kept.Metadata!.Orientation));
+        }
+    }
+
     /// <summary>
     /// gen_avif.py container: an hvc1 primary item with an AV1 alternative in its altr group decodes the alternative
     /// (MIAF 7.3.12.2; avifdec gives up), as avifdec decodes the AV1 item alone; a protected AV1 item (scheme 'cenc') is

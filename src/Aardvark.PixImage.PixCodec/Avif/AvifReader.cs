@@ -423,18 +423,20 @@ namespace Aardvark.ImageCodecs.Heif
             return outp!;
         }
 
-        bool HasIdenTile(HeifItem grid)
+        bool HasDerivedTile(HeifItem grid)
         {
             foreach (var r in grid.Refs("dimg"))
-                if (File.Items.TryGetValue(r, out var t) && t.Type == "iden") return true;
+                if (File.Items.TryGetValue(r, out var t) && t.Type is "iden" or "tmap") return true;
             return false;
         }
 
         /// <summary>
-        /// A grid with 'iden' tiles (MIAF 7.3.11.4.1; avifdec 1.4.2 refuses them): the tiles' output images (an iden item's
-        /// transforms applied, a coded tile's ignored as in <see cref="DecodeGrid"/>) pasted on the canvas.
+        /// A grid with derived tiles, 'iden' (MIAF 7.3.11.4.1; avifdec 1.4.2 refuses them) or 'tmap' (HEIF 6.6.1 allows any
+        /// derived input; avifdec 1.4.2: "Not implemented"): the tiles' output images (a derived tile's transforms applied, a
+        /// coded tile's ignored as in <see cref="DecodeGrid"/>) pasted on the canvas; <paramref name="tile"/> decodes a
+        /// derived tile in place of that.
         /// </summary>
-        RawImage DecodeGridOfOutputs(HeifItem it, int depth)
+        RawImage DecodeGridOfOutputs(HeifItem it, int depth, Func<HeifItem, RawImage>? tile = null)
         {
             var (_, cols, ow, oh) = GridLayout(it);
             var refs = it.Refs("dimg");
@@ -443,7 +445,8 @@ namespace Aardvark.ImageCodecs.Heif
             for (int i = 0; i < refs.Length; i++)
             {
                 if (!File.Items.TryGetValue(refs[i], out var ti)) throw new ImageFormatException("AVIF: missing grid tile");
-                var t = DecodeItem(ti, true, depth + 1, stored: ti.Type != "iden");
+                bool derived = ti.Type is "iden" or "tmap";
+                var t = tile != null ? tile(ti) : DecodeItem(ti, true, depth + 1, stored: !derived);
                 if (outp == null)
                 {
                     tw = t.Width; th = t.Height;
@@ -482,9 +485,9 @@ namespace Aardvark.ImageCodecs.Heif
                         break;
                     }
                 case "iovl": img = DecodeOverlay(it, depth); break;
-                case "grid" when HasIdenTile(it):
+                case "grid" when HasDerivedTile(it):
                     CheckEssential(it);
-                    if (!opt.IgnoreAlpha && AlphaItem(it) != null) throw new ImageNotSupportedException("AVIF: an alpha item on a grid of iden tiles");
+                    if (!opt.IgnoreAlpha && AlphaItem(it) != null) throw new ImageNotSupportedException("AVIF: an alpha item on a grid of derived tiles");
                     img = DecodeGridOfOutputs(it, depth);
                     break;
                 case "tmap":
@@ -597,7 +600,8 @@ namespace Aardvark.ImageCodecs.Heif
             return r;
         }
 
-        RawImage DecodeOverlay(HeifItem it, int depth)
+        /// <summary>The overlay item's fill value, canvas size and inputs with their offsets (HEIF 6.6.2.2).</summary>
+        (int[] fill, int ow, int oh, List<(HeifItem item, long x, long y)> inputs) OverlayLayout(HeifItem it)
         {
             var payload = File.ItemData(Data, it);
             if (payload.Length < 2 || payload[0] != 0) throw new ImageFormatException("HEIF: bad iovl item");
@@ -618,13 +622,24 @@ namespace Aardvark.ImageCodecs.Heif
             }
             int ow = (int)Field(false), oh = (int)Field(false);
             if (ow <= 0 || oh <= 0 || (long)ow * oh > opt.MaxPixels) throw new ImageNotSupportedException("HEIF: overlay canvas size");
-            var layers = new List<(RawImage img, long x, long y, int bits)>();
-            int bits = 8;
-            bool alpha = false;
+            var inputs = new List<(HeifItem, long, long)>();
             foreach (var id in refs)
             {
                 long hx = Field(true), vy = Field(true);
                 if (!File.Items.TryGetValue(id, out var li)) throw new ImageFormatException("HEIF: missing overlay input");
+                inputs.Add((li, hx, vy));
+            }
+            return (fill, ow, oh, inputs);
+        }
+
+        RawImage DecodeOverlay(HeifItem it, int depth)
+        {
+            var (fill, ow, oh, inputs) = OverlayLayout(it);
+            var layers = new List<(RawImage img, long x, long y, int bits)>();
+            int bits = 8;
+            bool alpha = false;
+            foreach (var (li, hx, vy) in inputs)
+            {
                 var li2 = DecodeItem(li, true, depth + 1);
                 int lb = ItemBitDepth(li);
                 bits = Math.Max(bits, lb);
@@ -674,6 +689,108 @@ namespace Aardvark.ImageCodecs.Heif
             if (!alpha && fill[3] == 65535) canvas = DropAlpha(canvas);
             canvas.Metadata = layers.Count > 0 ? layers[0].img.Metadata : null;
             return canvas;
+        }
+
+        // ------------------------------------------------------------------ HDR rendition of derivations
+
+        /// <summary>The first tmap item among the item and its derivation inputs (iden, grid, iovl), null if there is none.</summary>
+        public HeifItem? TmapInput(HeifItem it, int depth = 0)
+        {
+            if (it.Type == "tmap") return it;
+            if (depth > 8 || it.Type is not ("iden" or "grid" or "iovl")) return null;
+            foreach (var r in it.Refs("dimg"))
+                if (File.Items.TryGetValue(r, out var s) && TmapInput(s, depth + 1) is HeifItem t) return t;
+            return null;
+        }
+
+        /// <summary>
+        /// The HDR rendition of an item's output image (upright) as <see cref="GainMap.Apply(RawImage, GainMap, double?)"/>
+        /// gives it: a tmap item's base with its gain map applied at <paramref name="headroom"/>, and a derived item over
+        /// such inputs derived from their HDR renditions. HEIF Amd 1 6.6.2.4.1: a derived item takes the tmap item's
+        /// reconstructed image as if the gain map were fully applied, in the colour of the tmap item's colr; at a lower
+        /// headroom the derivation takes the image of that headroom (the derivations are geometric, so this is the
+        /// derived image's rendition for the display). Items without a tmap input: their image in linear light.
+        /// </summary>
+        public RawImage DecodeItemHdr(HeifItem it, double? headroom, int depth = 0)
+        {
+            if (depth > 8) throw new ImageFormatException("HEIF: derivation chain too deep");
+            if (TmapInput(it) == null) return GainMap.LinearRgb(DecodeItem(it, true, depth));
+            switch (it.Type)
+            {
+                case "tmap":
+                    {
+                        var sdr = DecodeItem(it, true, depth);
+                        var g = AvifGainMap.Of(this, it, true, true)?.ToGainMap();
+                        return g == null ? GainMap.LinearRgb(sdr) : GainMap.Apply(sdr, g, headroom);
+                    }
+                case "iden":
+                    {
+                        var r = it.Refs("dimg");
+                        if (r.Length != 1 || !File.Items.TryGetValue(r[0], out var src)) throw new ImageFormatException("HEIF: bad iden item");
+                        return ApplyTransforms(it, DecodeItemHdr(src, headroom, depth + 1), true);
+                    }
+                case "iovl":
+                    return ApplyTransforms(it, DecodeOverlayHdr(it, headroom, depth), true);
+                default:   // grid
+                    CheckEssential(it);
+                    if (!opt.IgnoreAlpha && AlphaItem(it) != null) throw new ImageNotSupportedException("AVIF: an alpha item on a grid of derived tiles");
+                    return ApplyTransforms(it, DecodeGridOfOutputs(it, depth, t => DecodeItemHdr(t, headroom, depth + 1)), true);
+            }
+        }
+
+        /// <summary>
+        /// An overlay of HDR inputs, composed in linear light in the primaries of the overlay's colour: its colr, else the
+        /// colr of its first tmap input (the colour of the inputs, MIAF 7.3.11.3, which for a tmap input is its own colr,
+        /// HEIF Amd 1 6.6.2.4.1). The fill value is a sample of that colour (HEIF 6.6.2.2.2), so it is linearized with it.
+        /// </summary>
+        RawImage DecodeOverlayHdr(HeifItem it, double? headroom, int depth)
+        {
+            var (fill, ow, oh, inputs) = OverlayLayout(it);
+            var c = Colour(it);
+            if (!c.HasNclx && c.Icc == null && TmapInput(it) is HeifItem t) c = Colour(t);
+            var fy = new YuvImage { ColorPrimaries = c.HasNclx ? c.Primaries : 2, TransferCharacteristics = c.HasNclx ? c.Transfer : 2 };
+            var fillImage = new RawImage(1, 1, ColorModel.Rgb, new ushort[] { (ushort)fill[0], (ushort)fill[1], (ushort)fill[2] }, 3, ColourMetadata(fy, c));
+            var lin = GainMap.LinearRgb(fillImage);
+            var prim = GainMap.Primaries(lin.Metadata!.IccProfile);
+            var fl = (float[])lin.Data;
+            float fa = fill[3] / 65535f;
+            var acc = new float[(long)ow * oh * 4];
+            for (long i = 0; i < (long)ow * oh; i++) { acc[i * 4] = fl[0]; acc[i * 4 + 1] = fl[1]; acc[i * 4 + 2] = fl[2]; acc[i * 4 + 3] = fa; }
+            bool alpha = false;
+            foreach (var (li, ox, oy) in inputs)
+            {
+                var img = DecodeItemHdr(li, headroom, depth + 1);
+                var px = (float[])img.Data;
+                int ch = img.Channels;
+                alpha |= img.HasAlpha;
+                var lp = GainMap.Primaries(img.Metadata?.IccProfile);
+                double[]? conv = GainMap.SamePrimaries(lp, prim) ? null : IccMath.Mul(IccMath.Invert(prim) ?? throw new ImageFormatException("HEIF: degenerate overlay primaries"), lp);
+                for (int y = 0; y < img.Height; y++)
+                {
+                    long cy = oy + y;
+                    if (cy < 0 || cy >= oh) continue;
+                    for (int x = 0; x < img.Width; x++)
+                    {
+                        long cx = ox + x;
+                        if (cx < 0 || cx >= ow) continue;
+                        long s = ((long)y * img.Width + x) * ch, o = (cy * ow + cx) * 4;
+                        float r = px[s], g = px[s + 1], b = px[s + 2], a = ch == 4 ? px[s + 3] : 1;
+                        if (conv != null)
+                            (r, g, b) = ((float)(conv[0] * r + conv[1] * g + conv[2] * b), (float)(conv[3] * r + conv[4] * g + conv[5] * b), (float)(conv[6] * r + conv[7] * g + conv[8] * b));
+                        // later inputs over earlier ones (straight alpha "over"), as DecodeOverlay
+                        float below = acc[o + 3] * (1 - a), outA = a + below;
+                        acc[o] = outA > 0 ? (r * a + acc[o] * below) / outA : 0;
+                        acc[o + 1] = outA > 0 ? (g * a + acc[o + 1] * below) / outA : 0;
+                        acc[o + 2] = outA > 0 ? (b * a + acc[o + 2] * below) / outA : 0;
+                        acc[o + 3] = outA;
+                    }
+                }
+            }
+            var meta = new ImageMetadata { Transfer = TransferFunction.Linear, Orientation = 1, IccProfile = GainMap.LinearProfile(prim) };
+            if (alpha || fill[3] != 65535) return new RawImage(ow, oh, ColorModel.Rgba, acc, 4, meta);
+            var rgb = new float[(long)ow * oh * 3];
+            for (long i = 0; i < (long)ow * oh; i++) { rgb[i * 3] = acc[i * 4]; rgb[i * 3 + 1] = acc[i * 4 + 1]; rgb[i * 3 + 2] = acc[i * 4 + 2]; }
+            return new RawImage(ow, oh, ColorModel.Rgb, rgb, 3, meta);
         }
 
         /// <summary>Bit depth of the samples an item decodes to (av1C of the item or of its first input).</summary>

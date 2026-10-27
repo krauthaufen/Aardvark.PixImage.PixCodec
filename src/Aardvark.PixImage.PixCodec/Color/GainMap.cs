@@ -440,7 +440,7 @@ namespace Aardvark.ImageCodecs
             return new[] { r.X, g.X, b.X, r.Y, g.Y, b.Y, r.Z, g.Z, b.Z };
         }
 
-        static bool SamePrimaries(double[] a, double[] b)
+        internal static bool SamePrimaries(double[] a, double[] b)
         {
             for (int i = 0; i < 9; i++) if (Math.Abs(a[i] - b[i]) > 2e-3) return false;
             return true;
