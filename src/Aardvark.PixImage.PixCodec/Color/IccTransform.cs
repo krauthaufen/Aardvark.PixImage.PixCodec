@@ -228,52 +228,98 @@ namespace Aardvark.ImageCodecs
         static readonly CieXyz PerceptualBlack = new(0.0034731 * IccMath.D50X, 0.0034731, 0.0034731 * IccMath.D50Z);
 
         /// <summary>
-        /// The neutral black point of a profile for an intent (after ISO 18619): the v4 perceptual reference black for v4
-        /// perceptual / saturation tables; for the colorimetric intents of output (CMYK) profiles with B2A tables the darkest
-        /// reproducible colour (Lab 0 through the B2A and back through the A2B, which honours ink limits); else device black
-        /// (no light, or full ink) through the A2B / TRCs. a* and b* are dropped, L* is limited to 50.
+        /// The neutral black point of a profile for an intent (ISO 18619 4.2.3 - 4.2.5, ISO/TS 21830 4.2, with the
+        /// differences of LittleCMS noted where they apply): the v4 perceptual reference black for v4 perceptual / saturation
+        /// tables, else the SourceBlackPoint or DestinationBlackPoint. a* and b* are dropped, L* is limited to 50. Not used
+        /// for absolute colorimetric, which has no black point compensation (ISO 18619 4.1).
         /// </summary>
         internal static CieXyz BlackPoint(IccProfile p, IccRenderingIntent intent, bool asSource, bool trilinear)
         {
             if (intent is IccRenderingIntent.Perceptual or IccRenderingIntent.Saturation && p.IsV4
                 && (UsesLut(p, intent, true) || UsesLut(p, intent, false)))
                 return PerceptualBlack;
-            float[] device;
-            bool corner = false;
-            bool subtractive = p.ColorSpace is IccColorSpace.Cmyk or IccColorSpace.Cmy;
-            bool colorimetric = intent is IccRenderingIntent.RelativeColorimetric or IccRenderingIntent.AbsoluteColorimetric;
-            if (colorimetric && subtractive
-                && UsesLut(p, IccRenderingIntent.RelativeColorimetric, false) && UsesLut(p, intent, true))
-            {
-                var back = FromPcs(p, IccRenderingIntent.RelativeColorimetric, trilinear, out var pcs);
-                if (pcs == IccColorSpace.Xyz) back.Insert(0, new LabToXyzStage());
-                device = IccPipeline.Eval(back, new float[] { 0, 0, 0 });
-            }
-            else if (p.ColorSpace == IccColorSpace.Lab)
-                device = LabBlack(p, intent);
-            else
-            {
-                // ISO 18619 4.2.2.2 defines D as the darkest of a vertex set ({0, 1}, {000, 111}, {0000, 1111, 0001, 1110}),
-                // whatever the polarity; LittleCMS takes device black alone (no light, or full ink), gives no compensation (black
-                // 0) when that is lighter than L* 50 instead of limiting it to 50, and none for an intent whose own A2B table the
-                // profile lacks (IccBpcTests.DeviceBlackAsLittleCms, against PIL.ImageCms). We follow LittleCMS.
-                if (!HasIntent(p, intent)) return default;
-                corner = true;
-                device = new float[p.Channels];
-                if (subtractive) Array.Fill(device, 1f);
-            }
-            var fwd = ToPcs(p, intent == IccRenderingIntent.AbsoluteColorimetric ? IccRenderingIntent.RelativeColorimetric : intent, trilinear, out var fpcs);
-            if (fpcs == IccColorSpace.Xyz) fwd.Add(new XyzToLabStage());
-            var lab = IccPipeline.Eval(fwd, device);
-            if (corner && !(lab[0] <= 50)) return default;
-            double l = Math.Clamp((double)lab[0], 0, 50);
-            var (x, y, z) = IccMath.LabToXyz(l, 0, 0);
+            double l = asSource ? SourceBlack(p, intent, trilinear) : DestinationBlack(p, intent, trilinear);
+            var (x, y, z) = IccMath.LabToXyz(Math.Clamp(l, 0, 50), 0, 0);
             return new CieXyz(x, y, z);
+        }
+
+        /// <summary>Whether ISO 18619 / ISO/TS 21830 handle the colour space like CMYK.</summary>
+        static bool CmykLike(IccColorSpace cs) => cs is IccColorSpace.Cmyk or IccColorSpace.Cmy;
+
+        /// <summary>Output-capable (ISO 18619 3.9): the profile has a transform from the PCS to its colour space.</summary>
+        static bool OutputCapable(IccProfile p) => p.HasTag(IccSig.B2A0) || p.HasTag(IccSig.B2A1) || p.HasTag(IccSig.B2A2);
+
+        /// <summary>L* of the SourceBlackPoint (ISO 18619 4.2.3, ISO/TS 21830 4.2.2).</summary>
+        static double SourceBlack(IccProfile p, IccRenderingIntent intent, bool trilinear)
+        {
+            if (CmykLike(p.ColorSpace) && intent == IccRenderingIntent.RelativeColorimetric)
+            {
+                // LocalBlack = T(Lab 0, LabIdentityProfile, Source, Perceptual), through the A2B of the intent. LittleCMS gives
+                // black 0 when there is no B2A (the spec takes D then).
+                if (!OutputCapable(p)) return 0;
+                return ToLab(p, intent, trilinear, FromLab(p, IccRenderingIntent.Perceptual, trilinear, 0, 0, 0))[0];
+            }
+            // ISO 18619 4.2.3 starts output-capable CMYK sources from that LocalBlack for every intent; LittleCMS uses it for
+            // relative colorimetric only and full ink for perceptual and saturation (IccBpcTests.OutputCmykSourceBlack, against
+            // PIL.ImageCms). We follow LittleCMS.
+            if (p.ColorSpace == IccColorSpace.Lab) return ToLab(p, intent, trilinear, LabBlack(p, intent))[0];
+            return DeviceBlack(p, intent, trilinear);
+        }
+
+        /// <summary>L* of the DestinationBlackPoint.</summary>
+        static double DestinationBlack(IccProfile p, IccRenderingIntent intent, bool trilinear)
+        {
+            if (intent == IccRenderingIntent.RelativeColorimetric && CmykLike(p.ColorSpace) && UsesLut(p, intent, false) && UsesLut(p, intent, true))
+                return ToLab(p, intent, trilinear, FromLab(p, intent, trilinear, 0, 0, 0))[0];
+            if (p.ColorSpace == IccColorSpace.Lab) return ToLab(p, intent, trilinear, LabBlack(p, intent))[0];
+            return DeviceBlack(p, intent, trilinear);
+        }
+
+        /// <summary>
+        /// L* of device black (no light, or full ink) through the A2B / TRCs, for D of ISO 18619 4.2.2.2. The spec takes the
+        /// darkest of a vertex set ({0, 1}, {000, 111}, {0000, 1111, 0001, 1110}), whatever the polarity; LittleCMS takes
+        /// device black alone, gives no compensation (black 0) when that is lighter than L* 50 instead of limiting it to 50,
+        /// and none for an intent whose own A2B table the profile lacks (IccBpcTests.DeviceBlackAsLittleCms, against
+        /// PIL.ImageCms). We follow LittleCMS.
+        /// </summary>
+        static double DeviceBlack(IccProfile p, IccRenderingIntent intent, bool trilinear)
+        {
+            if (!HasIntent(p, intent)) return 0;
+            var device = new float[p.Channels];
+            if (CmykLike(p.ColorSpace)) Array.Fill(device, 1f);
+            double l = ToLab(p, intent, trilinear, device)[0];
+            return l <= 50 ? l : 0;
         }
 
         /// <summary>Whether the profile serves the intent in LittleCMS's sense: matrix / TRC profiles every intent, LUT profiles
         /// those with their own A2B table.</summary>
         static bool HasIntent(IccProfile p, IccRenderingIntent intent) => p.IsMatrixShaper || p.HasLut(intent, true);
+
+        /// <summary>T(device, Profile, LabIdentityProfile, intent): device values through the A2B / TRCs to L*, a*, b*.</summary>
+        static float[] ToLab(IccProfile p, IccRenderingIntent intent, bool trilinear, float[] device)
+            => IccPipeline.Eval(ToLabStages(p, intent, trilinear), device);
+
+        static List<IccStage> ToLabStages(IccProfile p, IccRenderingIntent intent, bool trilinear)
+        {
+            var s = ToPcs(p, intent, trilinear, out var pcs);
+            if (pcs == IccColorSpace.Xyz) s.Add(new XyzToLabStage());
+            return s;
+        }
+
+        /// <summary>T(Lab, LabIdentityProfile, Profile, intent): L*, a*, b* through the B2A to device values (the B2A of the
+        /// intent, else B2A0, else any).</summary>
+        static float[] FromLab(IccProfile p, IccRenderingIntent intent, bool trilinear, float l, float a, float b)
+            => IccPipeline.Eval(FromLabStages(p, intent, trilinear), new[] { l, a, b });
+
+        static List<IccStage> FromLabStages(IccProfile p, IccRenderingIntent intent, bool trilinear)
+        {
+            if (!UsesLut(p, intent, false))
+                foreach (var other in new[] { IccRenderingIntent.RelativeColorimetric, IccRenderingIntent.Saturation })
+                    if (p.HasLut(other, false)) { intent = other; break; }
+            var s = FromPcs(p, intent, trilinear, out var pcs);
+            if (pcs == IccColorSpace.Xyz) s.Insert(0, new LabToXyzStage());
+            return s;
+        }
 
         /// <summary>Lab (0, 0, 0) as the normalised device values of a profile with a Lab data colour space (ISO 18619 4.2.3):
         /// a* = b* = 0 is 0x8000 in the lut16 encoding, 128 / 255 in the others (ICC.1 6.3.4).</summary>

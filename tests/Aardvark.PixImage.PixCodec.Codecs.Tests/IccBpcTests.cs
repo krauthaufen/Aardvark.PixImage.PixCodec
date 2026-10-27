@@ -149,4 +149,36 @@ public class IccBpcTests
             ("B2A1", Lut16(3, 3, 2, x => Enumerable.Repeat(0.1 + 0.9 * LOf(x[0]) / 100, 3).ToArray())));
         Near(5, BlackL(rgb, IccRenderingIntent.RelativeColorimetric, true));
     }
+
+    /// <summary>
+    /// An ink limited CMYK printer (or xCLR with <paramref name="channels"/> colourants, K the fourth): the A2B tables give
+    /// L* = 100 - 80 K - 10 C, the B2A0 / B2A2 tables reach black L* 20 with K alone (L* below 20 clips to K = 1), the B2A1
+    /// table stops at 90 % K (L* 28).
+    /// </summary>
+    static IccProfile InkLimited(IccColorSpace cs = IccColorSpace.Cmyk, int channels = 4)
+    {
+        var a2b = Lut16(channels, 3, 2, x => Gray(100 - 80 * x[3] - 10 * x[0]));
+        var shadow = new Func<double, double>[] { n => Math.Clamp((LOf(n) - 20) / 80, 0, 1), n => n, n => n };
+        double[] Ink(double k) { var v = new double[channels]; v[3] = k; return v; }
+        var b2a = Lut16(3, channels, 2, x => Ink(1 - x[0]), shadow);
+        var b2a1 = Lut16(3, channels, 2, x => Ink(0.9 * (1 - x[0])), shadow);
+        return Profile(IccProfileClass.Output, cs, ("A2B0", a2b), ("A2B1", a2b), ("A2B2", a2b), ("B2A0", b2a), ("B2A1", b2a1), ("B2A2", b2a));
+    }
+
+    [Fact]
+    public void OutputCmykSourceBlack()
+    {
+        // ISO 18619 4.2.3: LocalBlack = T(Lab 0, LabIdentity, Source, Perceptual) (B2A0: K = 1), then the A2B of the intent:
+        // L* 20, where B2A1 would give 28. LittleCMS (PIL.ImageCms, black box) does so for relative colorimetric only and
+        // takes full ink (L* 10) for perceptual and saturation; we follow it.
+        var p = InkLimited();
+        Near(20, BlackL(p, IccRenderingIntent.RelativeColorimetric, true));
+        Near(10, BlackL(p, IccRenderingIntent.Perceptual, true));
+        Near(10, BlackL(p, IccRenderingIntent.Saturation, true));
+        // relative colorimetric without a B2A: black 0 in LittleCMS (the spec takes D)
+        var a2b = Lut16(4, 3, 2, x => Gray(100 - 80 * x[3] - 10 * x[0]));
+        var input = Profile(IccProfileClass.Output, IccColorSpace.Cmyk, ("A2B0", a2b), ("A2B1", a2b));
+        Near(0, BlackL(input, IccRenderingIntent.RelativeColorimetric, true));
+        Near(10, BlackL(input, IccRenderingIntent.Perceptual, true));
+    }
 }
