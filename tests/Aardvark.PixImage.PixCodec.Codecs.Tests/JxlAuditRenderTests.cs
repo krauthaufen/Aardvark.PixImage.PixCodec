@@ -273,6 +273,23 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         AssertClose(s.ToArray(), $"{(noise ? "noise" : "splines")} {(grey ? "grey" : "rgb")} + {extra}", noise ? 2e-5 : 0.02);
     }
 
+    /// <summary>
+    /// K.4.2 with a single control point: all_samples is {(S[0], 1), (S[0], 0)} and the arc length 0, so the first sample
+    /// has arclength_from_start = min(1, 0 / 0), which the text leaves undefined. libjxl draws nothing (drawn at t = 0
+    /// or 31 the brush would add up to 0.08 / 0.12 here), and neither do we.
+    /// </summary>
+    [Fact]
+    public void SinglePointSpline()
+    {
+        const int W = 64, H = 48;
+        var s = new Stream(W, H);
+        var f = s.NewFrame(W, H);
+        f.IsLast = true; f.Flags = JxlFrameHeader.FlagSplines;
+        s.Frame(f, Enumerable.Range(0, 3).Select(c => new Plane(W, H, (x, y) => 0.3f)).ToArray(),
+            bw => WriteSplines(bw, new[] { new[] { (30, 25) } }, 9));
+        AssertClose(s.ToArray(), "single point spline", 1e-3);
+    }
+
     // ------------------------------------------------------------------ K.2 upsampling weights
 
     /// <summary>d_up2, d_up4 and d_up8 of K.2 as printed in 18181-1:2024.</summary>

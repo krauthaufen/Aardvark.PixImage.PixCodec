@@ -220,6 +220,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                 var curve = CatmullRom(sp.Points);
                 var pts = EquallySpaced(curve);
                 double arcLength = (pts.Count - 2) * 1.0 + pts[pts.Count - 1].M;
+                // A single control point gives arc length 0 and K.4.2 then needs min(1, 0 / 0) for its first sample, which
+                // the text leaves undefined; libjxl draws nothing for it (JxlAuditRenderTests.SinglePointSpline).
                 if (!(arcLength > 0)) continue;
                 for (int i = 0; i < pts.Count; i++)
                 {
