@@ -950,4 +950,93 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
             Assert.Equal((float)(1 / p[0]), m[63]);
         }
     }
+
+    // ------------------------------------------------------------------ E.2 transfer functions of out of gamut values
+
+    /// <summary>
+    /// An XYB file (our lossy encode of a saturated red / blue checker, whose ringing goes below 0 in linear sRGB) with
+    /// its colour encoding replaced by <paramref name="set"/>: the frames do not depend on it, only the conversion to
+    /// the output encoding does.
+    /// </summary>
+    static byte[] RingingXyb(bool float32, Action<JxlColourEncoding> set)
+    {
+        const int w = 32, h = 32;
+        var v = new float[w * h * 3];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) v[(y * w + x) * 3 + (((x / 2 + y / 2) & 1) == 0 ? 0 : 2)] = 1;
+        var img = float32 ? new RawImage(w, h, ColorModel.Rgb, v, 3) : new RawImage(w, h, ColorModel.Rgb, v.Select(f => (byte)(f * 255)).ToArray(), 3);
+        var file = Jxl.Encode(img, new JxlEncodeOptions { Distance = 4 });
+        var cs = JxlContainer.Parse(file).Codestream(file);
+        var br = new JxlBitReader(cs);
+        var hd = JxlImageHeader.Read(br);
+        Assert.True(hd.XybEncoded && !hd.Colour.WantIcc);
+        br.ZeroPadToByte();
+        int pos = br.BytePosition;
+        set(hd.Colour);
+        var wr = new JxlBitWriter();
+        JxlHeaderWriter.WriteImageHeader(wr, hd);
+        wr.ZeroPadToByte();
+        wr.AppendBytes(cs[pos..]);
+        return wr.ToArray();
+    }
+
+    public static TheoryData<string> TransferCases => new() { "gamma", "dci", "srgb", "709", "pq", "hlg", "linear" };
+
+    static void SetTransfer(JxlColourEncoding c, string tf)
+    {
+        c.Transfer = tf switch
+        {
+            "gamma" => JxlTransfer.Gamma, "dci" => JxlTransfer.Dci, "srgb" => JxlTransfer.Srgb, "709" => JxlTransfer.Bt709,
+            "pq" => JxlTransfer.Pq, "hlg" => JxlTransfer.Hlg, _ => JxlTransfer.Linear,
+        };
+        if (tf == "gamma") c.Gamma = 0.4545455;
+    }
+
+    /// <summary>
+    /// E.2 Table E.6 / E.7 define the transfer functions by reference (BT.709, IEC 61966-2-1, BT.2100, ST 428-1, or the
+    /// exponent gamma / 10^7) on [0, 1] and say nothing about the negative linear values that L.2 notes XYB can give
+    /// for out of gamut colours. libjxl 0.12 handles them the same way for every value: the pure power curves
+    /// (have_gamma and kDCI) clamp them to 0, sRGB, PQ and HLG mirror them (sign(x) * f(|x|)), BT.709 applies its
+    /// linear segment (4.5 * x, so -0.055 gives -0.249 where mirroring would give -0.200) and linear keeps them. We
+    /// match it in float output; integer output clamps to 0 either way.
+    /// </summary>
+    [Theory, MemberData(nameof(TransferCases))]
+    public void NegativeLinearValuesFollowLibjxlPerTransfer(string tf)
+    {
+        var data = RingingXyb(true, c => SetTransfer(c, tf));
+        var (ours, lib, _) = DecodeBoth(data, "negative_" + tf);
+        bool clamps = tf is "gamma" or "dci";
+        if (tf == "709")
+        {
+            // the expected values from the linear decode of the same frames, by the BT.709 formula as libjxl evaluates it
+            var (lin, _, _) = DecodeBoth(RingingXyb(true, c => SetTransfer(c, "linear")), "negative_linear");
+            for (int i = 0; i < lin.Length; i++)
+                if (lin[i] < 0) Assert.True(Math.Abs(ours[i] - 4.5f * lin[i]) < 1e-5, $"{lin[i]}: {ours[i]}");
+        }
+        Assert.Equal(clamps, ours.Min() >= 0);
+        Assert.True(ours.Min() < 0 || clamps, $"{tf}: no negative values, the test image does not test anything");
+        if (lib == null) return;
+        Assert.Equal(clamps, lib.Min() >= 0);
+        double m = 0;
+        for (int i = 0; i < ours.Length; i++) m = Math.Max(m, Math.Abs(ours[i] - lib[i]));
+        output.WriteLine($"{tf}: min ours {ours.Min():g4} libjxl {lib.Min():g4}, largest difference {m:g3}");
+        Assert.True(m < 2e-3, $"{tf}: {m}");
+    }
+
+    /// <summary>The same in 8 bit output: negative values become 0 whatever the transfer function.</summary>
+    [Theory, MemberData(nameof(TransferCases))]
+    public void NegativeLinearValuesAreZeroInIntegerOutput(string tf)
+    {
+        var data = RingingXyb(false, c => SetTransfer(c, tf));
+        var ours = Jxl.Decode(data);
+        Assert.Equal(SampleType.UInt8, ours.SampleType);
+        var lib = JxlEncodeTests.Libjxl(data);
+        if (lib == null) return;
+        Assert.Equal(SampleType.UInt8, lib.SampleType);
+        var a = (byte[])ours.Data;
+        var b = (byte[])lib.Data;
+        int m = 0;
+        for (int i = 0; i < a.Length; i++) m = Math.Max(m, Math.Abs(a[i] - b[i]));
+        Assert.True(m <= 1, $"{tf}: {m}");
+    }
 }

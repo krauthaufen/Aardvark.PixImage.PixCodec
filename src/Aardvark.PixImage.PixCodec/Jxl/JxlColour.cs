@@ -438,14 +438,20 @@ namespace Aardvark.ImageCodecs.JpegXl
             }
         }
 
-        /// <summary>Applies the encoding transfer function to linear values in place (sign preserving for out of range values).</summary>
+        /// <summary>Applies the encoding transfer function to linear values in place (negative values as in the overload below).</summary>
         public static void FromLinear(float[] p, int n, JxlColourEncoding ce, float intensityTarget, bool parallel)
         {
             if (ce.Transfer is JxlTransfer.Linear or not (JxlTransfer.Srgb or JxlTransfer.Bt709 or JxlTransfer.Pq or JxlTransfer.Hlg or JxlTransfer.Dci or JxlTransfer.Gamma)) return;
             Chunked(n, parallel, (s, e) => FromLinear(p.AsSpan(s, e - s), ce, intensityTarget));
         }
 
-        /// <summary>Linear light to the encoding's transfer function, in place (negative values mirrored).</summary>
+        /// <summary>
+        /// Linear light to the encoding's transfer function, in place. Negative values (out of gamut colours, which L.2
+        /// notes XYB can give) are outside the domain of the curves E.2 Table E.6 / E.7 refer to (BT.709, IEC 61966-2-1,
+        /// BT.2100, ST 428-1 and the gamma exponent are defined on [0, 1]); the text is silent about them, so we match
+        /// libjxl 0.12: sRGB, PQ and HLG mirror them (sign(x) * f(|x|)), BT.709 applies its linear segment 4.5 * x to
+        /// every value below 0.018, and the pure power curves (have_gamma, kDCI) clamp them to 0. Linear keeps them.
+        /// </summary>
         public static void FromLinear(Span<float> p, JxlColourEncoding ce, float intensityTarget)
         {
             switch (ce.Transfer)
@@ -467,7 +473,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                         return;
                     }
                 case JxlTransfer.Bt709:
-                    for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v < 0 ? -Bt709FromLinear(-v) : Bt709FromLinear(v); }
+                    for (int i = 0; i < p.Length; i++) p[i] = Bt709FromLinear(p[i]);   // < 0.018 (negatives too): 4.5 * v, as libjxl
                     return;
                 case JxlTransfer.Pq:
                     {
@@ -479,12 +485,12 @@ namespace Aardvark.ImageCodecs.JpegXl
                     for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v < 0 ? -HlgFromLinear(-v) : HlgFromLinear(v); }
                     return;
                 case JxlTransfer.Dci:
-                    for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v < 0 ? -MathF.Pow(-v, 1 / 2.6f) : MathF.Pow(v, 1 / 2.6f); }
+                    for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v <= 0 ? 0 : MathF.Pow(v, 1 / 2.6f); }   // libjxl clamps negatives
                     return;
                 case JxlTransfer.Gamma:
                     {
                         float g = (float)ce.Gamma;
-                        for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v < 0 ? -MathF.Pow(-v, g) : MathF.Pow(v, g); }
+                        for (int i = 0; i < p.Length; i++) { float v = p[i]; p[i] = v <= 0 ? 0 : MathF.Pow(v, g); }   // libjxl clamps negatives
                         return;
                     }
                 default:
