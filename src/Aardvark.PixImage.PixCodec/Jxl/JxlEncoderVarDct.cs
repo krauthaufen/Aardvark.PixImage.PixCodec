@@ -182,6 +182,7 @@ namespace Aardvark.ImageCodecs.JpegXl
 
             ChooseQuantizer(f);
             AdaptiveQuantization(f);
+            if (opt.HfMul is { } hfMul) for (int i = 0; i < f.Qf.Length; i++) f.Qf[i] = hfMul(i);
             ChooseStrategies(f, opt.ForceStrategy);
             JxlProfile.Mark("vardct aq + strategies");
             QuantizeLf(f, ComputeDc(f));

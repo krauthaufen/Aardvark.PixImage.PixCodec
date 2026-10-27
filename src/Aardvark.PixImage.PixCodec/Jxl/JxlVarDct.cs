@@ -222,6 +222,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     if (x + sx > w || y + sy > h) throw new ImageFormatException("JPEG XL: varblock outside of the LF group");
                     int abx = bx0 + x, aby = by0 + y;
                     if (abx % gd + sx > gd || aby % gd + sy > gd) throw new ImageFormatException("JPEG XL: varblock crosses a group boundary");
+                    // G.2.4 makes HfMul 1 + mul without bounds; libjxl clamps mul to [0, 255] (it decodes mul = -1, and
+                    // mul = 699 as 255). libjxl is followed (JxlAuditRenderTests.HfMulIsClampedAsLibjxl).
                     int qf = 1 + Math.Clamp(q, 0, 255);
                     for (int j = 0; j < sy; j++)
                         for (int i = 0; i < sx; i++)

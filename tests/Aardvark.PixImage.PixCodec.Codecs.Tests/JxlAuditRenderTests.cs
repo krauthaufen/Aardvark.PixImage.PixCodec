@@ -350,6 +350,44 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         }
     }
 
+    // ------------------------------------------------------------------ G.2.4 HF metadata
+
+    static float[] Floats(RawImage r) => r.SampleType == SampleType.UInt8
+        ? ((byte[])r.Data).Select(b => b / 255f).ToArray() : r.SampleType == SampleType.UInt16
+        ? ((ushort[])r.Data).Select(b => b / 65535f).ToArray() : (float[])r.Data;
+
+    /// <summary>Largest difference of our decode of a lossy file to libjxl's (both clamped to [0, 1]), or null without it.</summary>
+    double? LossyDiff(byte[] data, string name)
+    {
+        Dump(name, data);
+        var ours = Floats(Jxl.Decode(data, new JxlDecodeOptions { ForceFloat = true }));
+        var lib = JxlEncodeTests.Libjxl(data);
+        if (lib == null) return null;
+        var e = Floats(lib);
+        Assert.Equal(e.Length, ours.Length);
+        double m = 0;
+        for (int i = 0; i < ours.Length; i++) m = Math.Max(m, Math.Abs(Math.Clamp(ours[i], 0, 1) - Math.Clamp(e[i], 0, 1)));
+        output.WriteLine($"{name}: largest difference to libjxl {m:g3}");
+        return m;
+    }
+
+    /// <summary>
+    /// G.2.4: HfMul is 1 + mul with no bounds. libjxl clamps mul to [0, 255]: blocks coded with HfMul 300 .. 100000
+    /// decode as HfMul 256 (taking the text literally differs from libjxl by 0.15 / 0.97 here), mul = -1 as HfMul 1.
+    /// We follow libjxl.
+    /// </summary>
+    [Theory]
+    [InlineData(300, 700)]
+    [InlineData(1, 100000)]
+    [InlineData(0, 40)]
+    public void HfMulIsClampedAsLibjxl(int a, int b)
+    {
+        var img = JxlEncodeTests.Synthetic(64, 48, ColorModel.Rgb, SampleType.UInt8, 0);
+        var data = Jxl.Encode(img, new JxlEncodeOptions { Distance = 1, ForceStrategy = 0, HfMul = i => i % 5 == 0 ? a : b });
+        var m = LossyDiff(data, $"hfmul {a} {b}");
+        Assert.True(m == null || m < 2 / 255.0, $"{m}");
+    }
+
     // ------------------------------------------------------------------ I.2 dequantization matrices
 
     /// <summary>Table I.6: DCT128x256 (and DCT256x128), channel B, starts at 12979.84647584004484.</summary>
