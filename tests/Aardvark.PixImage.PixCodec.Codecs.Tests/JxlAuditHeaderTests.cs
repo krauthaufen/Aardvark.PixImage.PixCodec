@@ -385,4 +385,175 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
         AssertLikeLibjxl(a, "epf custom weights", 1e-5);
         AssertLikeLibjxl(ones, "epf custom weights, ignored bits set", 1e-5);
     }
+
+    // ------------------------------------------------------------------ range checks
+
+    static JxlBitReader Reader(Action<JxlBitWriter> write)
+    {
+        var w = new JxlBitWriter();
+        write(w);
+        w.Write(32, 0); w.Write(32, 0);   // room after the field, so that only the check can fail
+        return new JxlBitReader(w.ToArray());
+    }
+
+    /// <summary>D.3.5: exp_bits in [2, 8] and mantissa_bits = bits_per_sample - exp_bits - 1 in [2, 23].</summary>
+    [Theory]
+    [InlineData(16, 5, true)]
+    [InlineData(32, 8, true)]
+    [InlineData(5, 2, true)]
+    [InlineData(16, 1, false)]   // exp_bits 1
+    [InlineData(4, 2, false)]    // mantissa_bits 1
+    [InlineData(33, 8, false)]   // mantissa_bits 24
+    [InlineData(12, 9, false)]
+    public void FloatBitDepthRanges(int bits, int expBits, bool valid)
+    {
+        var br = Reader(w =>
+        {
+            w.WriteBool(true);
+            w.WriteU32((uint)bits, Val(32), Val(16), Val(24), BitsOffset(6, 1));
+            w.Write(4, (uint)(expBits - 1));
+        });
+        if (valid) { var d = JxlBitDepth.Read(br); Assert.Equal((bits, expBits), (d.Bits, d.ExpBits)); }
+        else Assert.Throws<ImageFormatException>(() => JxlBitDepth.Read(br));
+    }
+
+    /// <summary>D.3.3: the preview width and height do not exceed 4096.</summary>
+    [Theory]
+    [InlineData(4096, true)]
+    [InlineData(4097, false)]
+    public void PreviewSizeLimit(int size, bool valid)
+    {
+        var br = Reader(w =>
+        {
+            w.WriteBool(false);   // div8
+            w.WriteU32((uint)size, BitsOffset(6, 1), BitsOffset(8, 65), BitsOffset(10, 321), BitsOffset(12, 1345));
+            w.Write(3, 1);        // ratio 1:1
+        });
+        if (valid) { JxlHeaderUtil.ReadPreviewSize(br, out int pw, out int ph); Assert.Equal((size, size), (pw, ph)); }
+        else Assert.Throws<ImageFormatException>(() => JxlHeaderUtil.ReadPreviewSize(br, out _, out _));
+    }
+
+    /// <summary>E.3: min_nits in [0, intensity_target]; linear_below in [0, 1] if relative_to_max_display, else &gt;= 0.</summary>
+    [Theory]
+    [InlineData(255, 0.5, false, 2, true)]
+    [InlineData(255, 255, true, 1, true)]
+    [InlineData(255, 300, false, 0, false)]
+    [InlineData(255, -1, false, 0, false)]
+    [InlineData(1000, 0, true, 1.5, false)]
+    [InlineData(1000, 0, false, -0.5, false)]
+    public void ToneMappingRanges(double target, double minNits, bool relative, double linearBelow, bool valid)
+    {
+        var br = Reader(w =>
+        {
+            w.WriteBool(false);
+            w.WriteF16((float)target); w.WriteF16((float)minNits); w.WriteBool(relative); w.WriteF16((float)linearBelow);
+        });
+        if (valid) Assert.Equal((float)minNits, JxlToneMapping.Read(br).MinNits);
+        else Assert.Throws<ImageFormatException>(() => JxlToneMapping.Read(br));
+    }
+
+    /// <summary>B.3: ext_id is in [0, 63), and the extension bit counts may not wrap around when summed.</summary>
+    [Fact]
+    public void ExtensionChecks()
+    {
+        Assert.Throws<ImageFormatException>(() => Reader(w => { w.WriteU64(1UL << 63); w.WriteU64(0); }).SkipExtensions());
+        Assert.Throws<ImageFormatException>(() => Reader(w => { w.WriteU64(3); w.WriteU64(10); w.WriteU64(ulong.MaxValue - 4); }).SkipExtensions());
+        var ok = Reader(w => { w.WriteU64(3); w.WriteU64(10); w.WriteU64(5); w.Write(15, 0); w.WriteBool(true); });
+        ok.SkipExtensions();
+        Assert.True(ok.ReadBool());
+    }
+
+    /// <summary>
+    /// B.2.7: the bits skipped by ZeroPadToByte are zero. A one in the padding after the image header, or after the TOC's
+    /// permuted flag, makes the stream invalid; djxl 0.12 refuses both too (checked by hand).
+    /// </summary>
+    [Fact]
+    public void NonzeroPaddingIsRejected()
+    {
+        var h = FloatHeader(33, H);
+        var hw = new JxlBitWriter();
+        JxlHeaderWriter.WriteImageHeader(hw, h);
+        long headerBits = hw.BitLength;
+        Assert.NotEqual(0, headerBits % 8);
+        var w = Start(h);
+        var f = NewFrame(h, 33, H);
+        f.IsLast = true;
+        var fw = new JxlBitWriter();
+        JxlHeaderWriter.WriteFrameHeader(fw, f, h);
+        long tocPad = (headerBits + 7) / 8 * 8 + fw.BitLength + 1;
+        Assert.NotEqual(0, tocPad % 8);
+        Frame(w, h, f, Planes(33, H, 3, 80));
+        var a = w.ToArray();
+        Jxl.Decode(a);
+        foreach (long bit in new[] { headerBits, tocPad })
+        {
+            var s = (byte[])a.Clone();
+            s[bit >> 3] |= (byte)(1 << (int)(bit & 7));
+            Assert.Throws<ImageFormatException>(() => Jxl.Decode(s));
+        }
+    }
+
+    /// <summary>A frame header with num_passes 3 and the given two downsample factors (last passes 0 and 1).</summary>
+    static JxlBitReader PassesFrame(int d0, int d1) => Reader(w =>
+    {
+        w.WriteBool(false);   // not all_default
+        w.Write(2, 0);        // kRegularFrame
+        w.Write(1, 1);        // kModular
+        w.WriteU64(0);        // flags
+        w.WriteBool(false);   // do_YCbCr
+        w.WriteU32(1, Val(1), Val(2), Val(4), Val(8));
+        w.Write(2, 1);        // group_size_shift
+        w.WriteU32(3, Val(1), Val(2), Val(3), BitsOffset(3, 4));
+        w.WriteU32(2, Val(0), Val(1), Val(2), BitsOffset(1, 3));
+        w.Write(2, 0); w.Write(2, 0);
+        w.WriteU32((uint)d0, Val(1), Val(2), Val(4), Val(8)); w.WriteU32((uint)d1, Val(1), Val(2), Val(4), Val(8));
+        w.WriteU32(0, Val(0), Val(1), Val(2), Bits(3)); w.WriteU32(1, Val(0), Val(1), Val(2), Bits(3));
+        w.WriteBool(false);   // have_crop
+        w.WriteU32(0, Val(0), Val(1), Val(2), BitsOffset(2, 3));   // kReplace, full frame: no source
+        w.WriteBool(true);    // is_last
+        w.WriteU32(0, Val(0), Bits(4), BitsOffset(5, 16), BitsOffset(10, 48));
+        w.WriteBool(true);    // default restoration filter
+        w.WriteU64(0);
+    });
+
+    /// <summary>F.2: the sequence downsample is strictly decreasing.</summary>
+    [Fact]
+    public void DownsampleIsStrictlyDecreasing()
+    {
+        var h = FloatHeader(W, H);
+        var f = JxlFrameHeader.Read(PassesFrame(4, 2), h);
+        Assert.Equal(3, f.NumPasses);
+        Assert.Equal(new[] { 4, 2 }, f.Downsample);
+        Assert.Throws<ImageFormatException>(() => JxlFrameHeader.Read(PassesFrame(2, 4), h));
+        Assert.Throws<ImageFormatException>(() => JxlFrameHeader.Read(PassesFrame(2, 2), h));
+    }
+
+    /// <summary>D.3.6: 1 &lt;&lt; dim_shift does not exceed the group_dim of any frame (128 with group_size_shift 0).</summary>
+    [Theory]
+    [InlineData(7, 0, true)]
+    [InlineData(8, 1, true)]
+    [InlineData(8, 0, false)]
+    public void DimShiftWithinGroupDim(int dimShift, int groupSizeShift, bool valid)
+    {
+        var h = FloatHeader(W, H, 1);
+        h.ExtraChannels[0].DimShift = dimShift;
+        var f = NewFrame(h, W, H);
+        f.IsLast = true; f.GroupSizeShift = groupSizeShift;
+        var br = Reader(w => JxlHeaderWriter.WriteFrameHeader(w, f, h));
+        if (valid) Assert.Equal(groupSizeShift, JxlFrameHeader.Read(br, h).GroupSizeShift);
+        else Assert.Throws<ImageFormatException>(() => JxlFrameHeader.Read(br, h));
+    }
+
+    /// <summary>F.2: d_xqms, the default x_qm_scale, is 3 for VarDCT frames of XYB images and 2 otherwise.</summary>
+    [Fact]
+    public void DefaultXQmScale()
+    {
+        var xyb = new JxlImageHeader { Width = W, Height = H };
+        var rgb = FloatHeader(W, H);
+        Assert.Equal(3, JxlFrameHeader.Read(Reader(w => w.WriteBool(true)), xyb).XQmScale);
+        Assert.Equal(2, JxlFrameHeader.Read(Reader(w => w.WriteBool(true)), rgb).XQmScale);
+        var f = NewFrame(xyb, W, H);
+        f.IsLast = true;
+        Assert.Equal(2, JxlFrameHeader.Read(Reader(w => JxlHeaderWriter.WriteFrameHeader(w, f, xyb)), xyb).XQmScale);
+    }
 }

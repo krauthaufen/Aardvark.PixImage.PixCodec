@@ -181,10 +181,11 @@ namespace Aardvark.ImageCodecs.JpegXl
             return (int)v;
         }
 
+        /// <summary>B.2.7: skips to the next byte boundary; the skipped bits are zero.</summary>
         public void ZeroPadToByte()
         {
             int r = (int)(BitPosition & 7);
-            if (r != 0) ReadBits(8 - r);
+            if (r != 0 && ReadBits(8 - r) != 0) throw new ImageFormatException("JPEG XL: nonzero padding bits");
         }
 
         /// <summary>Byte offset (from the section start) of the next unread byte; only valid at a byte boundary.</summary>
@@ -200,13 +201,16 @@ namespace Aardvark.ImageCodecs.JpegXl
         {
             ulong ext = ReadU64();
             if (ext == 0) return;
+            // ext_id is in [0, 63) (B.3)
+            if ((ext >> 63) != 0) throw new ImageFormatException("JPEG XL: extension id 63");
             ulong total = 0;
-            for (int i = 0; i < 64; i++)
+            for (int i = 0; i < 63; i++)
                 if ((ext >> i & 1) != 0)
                 {
                     ulong n = ReadU64();
+                    // compared before adding, so that the sum cannot wrap around
+                    if (n > (ulong)TotalBits - total) throw new ImageFormatException("JPEG XL: extension exceeds the data");
                     total += n;
-                    if (total > (ulong)TotalBits) throw new ImageFormatException("JPEG XL: extension exceeds the data");
                 }
             SkipLong(total);
         }

@@ -35,7 +35,9 @@ namespace Aardvark.ImageCodecs.JpegXl
             {
                 d.Bits = (int)br.ReadU32(Val(32), Val(16), Val(24), BitsOffset(6, 1));
                 d.ExpBits = 1 + (int)br.ReadBits(4);
-                if (d.ExpBits > 8 || d.Bits > 32 || d.Bits < d.ExpBits + 2 || d.Bits - d.ExpBits - 1 > 23)
+                // D.3.5: exp_bits in [2, 8], mantissa_bits = bits_per_sample - exp_bits - 1 in [2, 23]
+                int mantissa = d.Bits - d.ExpBits - 1;
+                if (d.ExpBits < 2 || d.ExpBits > 8 || mantissa < 2 || mantissa > 23)
                     throw new ImageFormatException("JPEG XL: unsupported float sample format");
             }
             return d;
@@ -107,6 +109,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 : div8 ? br.ReadU32(Val(16), Val(32), BitsOffset(5, 1), BitsOffset(9, 33)) * 8
                 : br.ReadU32(BitsOffset(6, 1), BitsOffset(8, 65), BitsOffset(10, 321), BitsOffset(12, 1345));
             Check(w, h);
+            if (w > 4096 || h > 4096) throw new ImageFormatException("JPEG XL: preview larger than 4096");   // D.3.3
             width = (int)w; height = (int)h;
         }
 
@@ -211,6 +214,9 @@ namespace Aardvark.ImageCodecs.JpegXl
             t.RelativeToMaxDisplay = br.ReadBool();
             t.LinearBelow = br.ReadF16();
             if (t.IntensityTarget <= 0) throw new ImageFormatException("JPEG XL: bad intensity target");
+            // E.3: min_nits in [0, intensity_target]; linear_below a ratio in [0, 1] or nits >= 0
+            if (t.MinNits < 0 || t.MinNits > t.IntensityTarget) throw new ImageFormatException("JPEG XL: bad min_nits");
+            if (t.LinearBelow < 0 || t.RelativeToMaxDisplay && t.LinearBelow > 1) throw new ImageFormatException("JPEG XL: bad linear_below");
             return t;
         }
     }
@@ -471,10 +477,12 @@ namespace Aardvark.ImageCodecs.JpegXl
             for (int i = 0; i < numExtra; i++) f.EcUpsampling[i] = 1;
             f.Width = img.Width; f.Height = img.Height;
             bool allDefault = br.ReadBool();
+            f.XQmScale = img.XybEncoded ? 3 : 2;   // d_xqms (all_default frames are VarDCT)
             if (!allDefault)
             {
                 f.Type = (JxlFrameType)br.ReadBits(2);
                 f.Modular = br.ReadBits(1) == 1;
+                if (f.Modular) f.XQmScale = 2;
                 f.Flags = br.ReadU64();
                 if (!img.XybEncoded) f.DoYCbCr = br.ReadBool();
                 if (!f.Has(FlagUseLfFrame))
@@ -501,7 +509,11 @@ namespace Aardvark.ImageCodecs.JpegXl
                         for (int i = 0; i < f.NumPasses - 1; i++) f.Shift[i] = (int)br.ReadBits(2);
                         f.Downsample = new int[numDs];
                         f.LastPass = new int[numDs];
-                        for (int i = 0; i < numDs; i++) f.Downsample[i] = (int)br.ReadU32(Val(1), Val(2), Val(4), Val(8));
+                        for (int i = 0; i < numDs; i++)
+                        {
+                            f.Downsample[i] = (int)br.ReadU32(Val(1), Val(2), Val(4), Val(8));
+                            if (i > 0 && f.Downsample[i] >= f.Downsample[i - 1]) throw new ImageFormatException("JPEG XL: downsample not decreasing");
+                        }
                         for (int i = 0; i < numDs; i++)
                         {
                             f.LastPass[i] = (int)br.ReadU32(Val(0), Val(1), Val(2), Bits(3));
@@ -550,6 +562,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                 f.Filter = JxlRestorationFilter.Read(br, f.Modular);
                 br.SkipExtensions();
             }
+            // D.3.6: 1 << dim_shift does not exceed the group_dim of any frame
+            foreach (var e in img.ExtraChannels)
+                if (1 << e.DimShift > f.GroupDim) throw new ImageFormatException("JPEG XL: extra channel dim_shift exceeds group_dim");
             if (f.Type == JxlFrameType.LfFrame)
             {
                 // an LF frame holds the DC of the frames using it: 1 / 8^level of the image size
