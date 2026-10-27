@@ -117,6 +117,7 @@ namespace Aardvark.ImageCodecs.Heif
         public string Type = "";
         public string Name = "";
         public string ContentType = "";
+        public string ContentEncoding = "";
         public bool Hidden;
         /// <summary>
         /// 1 based index into ipro: a protected item. It is decoded as if it were not, as avifdec 1.4.2 does (HEIF 10.2.2.2:
@@ -204,6 +205,8 @@ namespace Aardvark.ImageCodecs.Heif
             long end = Math.Min(size, h.Length);
             bool Avif(ReadOnlySpan<byte> b) => b.SequenceEqual("avif"u8) || b.SequenceEqual("avis"u8) || b.SequenceEqual("avio"u8);
             if (Avif(h.Slice(8, 4))) return true;
+            // a low-overhead file (HEIF Amd 2 O.2.1): major brand 'mif3', the codec brand in minor_version
+            if (h.Slice(8, 4).SequenceEqual("mif3"u8) && Avif(h.Slice(12, 4))) return true;
             for (long p = 16; p + 4 <= end; p += 4)
                 if (Avif(h.Slice((int)p, 4))) return true;
             return false;
@@ -307,7 +310,11 @@ namespace Aardvark.ImageCodecs.Heif
             it.ProtectionIndex = r.U16();
             it.Type = r.FourCC();
             it.Name = r.CString();
-            if (it.Type == "mime") it.ContentType = r.AtEnd ? "" : r.CString();
+            if (it.Type == "mime")
+            {
+                it.ContentType = r.AtEnd ? "" : r.CString();
+                it.ContentEncoding = r.AtEnd ? "" : r.CString();
+            }
             it.Hidden = (flags & 1) != 0;
             return it;
         }

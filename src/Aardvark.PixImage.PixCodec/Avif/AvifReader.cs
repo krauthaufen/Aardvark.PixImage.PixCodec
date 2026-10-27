@@ -66,7 +66,8 @@ namespace Aardvark.ImageCodecs.Heif
 
         public AvifReader(ReadOnlySpan<byte> data, AvifDecodeOptions opt, bool copy = true)
         {
-            Data = data.ToArray();
+            var d = data.ToArray();
+            Data = HeifMini.Expand(d) ?? d;   // a low-overhead file (mini box): as the equivalent MetaBox file
             File = HeifFile.Parse(Data);
             this.opt = opt;
         }
@@ -804,22 +805,31 @@ namespace Aardvark.ImageCodecs.Heif
                 var it = File.Items[id];
                 bool describesPrimary = primary == null || Array.IndexOf(it.Refs("cdsc"), primary.Id) >= 0 || it.Refs("cdsc").Length == 0;
                 if (!describesPrimary) continue;
-                if (it.Type == "Exif" && exif == null)
+                if ((it.Type == "Exif" || it.Type == "dExf") && exif == null)
                 {
                     try
                     {
                         var d = File.ItemData(Data, it);
+                        // dExf: a deflate compressed ExifDataBlock (HEIF Amd 2 O.4.3)
+                        if (it.Type == "dExf") d = Compression.Zlib.DecompressRaw(d);
                         if (d.Length >= 4)
                         {
                             uint off = BinaryPrimitives.ReadUInt32BigEndian(d);
                             if (4 + (long)off < d.Length) exif = d.AsSpan(4 + (int)off).ToArray();
                         }
                     }
-                    catch (ImageFormatException) { }
+                    catch (Exception e) when (e is ImageFormatException or System.IO.InvalidDataException) { }
                 }
                 else if (it.Type == "mime" && xmp == null && it.ContentType.StartsWith("application/rdf+xml", StringComparison.OrdinalIgnoreCase))
                 {
-                    try { xmp = File.ItemData(Data, it); } catch (ImageFormatException) { }
+                    try
+                    {
+                        var d = File.ItemData(Data, it);
+                        if (it.ContentEncoding == "deflate") d = Compression.Zlib.DecompressRaw(d);
+                        else if (it.ContentEncoding.Length > 0) continue;
+                        xmp = d;
+                    }
+                    catch (Exception e) when (e is ImageFormatException or System.IO.InvalidDataException) { }
                 }
             }
             return (exif, xmp);

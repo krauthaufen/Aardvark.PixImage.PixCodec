@@ -739,13 +739,56 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal(plays, Avif.DecodeAnimation(File.ReadAllBytes(Fixture(file))).LoopCount);
     }
 
+    /// <summary>
+    /// Low-overhead files (HEIF Amd 2 Annex O, gen_avif.py mini): avifdec 1.4.2 cannot read the mini box, so the
+    /// reference is its decode of the equivalent MetaBox file of O.4. alpha: orientation 6 (irot 3 on colour and alpha);
+    /// deep: 10 bit, explicit codec types and CICP, orientation 2 (imir 1).
+    /// </summary>
+    [Theory]
+    [InlineData("basic", 8)]
+    [InlineData("alpha", 8)]
+    [InlineData("deep", 10)]
+    [InlineData("meta", 8)]
+    [InlineData("gainmap", 8)]
+    public void LowOverheadFiles(string name, int bits)
+    {
+        var path = Fixture($"avif/mini/{name}.avif");
+        var data = File.ReadAllBytes(path);
+        Assert.Equal(ImageFormat.Avif, ImageCodec.DetectFormat(data));
+        var img = Avif.Decode(data);
+        var expected = RefInStoredRange(LoadRef(path + ".ref"), bits, img.Channels);
+        Assert.True(MaxDiff(expected, img) <= 1, $"max difference {MaxDiff(expected, img)}");
+        var info = Avif.GetInfo(data);
+        Assert.Equal((img.Width, img.Height, img.Color, bits), (info.Width, info.Height, info.Color, info.BitsPerSample));
+    }
+
+    /// <summary>The metadata of the mini files: Exif and XMP (deflate compressed there), ICC profile and gain map as in their sources.</summary>
+    [Fact]
+    public void LowOverheadMetadata()
+    {
+        var meta = File.ReadAllBytes(Fixture("avif/mini/meta.avif"));
+        var src = Avif.GetMetadataItems(File.ReadAllBytes(Fixture("avif/exif_xmp.avif")));
+        var (exif, xmp) = Avif.GetMetadataItems(meta);
+        Assert.Equal(src.Exif, exif);
+        Assert.Equal(src.Xmp, xmp);
+        Assert.Equal("PixCodecTest", ImageCodec.ReadMetadata(meta).Make);
+        Assert.Equal(Avif.Decode(File.ReadAllBytes(Fixture("avif/icc.avif"))).Metadata!.IccProfile, Avif.Decode(meta).Metadata!.IccProfile);
+        var gmFile = File.ReadAllBytes(Fixture("avif/mini/gainmap.avif"));
+        var gm = Avif.GetGainMap(gmFile)!;
+        var srcGm = Avif.GetGainMap(File.ReadAllBytes(Fixture("avif/gainmap.avif")))!;
+        Assert.Equal(srcGm.Metadata, gm.Metadata);
+        Assert.Equal((9, 16), (gm.AlternatePrimaries, gm.AlternateTransferCharacteristics));
+        AssertEqual(srcGm.DecodeImage(), gm.DecodeImage());
+        Assert.NotNull(gm.ToGainMap());
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]
     public void DamagedFilesFailCleanly()
     {
         var rnd = new Random(1234);
-        foreach (var f in new[] { "avif/nat_420_s6.avif", "avif/alpha.avif", "avif/grid_2x2.avif", "avif/seq.avif", "avif/nat_422_10.avif" })
+        foreach (var f in new[] { "avif/nat_420_s6.avif", "avif/alpha.avif", "avif/grid_2x2.avif", "avif/seq.avif", "avif/nat_422_10.avif", "avif/mini/gainmap.avif", "avif/mini/meta.avif" })
         {
             var good = File.ReadAllBytes(Fixture(f));
             for (int k = 0; k < 60; k++)

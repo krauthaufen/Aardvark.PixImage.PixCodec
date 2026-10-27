@@ -14,7 +14,7 @@ Tools: avifenc, avifdec, avifgainmaputil, aomenc, dav1d from PATH (tests/oracle/
 their libraries in .tmp/tools/usr/lib/x86_64-linux-gnu); the fixtures were made with those versions (the tonemap ones with
 the libavif 1.4.2 release binaries).
 
-usage: python3 gen_avif.py [avif] [gainmap] [tonemap] [overlay] [container] [av1]
+usage: python3 gen_avif.py [avif] [gainmap] [tonemap] [overlay] [container] [mini] [av1]
 """
 import hashlib
 import json
@@ -668,6 +668,167 @@ def item_alone(items, iid, out):
     return avifdec_png(out)
 
 
+class Bits:
+    def __init__(self): self.v, self.n = 0, 0
+
+    def put(self, n, x):
+        assert 0 <= x < (1 << n), (n, x)
+        self.v, self.n = (self.v << n) | x, self.n + n
+
+    def bytes(self):
+        pad = -self.n % 8
+        return (self.v << pad).to_bytes((self.n + pad) // 8, 'big')
+
+
+def mini_file(out, w, h, av1c, data, sub=1, depth=8, full_range=1, cicp=None, orientation=1, alpha=None, premultiplied=0,
+              icc=None, exif=None, xmp=None, compressed=0, gainmap=None, hdr=None, explicit_codec=False, minor=b'avif'):
+    """
+    A low-overhead file (HEIF Amd 2 Annex O): ftyp 'mif3' (minor_version: the codec brand) and a MinimizedImageBox of
+    version 0. av1c / alpha[0] / gainmap['av1c'] are the av1C record (the property's payload), alpha = (av1c, data),
+    gainmap = dict(w, h, av1c, data, metadata (ISO 21496-1, without the tmap version byte), mc, full_range, sub, depth,
+    cicp (tmap: cp, tc, mc, full) or None, icc), hdr = dict of 4 byte / 24 byte ... bodies (clli, mdcv, amve, reve, ndwt).
+    """
+    b = Bits()
+    large_dim = w > 128 or h > 128 or (gainmap is not None and (gainmap['w'] > 128 or gainmap['h'] > 128))
+    hdr_flag = gainmap is not None or bool(hdr)
+    b.put(2, 0)
+    for f in (explicit_codec, False, full_range, alpha is not None, cicp is not None, hdr_flag, icc is not None, exif is not None, xmp is not None):
+        b.put(1, int(bool(f)))
+    b.put(2, sub)
+    b.put(3, orientation - 1)
+    b.put(1, int(large_dim))
+    dn = 15 if large_dim else 7
+    b.put(dn, w - 1)
+    b.put(dn, h - 1)
+    if sub in (1, 2): b.put(1, 0)   # chroma_is_horizontally_centered
+    if sub == 1: b.put(1, 0)
+    b.put(1, int(depth > 8))
+    if depth > 8: b.put(3, depth - 9)
+    if alpha is not None: b.put(1, premultiplied)
+    if cicp is not None:
+        for x in cicp: b.put(8, x)
+    if explicit_codec:
+        b.put(32, int.from_bytes(b'av01', 'big'))
+        b.put(32, int.from_bytes(b'av1C', 'big'))
+    hdr = hdr or {}
+    if hdr_flag:
+        b.put(1, int(gainmap is not None))
+        if gainmap is not None:
+            g = gainmap
+            same = (g['w'], g['h']) == (w, h)
+            b.put(1, int(same))
+            if not same:
+                b.put(dn, g['w'] - 1)
+                b.put(dn, g['h'] - 1)
+            b.put(8, g.get('mc', 6))
+            b.put(1, g.get('full_range', 1))
+            gs = g.get('sub', 1)
+            b.put(2, gs)
+            if gs in (1, 2): b.put(1, 0)
+            if gs == 1: b.put(1, 0)
+            b.put(1, 0)   # gainmap_float_flag
+            gd = g.get('depth', 8)
+            b.put(1, int(gd > 8))
+            if gd > 8: b.put(3, gd - 9)
+            b.put(1, int(g.get('icc') is not None))
+            tc = g.get('cicp')
+            b.put(1, int(tc is not None))
+            if tc is not None:
+                for x in tc[:3]: b.put(8, x)
+                b.put(1, tc[3])
+        names = ['clli', 'mdcv', 'cclv', 'amve', 'reve', 'ndwt']
+        for k in names: b.put(1, int(k in hdr))
+        for k in names:
+            if k in hdr:
+                for byte in hdr[k]: b.put(8, byte)
+        if gainmap is not None:
+            for k in names: b.put(1, 0)   # no tmap_* boxes
+    meta_large = 0
+    sizes = [len(x) for x in (icc, exif, xmp) if x is not None] + ([len(gainmap['metadata'])] + ([len(gainmap['icc'])] if gainmap.get('icc') else []) if gainmap else [])
+    if sizes and max(sizes) > 1024: meta_large = 1
+    if icc is not None or exif is not None or xmp is not None or gainmap is not None: b.put(1, meta_large)
+    cc = [len(av1c)] + ([len(alpha[0])] if alpha else []) + ([len(gainmap['av1c'])] if gainmap else [])
+    cc_large = int(max(cc) > 7)
+    dd = [len(data)] + ([len(alpha[1])] if alpha else []) + ([len(gainmap['data'])] if gainmap else [])
+    data_large = int(max(dd) > 32767)
+    b.put(1, cc_large)
+    b.put(1, data_large)
+    mn, cn, dn2 = (20 if meta_large else 10), (12 if cc_large else 3), (28 if data_large else 15)
+    if icc is not None: b.put(mn, len(icc) - 1)
+    if gainmap is not None and gainmap.get('icc'): b.put(mn, len(gainmap['icc']) - 1)
+    if gainmap is not None:
+        b.put(mn, len(gainmap['metadata']))
+        b.put(dn2, len(gainmap['data']))
+        b.put(cn, len(gainmap['av1c']))
+    b.put(cn, len(av1c))
+    b.put(dn2, len(data) - 1)
+    if alpha is not None:
+        b.put(dn2, len(alpha[1]))
+        b.put(cn, len(alpha[0]))
+    ex, xm = exif, xmp
+    if compressed:
+        ex = zlib_raw(exif) if exif is not None else None
+        xm = zlib_raw(xmp) if xmp is not None else None
+    if exif is not None or xmp is not None: b.put(1, compressed)
+    if ex is not None: b.put(mn, len(ex) - 1)
+    if xm is not None: b.put(mn, len(xm) - 1)
+    chunks = [b.bytes(), av1c]
+    if alpha is not None: chunks.append(alpha[0])
+    if gainmap is not None: chunks.append(gainmap['av1c'])
+    if icc is not None: chunks.append(icc)
+    if gainmap is not None:
+        if gainmap.get('icc'): chunks.append(gainmap['icc'])
+        chunks.append(gainmap['metadata'])
+    if alpha is not None: chunks.append(alpha[1])
+    if gainmap is not None: chunks.append(gainmap['data'])
+    chunks.append(data)
+    if ex is not None: chunks.append(ex)
+    if xm is not None: chunks.append(xm)
+    with open(out, 'wb') as f: f.write(box('ftyp', b'mif3' + minor + b'mif3') + box('mini', b''.join(chunks)))
+
+
+def mini_equivalent(out, w, h, av1c, data, sub=1, depth=8, full_range=1, cicp=None, orientation=1, alpha=None, premultiplied=0,
+                    icc=None, exif=None, xmp=None, gainmap=None, **_):
+    """The MetaBox file a mini_file is equivalent to (Annex O.4), uncompressed Exif / XMP, for avifdec to decode."""
+    if cicp is None: cicp = (2 if icc else 1, 2 if icc else 13, 2 if sub == 0 else 6)
+    nc = 1 if sub == 0 else 3
+    pixi = lambda n, d: prop('pixi', bytes([n] + [d] * n))
+    ispe = lambda a, b_: prop('ispe', struct.pack('>II', a, b_))
+    colr = lambda cp, tc, mc, fr: box('colr', b'nclx' + struct.pack('>HHHB', cp, tc, mc, fr << 7))
+    rot = {3: 2, 5: 1, 6: 3, 7: 1, 8: 1}.get(orientation)
+    mir = {2: 1, 4: 0, 5: 0, 7: 1}.get(orientation)
+    tr = ([(irot(rot), True)] if rot is not None else []) + ([(imir(mir), True)] if mir is not None else [])
+    items = {1: {'type': 'av01', 'props': [(box('av1C', av1c), True), (ispe(w, h), False), (pixi(nc, depth), False),
+                                           (colr(*cicp, full_range), True)] + ([(box('colr', b'prof' + icc), True)] if icc else []) + tr,
+                 'data': data}}
+    refs = []
+    if alpha:
+        items[2] = {'type': 'av01', 'hidden': 1, 'data': alpha[1], 'props': [(box('av1C', alpha[0]), True), (ispe(w, h), False),
+                    (prop('auxC', b'urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0'), True), (pixi(1, depth), False)] + tr}
+        refs.append(('auxl', 2, [1]))
+        if premultiplied: refs.append(('prem', 1, [2]))
+    groups = []
+    if gainmap:
+        g = gainmap
+        tw, th = (h, w) if orientation >= 5 else (w, h)
+        tc = g.get('cicp') or (1, 13, 6, 1)
+        items[3] = {'type': 'tmap', 'data': b'\0' + g['metadata'], 'props': [(ispe(tw, th), False), (colr(*tc), True)]}
+        items[4] = {'type': 'av01', 'hidden': 1, 'data': g['data'], 'props': [(box('av1C', g['av1c']), True), (ispe(g['w'], g['h']), False),
+                    (pixi(1 if g.get('sub', 1) == 0 else 3, g.get('depth', 8)), False), (colr(2, 2, g.get('mc', 6), g.get('full_range', 1)), True)] + tr}
+        refs.append(('dimg', 3, [1, 4]))
+        groups = [('altr', 5, [3, 1])]
+    if exif:
+        items[6] = {'type': 'Exif', 'hidden': 1, 'data': exif, 'props': []}
+        refs.append(('cdsc', 6, [1]))
+    heif_write(out, items, refs, 1, compatible=(b'avif', b'mif1', b'miaf') + ((b'tmap',) if gainmap else ()), groups=groups)
+
+
+def zlib_raw(d):
+    import zlib
+    c = zlib.compressobj(9, zlib.DEFLATED, -15)
+    return c.compress(d) + c.flush()
+
+
 TRACK_PATH = ['moov', 'trak', 'mdia', 'minf', 'stbl', 'stsd', 'av01']
 TRACK_HDR = {'stsd': 8, 'av01': 78}
 
@@ -780,6 +941,49 @@ def gen_container():
     print('container')
 
 
+def gen_mini():
+    """
+    Low-overhead files (HEIF Amd 2 Annex O, MinimizedImageBox version 0) in avif/mini, repackaged from the stills, each
+    with a .ref: avifdec 1.4.2 cannot read 'mini' (built without it), so the reference is its decode of the equivalent
+    MetaBox file of O.4 (mini_equivalent, with the Exif / XMP uncompressed). The test also compares the metadata, ICC
+    profile and gain map with the source files'.
+    """
+    d = os.path.join(OUT, 'mini')
+    os.makedirs(d, exist_ok=True)
+    os.makedirs(TMP, exist_ok=True)
+
+    def src(name):
+        items, refs, primary = heif_items(os.path.join(OUT, name))
+        return items, primary
+
+    def cfg(it): return next(p for p, _ in it['props'] if p[4:8] == b'av1C')[8:]
+    nat, p = src('nat_420_s6.avif')
+    al, ap = src('alpha.avif')
+    n10, p10 = src('nat_420_10.avif')
+    ic, ip = src('icc.avif')
+    ex, _ = src('exif_xmp.avif')
+    gm, gp = src('gainmap.avif')
+    icc = next(p_[12:] for p_, _ in ic[ip]['props'] if p_[4:12] == b'colrprof')
+    exif = next(v['data'] for v in ex.values() if v['type'] == 'Exif')
+    xmp = next(v['data'] for v in ex.values() if v['type'] == 'mime')
+    cases = {
+        'basic': dict(w=160, h=112, av1c=cfg(nat[p]), data=nat[p]['data']),
+        'alpha': dict(w=160, h=112, av1c=cfg(al[ap]), data=al[ap]['data'], alpha=(cfg(al[2]), al[2]['data']), orientation=6),
+        'deep': dict(w=160, h=112, av1c=cfg(n10[p10]), data=n10[p10]['data'], depth=10, cicp=(1, 13, 6), explicit_codec=True, orientation=2),
+        'meta': dict(w=160, h=112, av1c=cfg(ic[ip]), data=ic[ip]['data'], icc=icc, exif=exif, xmp=xmp, compressed=1),
+        'gainmap': dict(w=128, h=96, av1c=cfg(gm[gp]), data=gm[gp]['data'], cicp=(1, 13, 2),
+                        gainmap=dict(w=64, h=48, av1c=cfg(gm[3]), data=gm[3]['data'], metadata=gm[2]['data'][1:], mc=2, sub=3,
+                                     cicp=(9, 16, 9, 1))),
+    }
+    for name, a in cases.items():
+        out = os.path.join(d, name + '.avif')
+        mini_file(out, **a)
+        eq = os.path.join(TMP, 'equivalent.avif')
+        mini_equivalent(eq, **a)
+        write_ref(out + '.ref', avif_rgb(eq, a.get('depth', 8) > 8))
+        print('mini', name, os.path.getsize(out))
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     what = sys.argv[1:] or ['avif', 'av1']
@@ -788,5 +992,6 @@ if __name__ == '__main__':
     if 'tonemap' in what or 'gainmap' in what or 'avif' in what: gen_gainmap_tonemap()
     if 'overlay' in what or 'avif' in what: gen_overlay()
     if 'container' in what or 'avif' in what: gen_container()
+    if 'mini' in what or 'avif' in what: gen_mini()
     if 'av1' in what: gen_av1()
     shutil.rmtree(TMP, ignore_errors=True)
