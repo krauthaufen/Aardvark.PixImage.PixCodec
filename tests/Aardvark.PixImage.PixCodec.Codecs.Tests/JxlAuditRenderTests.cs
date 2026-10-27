@@ -413,6 +413,63 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         AssertClose(s.ToArray(), "single point spline", 1e-3);
     }
 
+    // ------------------------------------------------------------------ Annex M limits
+
+    /// <summary>
+    /// Table M.1 sets no limit on the area patches cover: 1025 patches of a 1024 x 1024 frame (more than 4 times its
+    /// pixels, within min(2^24, pixels / 16) patches) are read.
+    /// </summary>
+    [Fact]
+    public void PatchAreaIsNotLimited()
+    {
+        var w = new JxlBitWriter();
+        var t = new Tokens(10);
+        t.Add(0, 1);
+        t.Add(1, 0); t.Add(3, 0); t.Add(3, 0); t.Add(2, 1023); t.Add(2, 1023); t.Add(7, 1024);
+        for (int j = 0; j < 1025; j++)
+        {
+            if (j == 0) { t.Add(4, 0); t.Add(4, 0); } else { t.AddSigned(6, 0); t.AddSigned(6, 0); }
+            t.Add(5, 2);
+        }
+        t.WriteTo(w);
+        w.ZeroPadToByte();
+        Assert.Equal(1025, JxlPatches.Read(new JxlBitReader(w.ToArray()), 0, 1024 * 1024).Items.Count);
+    }
+
+    /// <summary>Splines with the given numbers of control points (each including the starting point).</summary>
+    static byte[] SplineDictionary(int[] points)
+    {
+        var w = new JxlBitWriter();
+        var t = new Tokens(6);
+        t.Add(2, points.Length - 1);
+        for (int i = 0; i < points.Length; i++) { if (i == 0) { t.Add(1, 2); t.Add(1, 2); } else { t.AddSigned(1, 1); t.AddSigned(1, 0); } }
+        t.AddSigned(0, 0);
+        foreach (int n in points)
+        {
+            t.Add(3, n - 1);
+            for (int j = 1; j < n; j++) { t.AddSigned(4, j == 1 ? 1 : 0); t.AddSigned(4, 0); }
+            for (int k = 0; k < 128; k++) t.AddSigned(5, k % 32 == 0 ? 1 : 0);
+        }
+        t.WriteTo(w);
+        w.ZeroPadToByte();
+        return w.ToArray();
+    }
+
+    /// <summary>
+    /// Table M.1: at most min(2^24, pixels / 4) splines and min(2^20, pixels / 2) control points in all, where
+    /// num_control_points includes the starting point (K.4.1). An 8 x 8 frame: 16 splines, 32 points.
+    /// </summary>
+    [Fact]
+    public void SplineLimitsAreTableM1()
+    {
+        JxlSplines Read(params int[] points) => JxlSplines.Read(new JxlBitReader(SplineDictionary(points)), 64);
+        Read(Enumerable.Repeat(1, 16).ToArray());
+        Assert.Throws<ImageFormatException>(() => Read(Enumerable.Repeat(1, 17).ToArray()));
+        Read(16, 16);
+        Assert.Throws<ImageFormatException>(() => Read(16, 17));
+        Assert.Throws<ImageFormatException>(() => Read(Enumerable.Repeat(2, 15).Append(3).ToArray()));
+    }
+
     // ------------------------------------------------------------------ K.2 upsampling weights
 
     /// <summary>d_up2, d_up4 and d_up8 of K.2 as printed in 18181-1:2024.</summary>

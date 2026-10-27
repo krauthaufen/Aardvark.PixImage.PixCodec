@@ -31,9 +31,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             var p = new JxlPatches();
             uint numRef = r.ReadUint(br, 0);
             // level 10 allows min(2^24, frame pixels / 16) patches (18181-1:2024 Table M.1)
-            long maxPatches = Math.Max(1 << 12, Math.Min(1L << 24, maxPixels / 16));
+            long maxPatches = Math.Min(1L << 24, maxPixels / 16);
             if (numRef > maxPatches) throw new ImageFormatException("JPEG XL: too many patches");
-            long total = 0;
             for (uint i = 0; i < numRef; i++)
             {
                 int rf = (int)r.ReadUint(br, 1);
@@ -71,8 +70,6 @@ namespace Aardvark.ImageCodecs.JpegXl
                         }
                         if (mode >= 3) bl[k].Clamp = r.ReadUint(br, 9) != 0;
                     }
-                    total += (long)w * h;
-                    if (total > Math.Max(maxPixels, 1 << 20) * 4) throw new ImageNotSupportedException("JPEG XL: patches cover too much");
                     p.Items.Add(new Patch { Ref = rf, X0 = x0, Y0 = y0, W = w, H = h, X = x, Y = y, Blend = bl });
                 }
                 if (br.Overrun) throw new ImageFormatException("JPEG XL: truncated patches");
