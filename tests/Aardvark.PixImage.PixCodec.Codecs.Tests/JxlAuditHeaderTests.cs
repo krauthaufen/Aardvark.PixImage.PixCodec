@@ -108,11 +108,26 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Shuffle(bytes, width) as djxl 0.12 does it: `width` rows of ceil(n / width) bytes (the last rows shorter), read
-    /// column by column. Returns p with output[k] = input[p[k]]. (The text of E.4.5 has only the last column short; the
-    /// two differ when two or more elements are missing, see ShuffledProfileDecodes.)
+    /// Shuffle(bytes, width) as E.4.5 has it: a matrix of `width` rows and ceil(n / width) columns whose last column
+    /// alone can miss elements (at the bottom), the input being its rows one after the other, read column by column.
+    /// Returns p with output[k] = input[p[k]].
     /// </summary>
     static int[] ShufflePermutation(int n, int width)
+    {
+        int h = (n + width - 1) / width, full = n % width == 0 ? width : n % width;
+        var p = new List<int>();
+        for (int c = 0; c < h; c++)
+            for (int r = 0; r < width; r++)
+                if (c < h - 1 || r < full) p.Add(r * (h - 1) + Math.Min(r, full) + c);
+        return p.ToArray();
+    }
+
+    /// <summary>
+    /// Shuffle(bytes, width) as djxl 0.12 does it: `width` rows of ceil(n / width) bytes, the last rows shorter or
+    /// empty, read column by column. That is a djxl defect (it leaves elements missing outside the last column, which
+    /// E.4.5 rules out); it differs from the text when two or more elements are missing (see ShuffledProfileDecodes).
+    /// </summary>
+    static int[] DjxlShufflePermutation(int n, int width)
     {
         int h = (n + width - 1) / width;
         var p = new List<int>();
@@ -132,19 +147,22 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
     }
 
     /// <summary>
-    /// Shuffle with width 4 of 5 bytes, as djxl: rows (d0, d1), (d2, d3), (d4), so (d0, d2, d4, d1, d3); the text of
-    /// E.4.5 would give (d0, d2, d3, d4, d1). The predicted command 4 shuffles the same way (order 0, stride 4): the first
-    /// 4 bytes are predicted from header bytes 124..127 (zero), the fifth from the top byte of the 4 just written.
+    /// Shuffle with width 4 of 5 bytes, as E.4.5: rows (d0, d1), (d2), (d3), (d4), so (d0, d2, d3, d4, d1) (djxl 0.12
+    /// gives (d0, d2, d4, d1, d3), see DjxlShufflePermutation). The predicted command 4 shuffles the same way (order 0,
+    /// stride 4): the first 4 bytes are predicted from header bytes 124..127 (zero), the fifth from the top byte of the
+    /// 4 just written.
     /// </summary>
     [Fact]
     public void ShuffleWithShortRows()
     {
-        Assert.Equal(new[] { 0, 2, 4, 1, 3 }, ShufflePermutation(5, 4));
+        Assert.Equal(new[] { 0, 2, 3, 4, 1 }, ShufflePermutation(5, 4));
+        Assert.Equal(new[] { 0, 2, 4, 1, 3 }, DjxlShufflePermutation(5, 4));
+        Assert.Equal(new[] { 0, 3, 6, 1, 4, 7, 2, 5 }, ShufflePermutation(8, 3));
         var d = new byte[] { 10, 11, 12, 13, 14 };
         var icc = JxlIcc.Unpredict(IccStream(133, new byte[] { 0, 3, 5 }, new byte[128].Concat(d).ToArray()));
-        Assert.Equal(new byte[] { 10, 12, 14, 11, 13 }, icc[128..]);
+        Assert.Equal(new byte[] { 10, 12, 13, 14, 11 }, icc[128..]);
         var icc4 = JxlIcc.Unpredict(IccStream(133, new byte[] { 0, 4, 3, 5 }, new byte[128].Concat(d).ToArray()));
-        Assert.Equal(new byte[] { 0, 0, 0, 0, 10, 12, 14, 11, 13 + 10 }, icc4[124..]);
+        Assert.Equal(new byte[] { 0, 0, 0, 0, 10, 12, 13, 14, 11 + 10 }, icc4[124..]);
     }
 
     /// <summary>An 8 bit RGB lossless image whose ICC profile is the given encoded ICC stream (entropy coded as E.4.1).</summary>
@@ -186,9 +204,11 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
 
     /// <summary>
     /// A real profile whose content after the header is one Shuffle command with width 4 over a length that is 1 mod 4,
-    /// where djxl and the text of E.4.5 differ. djxl 0.12 --icc_out gives back the profile when the data is built with
-    /// <see cref="ShufflePermutation"/> (checked by hand; built with the literal text, it gives other bytes), and
-    /// libjxl-encoded profiles have to decode the way libjxl reads them: we follow djxl.
+    /// where djxl and the text of E.4.5 differ. We follow the text: built with <see cref="ShufflePermutation"/> the
+    /// stream decodes to the profile. djxl 0.12 (--icc_out) reads it as <see cref="DjxlShufflePermutation"/>, a djxl
+    /// defect pinned here: it gives other bytes for the text's stream and the profile for one built its way. No
+    /// encoder output depends on it: cjxl (0.12) wrote only width 2 shuffles for every profile tried (some 450, among
+    /// them 196 built with 4 byte tag arrays of every length mod 4), and our encoder writes no shuffles.
     /// </summary>
     [Fact]
     public void ShuffledProfileDecodes()
@@ -203,18 +223,49 @@ public partial class JxlAuditHeaderTests(ITestOutputHelper output)
         int csize = 0, shift = 0;
         while (true) { byte b = enc[p++]; csize |= (b & 127) << shift; shift += 7; if (b < 128) break; }
         var header = enc.AsSpan(p + csize, 128).ToArray();
-        var perm = ShufflePermutation(ns, 4);
-        var data = new byte[ns];
-        for (int k = 0; k < ns; k++) data[perm[k]] = icc[128 + k];
-        var cmds = new List<byte> { 0, 3 };
-        VarInt(cmds, (ulong)ns);
-        if (tail > 0) { cmds.Add(1); VarInt(cmds, (ulong)tail); }
-        var stream = IccStream((ulong)icc.Length, cmds.ToArray(), header.Concat(data).Concat(icc[(128 + ns)..]).ToArray());
+        byte[] Stream(int[] perm)
+        {
+            var data = new byte[ns];
+            for (int k = 0; k < ns; k++) data[perm[k]] = icc[128 + k];
+            var cmds = new List<byte> { 0, 3 };
+            VarInt(cmds, (ulong)ns);
+            if (tail > 0) { cmds.Add(1); VarInt(cmds, (ulong)tail); }
+            return IccStream((ulong)icc.Length, cmds.ToArray(), header.Concat(data).Concat(icc[(128 + ns)..]).ToArray());
+        }
+        var stream = Stream(ShufflePermutation(ns, 4));
         Assert.Equal(icc, JxlIcc.Unpredict(stream));
         var file = WithIccStream(stream);
         if (Environment.GetEnvironmentVariable("PIXCODEC_JXLAUDIT_DUMP") is string dump) { File.WriteAllBytes(Path.Combine(dump, "shuffled_icc.jxl"), file); File.WriteAllBytes(Path.Combine(dump, "shuffled_icc.icc"), icc); }
         Assert.Equal(icc, Jxl.Decode(file).Metadata?.IccProfile);
-        _ = JxlEncodeTests.Libjxl(file);
+        var djxlFile = WithIccStream(Stream(DjxlShufflePermutation(ns, 4)));
+        Assert.NotEqual(icc, Jxl.Decode(djxlFile).Metadata?.IccProfile);
+        if (DjxlIcc(file) is not { } lib) { output.WriteLine("djxl not available"); return; }
+        {
+            output.WriteLine($"djxl: {lib.Zip(icc).Count(p => p.First != p.Second)} of {icc.Length} bytes differ from the profile");
+            Assert.NotEqual(icc, lib);
+            Assert.Equal(icc, DjxlIcc(djxlFile));
+        }
+    }
+
+    /// <summary>The ICC profile djxl reads from the file (tests/oracle/djxl_icc.py), or null without djxl.</summary>
+    static byte[]? DjxlIcc(byte[] encoded)
+    {
+        if (!PythonAvailable) return null;
+        var tmp = Path.Combine(FixtureDir, "_tmp");
+        Directory.CreateDirectory(tmp);
+        var f = Path.Combine(tmp, Guid.NewGuid().ToString("N") + ".jxl");
+        try
+        {
+            File.WriteAllBytes(f, encoded);
+            var (exit, text) = RunPython($"djxl_icc.py \"{f}\" \"{f}.icc\"");
+            if (CannotVerify(exit, text)) return null;
+            Assert.True(exit == 0, "djxl failed: " + text);
+            return File.ReadAllBytes(f + ".icc");
+        }
+        finally
+        {
+            File.Delete(f); File.Delete(f + ".icc");
+        }
     }
 
     /// <summary>E.4.5: commands 1 to 4 carry num &gt; 0.</summary>

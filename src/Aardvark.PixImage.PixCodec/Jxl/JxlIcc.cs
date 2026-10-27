@@ -140,22 +140,27 @@ namespace Aardvark.ImageCodecs.JpegXl
         }
 
         /// <summary>
-        /// Shuffle of E.4.5: the input fills `width` rows of ceil(size / width) bytes each (the last rows shorter), the
-        /// output reads the matrix column by column. This is what libjxl (djxl 0.12) does. The text of 18181-1:2024 has
-        /// only the last column short (rows of ceil and ceil - 1 bytes); the two differ when two or more elements are
-        /// missing (size % width of 1 or 2 with width 4) and agree on the example there.
+        /// Shuffle of E.4.5: a matrix of `width` rows and ceil(size / width) columns where only the last column can miss
+        /// elements (at the bottom), so the first size % width rows (all when that is 0) are one byte longer; the input
+        /// is its rows one after the other, the output reads it column by column. djxl 0.12 instead fills rows of
+        /// ceil(size / width) bytes, leaving the last rows short (or empty); that contradicts the text, differs from it
+        /// only with two or more missing elements (width 4, size % 4 of 1 or 2), and cjxl never writes such a shuffle,
+        /// so the text is followed (JxlAuditHeaderTests.ShuffledProfileDecodes).
         /// </summary>
         static byte[] Unshuffle(byte[] d, int start, int size, int width)
         {
             var r = new byte[size];
             int height = (size + width - 1) / width;
-            int s = 0, j = 0;
-            for (int i = 0; i < size; i++)
-            {
-                r[i] = d[start + j];
-                j += height;
-                if (j >= size) j = ++s;
-            }
+            int full = size % width == 0 ? width : size % width;   // rows with `height` bytes, the others have one less
+            int k = 0;
+            for (int c = 0; c < height; c++)
+                for (int row = 0; row < width && k < size; row++)
+                {
+                    if (c == height - 1 && row >= full) break;
+                    // row `row` starts after `row` rows, the first `full` of them `height` long
+                    int rs = row * (height - 1) + Math.Min(row, full);
+                    r[k++] = d[start + rs + c];
+                }
             return r;
         }
 
