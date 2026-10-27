@@ -361,7 +361,8 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>
         /// The HDR rendition of an image with a gain map (JPEG: Ultra HDR / ISO 21496-1, see <see cref="Jpeg.DecodeHdr"/>;
-        /// JPEG XL: jhgm box, see <see cref="Jxl.DecodeHdr"/>) as linear Float32 RGB(A) where 1.0 is SDR white, for a display
+        /// JPEG XL: jhgm box, see <see cref="Jxl.DecodeHdr"/>; AVIF: tmap item, see <see cref="Avif.DecodeHdr"/>) as linear
+        /// Float32 RGB(A) where 1.0 is SDR white, for a display
         /// with HDR headroom <paramref name="headroom"/> (log2 of peak over SDR white; null = the full alternate rendition).
         /// Every other image (or one without a usable gain map) is returned converted to linear light in the same form.
         /// </summary>
@@ -369,6 +370,7 @@ namespace Aardvark.ImageCodecs
         {
             ImageFormat.Jpeg => Jpeg.DecodeHdr(data, headroom),
             ImageFormat.Jxl => Jxl.DecodeHdr(data, headroom),
+            ImageFormat.Avif => Avif.DecodeHdr(data, headroom),
             _ => GainMap.LinearRgb(Decode(data)),
         };
 

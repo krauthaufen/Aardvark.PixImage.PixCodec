@@ -56,11 +56,13 @@ namespace Aardvark.ImageCodecs
 
     /// <summary>
     /// The HDR gain map of an AVIF file: a tone map derived image item ('tmap') holding ISO 21496-1 metadata, whose inputs
-    /// are the base image and the gain map image. <see cref="Avif.Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/> returns the base image.
+    /// are the base image and the gain map image; its colr properties give the colour space of the alternate image.
+    /// <see cref="Avif.Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/> returns the base image, <see cref="Avif.DecodeHdr"/>
+    /// the alternate one.
     /// </summary>
     public sealed class AvifGainMap
     {
-        /// <summary>Version byte of the tmap item.</summary>
+        /// <summary>Version byte of the tmap item: 0; items of other versions are to be ignored (<see cref="ParsedMetadata"/> is null).</summary>
         public int Version { get; internal set; }
         /// <summary>The ISO 21496-1 binary gain map metadata (Annex C.2), as stored after the version byte.</summary>
         public byte[] Metadata { get; internal set; } = Array.Empty<byte>();
@@ -76,10 +78,85 @@ namespace Aardvark.ImageCodecs
         public int Height { get; internal set; }
 
         internal AvifReader Reader = null!;
-        internal uint GainMapItemId;
+        internal uint GainMapItemId, BaseItemId;
+        internal bool ApplyOrientation = true;
 
-        /// <summary>Decodes the gain map image (its stored pixels, without the orientation of the base image).</summary>
-        public RawImage DecodeImage() => Reader.DecodeItem(Reader.File.Items[GainMapItemId], true);
+        /// <summary>
+        /// Decodes the gain map image: its stored pixels, which match the base image's stored pixels (scaled), without any
+        /// transformative property (libavif repeats the base image's on the gain map item).
+        /// </summary>
+        public RawImage DecodeImage() => Reader.DecodeItem(Reader.File.Items[GainMapItemId], false, stored: true);
+
+        /// <summary>
+        /// <see cref="Metadata"/> parsed (ISO 21496-1 C.2); null for a tmap version other than 0, an unknown minimum_version,
+        /// a truncated payload or values clause 5 does not allow.
+        /// </summary>
+        public GainMapMetadata? ParsedMetadata
+        {
+            get
+            {
+                if (Version != 0) return null;
+                try { return GainMapMetadata.FromIso21496(Metadata); }
+                catch (ImageFormatException) { return null; }
+            }
+        }
+
+        /// <summary>
+        /// The gain map in the format independent form that <see cref="GainMap.Apply(RawImage, GainMap, double?)"/> takes
+        /// (as JPEG and JPEG XL files give it), for the image <see cref="Avif.Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/>
+        /// returns: the stored gain map image with the base image's clean aperture (scaled to the gain map's size), rotation
+        /// and mirroring (ISO 21496-1 4.5), the alternate colour space from the tmap item's ICC profile or nclx (none: the
+        /// base's, 5.3.3). Null when the metadata is unusable.
+        /// </summary>
+        public GainMap? ToGainMap()
+        {
+            var m = ParsedMetadata;
+            if (m == null) return null;
+            var rd = Reader;
+            var gi = rd.File.Items[GainMapItemId];
+            var img = DecodeImage();
+            img.Metadata = null;
+            var bi = rd.File.Items[BaseItemId];
+            if (rd.Ispe(bi) is var (bw, bh) && bw > 0 && bh > 0)
+            {
+                foreach (var t in rd.Transforms(bi))
+                {
+                    switch (t.Kind)
+                    {
+                        case 'c':
+                            if (rd.ApplyCrop && AvifReader.Clap(t.Clap!, bw, bh) is var (x, y, cw, ch))
+                            {
+                                // the base's crop rectangle in gain map pixels
+                                double sx = (double)img.Width / bw, sy = (double)img.Height / bh;
+                                int gx = Math.Clamp((int)Math.Round(x * sx), 0, img.Width - 1), gy = Math.Clamp((int)Math.Round(y * sy), 0, img.Height - 1);
+                                int gw = Math.Clamp((int)Math.Round(cw * sx), 1, img.Width - gx), gh = Math.Clamp((int)Math.Round(ch * sy), 1, img.Height - gy);
+                                img = ImageOps.Crop(img, gx, gy, gw, gh);
+                                (bw, bh) = (cw, ch);
+                            }
+                            break;
+                        case 'r':
+                            if (!ApplyOrientation) break;
+                            img = t.A switch { 1 => ImageOps.Rotate270(img), 2 => ImageOps.Rotate180(img), 3 => ImageOps.Rotate90(img), _ => img };
+                            if ((t.A & 1) != 0) (bw, bh) = (bh, bw);
+                            break;
+                        case 'm':
+                            if (!ApplyOrientation) break;
+                            img = t.A == 0 ? ImageOps.FlipVertical(img) : ImageOps.FlipHorizontal(img);
+                            break;
+                    }
+                }
+            }
+            // the alternate's colour space: an ICC profile, else nclx primaries (a profile is only needed for them)
+            byte[]? alt = AlternateIcc;
+            if (alt == null && AlternatePrimaries is not (0 or 2))
+                alt = AvifReader.DescribingIcc(AlternatePrimaries, AlternateTransferCharacteristics, false) ?? (AlternatePrimaries == 1 ? IccProfile.Srgb.ToBytes() : null);
+            int bits = rd.ItemBitDepth(gi);
+            return new GainMap
+            {
+                Metadata = m, Image = img, AlternateIcc = alt, Source = GainMapSource.Iso21496,
+                ImageMax = bits is > 8 and < 16 ? (1 << bits) - 1 : 0,
+            };
+        }
     }
 
     /// <summary>
@@ -396,7 +473,9 @@ namespace Aardvark.ImageCodecs
                 var it = rd.File.Items[id];
                 if (it.Type != "tmap") continue;
                 var refs = it.Refs("dimg");
-                if (refs.Length < 2 || !rd.File.Items.ContainsKey(refs[1])) continue;
+                if (refs.Length < 2 || !rd.File.Items.ContainsKey(refs[0]) || !rd.File.Items.ContainsKey(refs[1])) continue;
+                // a gain map of the image Decode returns: the tmap item itself or its base image is the primary item
+                if (rd.Primary is HeifItem p && p.Id != it.Id && p.Id != refs[0]) continue;
                 var payload = rd.File.ItemData(rd.Data, it);
                 if (payload.Length < 1) continue;
                 var c = rd.Colour(it);
@@ -410,10 +489,25 @@ namespace Aardvark.ImageCodecs
                     AlternateTransfer = c.HasNclx ? AvifReader.TransferOf(c.Transfer, out _) : TransferFunction.Unknown,
                     AlternateIcc = c.Icc,
                     Width = size?.w ?? 0, Height = size?.h ?? 0,
-                    Reader = rd, GainMapItemId = refs[1],
+                    Reader = rd, GainMapItemId = refs[1], BaseItemId = refs[0], ApplyOrientation = opt.ApplyOrientation,
                 };
             }
             return null;
+        }
+
+        /// <summary>
+        /// The alternate (usually HDR) rendition of a file with a gain map (tmap item) as linear Float32 RGB, 1.0 = HDR
+        /// reference white, for a display with HDR headroom <paramref name="headroom"/> (log2; null = fully applied):
+        /// <see cref="Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/> plus <see cref="GainMap.Apply(RawImage, GainMap, double?)"/>
+        /// with <see cref="AvifGainMap.ToGainMap"/>, as for JPEG and JPEG XL. Without a usable gain map the image converted
+        /// to linear light is returned.
+        /// </summary>
+        public static RawImage DecodeHdr(ReadOnlySpan<byte> data, double? headroom = null, AvifDecodeOptions? options = null)
+        {
+            var baseline = Decode(data, options);
+            var gm = GetGainMap(data, options);
+            var g = gm == null ? null : Guard(() => gm.ToGainMap());
+            return g == null ? GainMap.LinearRgb(baseline) : GainMap.Apply(baseline, g, headroom);
         }
 
         /// <summary>The raw Exif (from the TIFF header on) and XMP items describing the primary image.</summary>

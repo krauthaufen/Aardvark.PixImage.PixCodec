@@ -71,6 +71,9 @@ namespace Aardvark.ImageCodecs.Heif
             this.opt = opt;
         }
 
+        /// <summary>Whether clean apertures are applied (<see cref="AvifDecodeOptions.ApplyCrop"/>).</summary>
+        public bool ApplyCrop => opt.ApplyCrop;
+
         public HeifItem? Primary
         {
             get
@@ -352,8 +355,11 @@ namespace Aardvark.ImageCodecs.Heif
             return outp!;
         }
 
-        /// <summary>Decodes an item to its output image: colour + alpha, then its transformative properties.</summary>
-        public RawImage DecodeItem(HeifItem it, bool applyTransforms, int depth = 0)
+        /// <summary>
+        /// Decodes an item to its output image: colour + alpha, then its transformative properties (none at all with
+        /// <paramref name="stored"/>, not even the clean aperture).
+        /// </summary>
+        public RawImage DecodeItem(HeifItem it, bool applyTransforms, int depth = 0, bool stored = false)
         {
             if (depth > 8) throw new ImageFormatException("HEIF: derivation chain too deep");
             RawImage img;
@@ -392,7 +398,7 @@ namespace Aardvark.ImageCodecs.Heif
                         break;
                     }
             }
-            return ApplyTransforms(it, img, applyTransforms);
+            return stored ? img : ApplyTransforms(it, img, applyTransforms);
         }
 
         RawImage ApplyTransforms(HeifItem it, RawImage img, bool orientation)

@@ -407,6 +407,141 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Null(Avif.GetGainMap(File.ReadAllBytes(Fixture("avif/nat_420_s6.avif"))));
     }
 
+    /// <summary>A PQ reference (avifgainmaputil tonemap, 16 bit BT.2100 PQ) as linear light, 203 cd/m² = 1.0 (BT.2408).</summary>
+    static RawImage PqToLinear(RawImage r)
+    {
+        const double m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128, c1 = 3424.0 / 4096, c2 = 2413.0 / 4096 * 32, c3 = 2392.0 / 4096 * 32;
+        var s = (ushort[])r.Data;
+        var f = new float[s.Length];
+        for (int i = 0; i < s.Length; i++)
+        {
+            double p = Math.Pow(s[i] / 65535.0, 1 / m2);
+            f[i] = (float)(Math.Pow(Math.Max(p - c1, 0) / (c2 - c3 * p), 1 / m1) * 10000 / 203);
+        }
+        return new RawImage(r.Width, r.Height, ColorModel.Rgb, f);
+    }
+
+    /// <summary>
+    /// A gain map image (integer samples, <paramref name="max"/> = 1.0) bilinearly upsampled to w x h with pixel centres
+    /// aligned, as Float32 0..1: libavif resamples that way, where ISO 21496-1 6.2.2 NOTE 1 prefers co-sited samples
+    /// (which <see cref="Aardvark.ImageCodecs.GainMap.Apply(RawImage, Aardvark.ImageCodecs.GainMap, double?)"/> uses).
+    /// </summary>
+    static RawImage CentredUpsample(RawImage g, int w, int h, double max)
+    {
+        int gw = g.Width, gh = g.Height, ch = g.Channels;
+        double V(long i) => g.SampleType == SampleType.UInt8 ? ((byte[])g.Data)[i] : ((ushort[])g.Data)[i];
+        var up = new float[w * h * ch];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                double fx = Math.Clamp((x + 0.5) * gw / w - 0.5, 0, gw - 1), fy = Math.Clamp((y + 0.5) * gh / h - 0.5, 0, gh - 1);
+                int x0 = (int)fx, y0 = (int)fy, x1 = Math.Min(x0 + 1, gw - 1), y1 = Math.Min(y0 + 1, gh - 1);
+                double ax = fx - x0, ay = fy - y0;
+                for (int c = 0; c < ch; c++)
+                {
+                    double v = (V((y0 * gw + x0) * ch + c) * (1 - ax) + V((y0 * gw + x1) * ch + c) * ax) * (1 - ay)
+                             + (V((y1 * gw + x0) * ch + c) * (1 - ax) + V((y1 * gw + x1) * ch + c) * ax) * ay;
+                    up[(y * w + x) * ch + c] = (float)(v / max);
+                }
+            }
+        return new RawImage(w, h, ch == 1 ? ColorModel.Gray : ColorModel.Rgb, up, ch);
+    }
+
+    void AssertStops(RawImage expected, RawImage actual, double max, double mean, string what)
+    {
+        var e = GainMapTests.StopError(expected, actual);
+        output.WriteLine($"{what}: max {e.Max:F4} mean {e.Mean:F5} stops");
+        Assert.True(e.Max <= max && e.Mean <= mean, $"{what}: max {e.Max:F4} (<= {max}) mean {e.Mean:F5} (<= {mean}) stops");
+    }
+
+    /// <summary>
+    /// The gain map applied (ISO 21496-1 clause 6) at headroom 2.5 against avifgainmaputil tonemap (libavif 1.4.2): the
+    /// alternate is BT.2100 PQ (the tmap item's nclx) and use_base_colour_space 0, so the sRGB base is converted to
+    /// BT.2020 first (Annex B). With the gain map resampled as libavif does the results agree closely; with the co-sited
+    /// resampling of 6.2.2 NOTE 1 they differ by the half gain map pixel shift.
+    /// </summary>
+    [Theory]
+    [InlineData("avif/gainmap.avif", 0.1, 0.02)]
+    [InlineData("avif/gainmap/deep.avif", 0.08, 0.01)]
+    public void GainMapAppliedLikeLibavif(string file, double maxStops, double meanStops)
+    {
+        var path = Fixture(file);
+        var data = File.ReadAllBytes(path);
+        var gm = Avif.GetGainMap(data)!.ToGainMap()!;
+        Assert.False(gm.Metadata.UseBaseColourSpace);
+        Assert.Equal(new IccCicp(9, 16, 0, true), IccProfile.Parse(gm.AlternateIcc!).Cicp);
+        var expected = PqToLinear(LoadRef(path + ".tonemap.ref"));
+        var mine = Avif.DecodeHdr(data, 2.5);
+        TestUtil.AssertEqual(mine, ImageCodec.DecodeHdr(data, 2.5));
+        Assert.Equal(IccProfile.LinearRec2020.RedColorant!.Value.X, IccProfile.Parse(mine.Metadata!.IccProfile!).RedColorant!.Value.X, 1e-3);
+        var b = Avif.Decode(data);
+        bool deep = gm.Image.SampleType == SampleType.UInt16;
+        Assert.Equal(deep ? 1023 : 0, gm.ImageMax);   // 10 bit samples hold 0..1023
+        var centred = Aardvark.ImageCodecs.GainMap.Apply(b, CentredUpsample(gm.Image, b.Width, b.Height, deep ? 1023 : 255), gm.Metadata, gm.AlternateIcc, 2.5);
+        AssertStops(expected, centred, maxStops, meanStops, file + ", centred resampling");
+        if (gm.Image.Width == b.Width) AssertStops(expected, mine, maxStops, meanStops, file);
+        else AssertStops(expected, mine, 0.6, 0.08, file + ", co-sited resampling");
+    }
+
+    /// <summary>
+    /// 4.5: the gain map has the orientation of the base image. libavif keeps the base's irot / imir (and clap) on the gain
+    /// map item too and applies the gain map in the stored geometry; turned upright, the gain map is transformed like the
+    /// base (a clean aperture scaled to the gain map's size). With the resampling libavif uses (which commutes with the
+    /// transforms) the upright result is libavif's turned; the co-sited one is off by up to a gain map pixel after mirroring.
+    /// </summary>
+    [Fact]
+    public void GainMapFollowsTheBaseTransforms()
+    {
+        var path = Fixture("avif/gainmap/irot.avif");
+        var data = File.ReadAllBytes(path);
+        var expected = PqToLinear(LoadRef(path + ".tonemap.ref"));
+        RawImage Centred(byte[] d, AvifDecodeOptions? o)
+        {
+            var b = Avif.Decode(d, o);
+            var g = Avif.GetGainMap(d, o)!.ToGainMap()!;
+            return Aardvark.ImageCodecs.GainMap.Apply(b, CentredUpsample(g.Image, b.Width, b.Height, 255), g.Metadata, g.AlternateIcc, 2.5);
+        }
+        // the stored geometry, as libavif
+        Assert.Equal((64, 48), (Avif.DecodeHdr(data, 2.5, Stored).Width, Avif.DecodeHdr(data, 2.5, Stored).Height));
+        AssertStops(expected, Centred(data, Stored), 0.1, 0.02, "stored");
+        // upright: irot 1 (90 degrees anti-clockwise), then imir 1 (left-right)
+        static RawImage Turn(RawImage i) => ImageOps.FlipHorizontal(ImageOps.Rotate270(i));
+        Assert.Equal((24, 32), (Avif.GetGainMap(data)!.ToGainMap()!.Image.Width, Avif.GetGainMap(data)!.ToGainMap()!.Image.Height));
+        AssertStops(Turn(expected), Centred(data, null), 0.1, 0.02, "upright");
+        var upright = Avif.DecodeHdr(data, 2.5);
+        Assert.Equal((48, 64), (upright.Width, upright.Height));
+        AssertStops(Turn(expected), upright, 0.9, 0.12, "upright, co-sited");
+        // clap 48 x 40 at (8, 4) of the 64 x 48 base: (4, 2, 24, 20) of the 32 x 24 gain map, then turned
+        var clap = File.ReadAllBytes(Fixture("avif/gainmap/clap.avif"));
+        var cg = Avif.GetGainMap(clap)!.ToGainMap()!;
+        Assert.Equal((20, 24), (cg.Image.Width, cg.Image.Height));
+        var cropped = Avif.DecodeHdr(clap, 2.5);
+        Assert.Equal((40, 48), (cropped.Width, cropped.Height));
+        // (but for the outermost pixels, where the cropped gain map's samples are clamped)
+        static RawImage Inner(RawImage i) => ImageOps.Crop(i, 1, 1, i.Width - 2, i.Height - 2);
+        TestUtil.AssertEqual(Inner(Turn(ImageOps.Crop(Centred(clap, Stored), 8, 4, 48, 40))), Inner(Centred(clap, null)), 1e-5);
+    }
+
+    /// <summary>A tmap item of a version other than 0 is ignored (as libavif 1.4.2 does): the base image converted to linear light.</summary>
+    [Fact]
+    public void UnknownTmapVersionIsIgnored()
+    {
+        var data = File.ReadAllBytes(Fixture("avif/gainmap.avif"));
+        var g = Avif.GetGainMap(data)!;
+        // the tmap payload: version byte, then the metadata (minimum_version 0, writer_version 0, flags, headrooms...)
+        int at = data.AsSpan().IndexOf(g.Metadata.AsSpan(0, 21)) - 1;
+        Assert.Equal(0, data[at]);
+        var v1 = (byte[])data.Clone();
+        v1[at] = 1;
+        var g1 = Avif.GetGainMap(v1)!;
+        Assert.Equal(1, g1.Version);
+        Assert.Null(g1.ParsedMetadata);
+        Assert.Null(g1.ToGainMap());
+        TestUtil.AssertEqual(Aardvark.ImageCodecs.GainMap.LinearRgb(Avif.Decode(v1)), Avif.DecodeHdr(v1));
+        TestUtil.AssertEqual(Avif.DecodeHdr(v1), ImageCodec.DecodeHdr(v1));
+        Assert.NotNull(g.ParsedMetadata);
+    }
+
     public static IEnumerable<object[]> LibavifFiles
     {
         get

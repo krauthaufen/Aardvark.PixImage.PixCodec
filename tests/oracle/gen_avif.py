@@ -11,9 +11,10 @@
 
 Tools: avifenc, avifdec, avifgainmaputil, aomenc, dav1d from PATH (tests/oracle/ci/install.sh avif) or
 .tmp/tools/usr/bin (the Debian trixie packages libavif-bin 1.2.1, aom-tools 3.12.1 and dav1d 1.5.1 unpacked there, with
-their libraries in .tmp/tools/usr/lib/x86_64-linux-gnu); the fixtures were made with those versions.
+their libraries in .tmp/tools/usr/lib/x86_64-linux-gnu); the fixtures were made with those versions (the tonemap ones with
+the libavif 1.4.2 release binaries).
 
-usage: python3 gen_avif.py [avif] [gainmap] [overlay] [av1]
+usage: python3 gen_avif.py [avif] [gainmap] [tonemap] [overlay] [av1]
 """
 import hashlib
 import json
@@ -499,11 +500,46 @@ def gen_gainmap():
                                         'alternatePrimaries': 9, 'alternateTransfer': 16}}, 1)
 
 
+def tonemap_ref(src, out, headroom):
+    """avifgainmaputil's gain map application at the given headroom as BT.2100 PQ (16 bit samples, stored geometry)."""
+    png = os.path.join(TMP, 'tm.png')
+    run(tool('avifgainmaputil'), 'tonemap', src, png, '--headroom', headroom, '--cicp-output', '9/16/9', '-d', 12)
+    import imagecodecs
+    write_ref(out, imagecodecs.png_decode(open(png, 'rb').read()))
+
+
+def gen_gainmap_tonemap():
+    """
+    References for applying gain maps (ISO 21496-1 clause 6): avifgainmaputil tonemap of gainmap.avif at headroom 2.5
+    (gainmap.avif.tonemap.ref), and in gainmap/ gain map files whose base image has transforms (4.5): irot.avif (irot 1,
+    imir 1, with its tonemap reference in the stored geometry) and clap.avif (clap too; the gain map has half the size
+    and libavif repeats the clap unscaled on the gain map item, which its strict parsing then rejects); deep.avif has a
+    full size 10 bit gain map (with its tonemap reference).
+    """
+    os.makedirs(TMP, exist_ok=True)
+    tonemap_ref(os.path.join(OUT, 'gainmap.avif'), os.path.join(OUT, 'gainmap.avif.tonemap.ref'), 2.5)
+    base = natural(64, 48, 31)
+    alt = (np.clip(base.astype(np.float64) / 255 * 1.8, 0, 1) ** 1.1 * 65535).astype(np.uint16)
+    bp, ap = os.path.join(TMP, 'gt_base.png'), os.path.join(TMP, 'gt_alt.png')
+    save_png(bp, base)
+    save_png(ap, alt)
+    os.makedirs(os.path.join(OUT, 'gainmap'), exist_ok=True)
+    for name, extra, gm in [('irot', ['--irot', 1, '--imir', 1], ['--downscaling', 2]), ('clap', ['--crop', '8,4,48,40', '--irot', 1, '--imir', 1], ['--downscaling', 2]),
+                            ('deep', [], ['--depth-gain-map', 10])]:
+        b = os.path.join(TMP, name + '_base.avif')
+        run(tool('avifenc'), '-q', 90, *extra, bp, b)
+        out = os.path.join(OUT, 'gainmap', name + '.avif')
+        run(tool('avifgainmaputil'), 'combine', b, ap, out, '--cicp-alternate', '9/16/9', *gm, '-q', 90, '--qgain-map', 90)
+        if name != 'clap': tonemap_ref(out, out + '.tonemap.ref', 2.5)
+        print(name, os.path.getsize(out))
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     what = sys.argv[1:] or ['avif', 'av1']
     if 'avif' in what: gen_stills()
     if 'gainmap' in what or 'avif' in what: gen_gainmap()
+    if 'tonemap' in what or 'gainmap' in what or 'avif' in what: gen_gainmap_tonemap()
     if 'overlay' in what or 'avif' in what: gen_overlay()
     if 'av1' in what: gen_av1()
     shutil.rmtree(TMP, ignore_errors=True)
