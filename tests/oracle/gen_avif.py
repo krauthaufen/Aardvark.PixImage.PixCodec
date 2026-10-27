@@ -988,6 +988,16 @@ def gen_tmap_inputs():
           [('dimg', 5, [1, 3]), ('dimg', 4, [2, 5])])
 
 
+HDR_BODIES = {
+    'clli': struct.pack('>HH', 1000, 400),
+    'mdcv': struct.pack('>HHHHHHHHII', 13250, 34500, 7500, 3000, 34000, 16000, 15635, 16450, 10000000, 50),
+    'cclv': bytes([0x3C]) + struct.pack('>iiiiiiIII', 13250, 34500, 7500, -3000, 34000, 16000, 50000, 4000000000, 1000000000),
+    'amve': struct.pack('>IHH', 3140000, 15635, 16450),
+    'reve': struct.pack('>IHHIHH', 50000, 15635, 16450, 100000, 15635, 16450),
+    'ndwt': struct.pack('>I', 2030000),
+}
+
+
 def gen_mini():
     """
     Low-overhead files (HEIF Amd 2 Annex O, MinimizedImageBox version 0) in avif/mini, repackaged from the stills, each
@@ -1021,6 +1031,10 @@ def gen_mini():
         'gainmap': dict(w=128, h=96, av1c=cfg(gm[gp]), data=gm[gp]['data'], cicp=(1, 13, 2),
                         gainmap=dict(w=64, h=48, av1c=cfg(gm[3]), data=gm[3]['data'], metadata=gm[2]['data'][1:], mc=2, sub=3,
                                      cicp=(9, 16, 9, 1))),
+        # the HDR boxes of O.3.2 (14496-12 12.1.6 - 12.1.9, HEIF Amd 1 6.5.44, 6.5.45): MaxCLL 1000, MaxPALL 400; P3 D65
+        # mastering display 1000 / 0.005 cd/m2; cclv with all present flags (0x3C: 36 bytes after the flags byte, one
+        # negative primary); 314 lux D65 ambient; reve; diffuse white 203 cd/m2
+        'hdr': dict(w=160, h=112, av1c=cfg(nat[p]), data=nat[p]['data'], hdr=HDR_BODIES),
     }
     for name, a in cases.items():
         out = os.path.join(d, name + '.avif')

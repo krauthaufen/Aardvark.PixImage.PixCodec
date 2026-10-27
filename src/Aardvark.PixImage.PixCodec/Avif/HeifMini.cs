@@ -264,11 +264,13 @@ namespace Aardvark.ImageCodecs.Heif
                     case "ndwt": return b.Bytes(4);
                     default:
                         {
-                            // ContentColourVolumeBox: a flags byte (reserved, cancel, persistence, primaries, min, max, avg
-                            // luminance present, reserved), then the present fields
+                            // ContentColourVolumeBox (14496-12 12.1.8.2): a flags byte (MSB first: reserved (ccv_cancel_flag),
+                            // reserved (ccv_persistence_flag), primaries, min, max, avg luminance present, 2 reserved), then
+                            // 3 x/y pairs of signed 32 bit primaries and the present 32 bit luminances. The box has no cancel
+                            // semantics: the layout follows the present flags whatever the reserved bits hold.
                             var first = b.Bytes(1);
                             int f = first[0];
-                            int n = (f & 0x40) != 0 ? 0 : ((f & 0x10) != 0 ? 24 : 0) + ((f & 0x08) != 0 ? 4 : 0) + ((f & 0x04) != 0 ? 4 : 0) + ((f & 0x02) != 0 ? 4 : 0);
+                            int n = ((f & 0x20) != 0 ? 24 : 0) + ((f & 0x10) != 0 ? 4 : 0) + ((f & 0x08) != 0 ? 4 : 0) + ((f & 0x04) != 0 ? 4 : 0);
                             var rest = b.Bytes(n);
                             var r = new byte[1 + n];
                             r[0] = first[0];

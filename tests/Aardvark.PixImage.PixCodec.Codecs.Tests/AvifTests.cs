@@ -822,6 +822,7 @@ public class AvifTests(ITestOutputHelper output)
     [InlineData("deep", 10)]
     [InlineData("meta", 8)]
     [InlineData("gainmap", 8)]
+    [InlineData("hdr", 8)]
     public void LowOverheadFiles(string name, int bits)
     {
         var path = Fixture($"avif/mini/{name}.avif");
@@ -852,6 +853,47 @@ public class AvifTests(ITestOutputHelper output)
         Assert.Equal((9, 16), (gm.AlternatePrimaries, gm.AlternateTransferCharacteristics));
         AssertEqual(srcGm.DecodeImage(), gm.DecodeImage());
         Assert.NotNull(gm.ToGainMap());
+    }
+
+    /// <summary>
+    /// mini/hdr.avif (gen_avif.py HDR_BODIES): the six HDR boxes of O.3.2 expand to the item 1 properties of O.4.6
+    /// (entries 11 - 16, non-essential), with the bodies of 14496-12 12.1.6 - 12.1.9 and HEIF Amd 1 6.5.44 / 6.5.45.
+    /// The cclv flags byte 0x3C (14496-12 12.1.8.2: cancel and persistence reserved, then primaries, min, max, avg
+    /// present, 2 reserved) is followed by 36 bytes; reading it with the flags one bit off misplaced every later field.
+    /// </summary>
+    [Fact]
+    public void LowOverheadHdrBoxes()
+    {
+        static byte[] Be(params (long v, int n)[] fields)
+        {
+            var r = new List<byte>();
+            foreach (var (v, n) in fields) for (int i = n - 1; i >= 0; i--) r.Add((byte)(v >> (8 * i)));
+            return r.ToArray();
+        }
+        var expected = new Dictionary<string, byte[]>
+        {
+            ["clli"] = Be((1000, 2), (400, 2)),
+            ["mdcv"] = Be((13250, 2), (34500, 2), (7500, 2), (3000, 2), (34000, 2), (16000, 2), (15635, 2), (16450, 2), (10000000, 4), (50, 4)),
+            ["cclv"] = Be((0x3C, 1), (13250, 4), (34500, 4), (7500, 4), (-3000, 4), (34000, 4), (16000, 4), (50000, 4), (4000000000, 4), (1000000000, 4)),
+            ["amve"] = Be((3140000, 4), (15635, 2), (16450, 2)),
+            // ItemFullProperty: version 0, flags 0
+            ["reve"] = Be((0, 4), (50000, 4), (15635, 2), (16450, 2), (100000, 4), (15635, 2), (16450, 2)),
+            ["ndwt"] = Be((0, 4), (2030000, 4)),
+        };
+        var data = HeifMini.Expand(File.ReadAllBytes(Fixture("avif/mini/hdr.avif")))!;
+        var f = HeifFile.Parse(data);
+        var main = f.Items[1];
+        var seen = new List<string>();
+        foreach (var pr in main.Properties)
+        {
+            var p = f.Properties[pr.Index];
+            if (!expected.TryGetValue(p.Type, out var body)) continue;
+            seen.Add(p.Type);
+            Assert.False(pr.Essential, p.Type);
+            Assert.Equal(body, data.AsSpan((int)p.Payload, (int)(p.End - p.Payload)).ToArray());
+            Assert.Equal(11 + Array.IndexOf(new[] { "clli", "mdcv", "cclv", "amve", "reve", "ndwt" }, p.Type), pr.Index + 1);
+        }
+        Assert.Equal(new[] { "clli", "mdcv", "cclv", "amve", "reve", "ndwt" }, seen);
     }
 
     // ------------------------------------------------------------------ robustness
