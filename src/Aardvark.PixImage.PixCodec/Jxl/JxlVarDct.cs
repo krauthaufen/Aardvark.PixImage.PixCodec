@@ -321,8 +321,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                     r.CheckFinalState();
                 }
+                // no limit in the text (I.4): num_hf_presets is at most num_groups, so the size follows the frame's
                 long nctx = 495L * numHistoSets * numBlockCtx;
-                if (nctx > 1 << 20) throw new ImageFormatException("JPEG XL: too many HF contexts");
+                if (nctx > int.MaxValue) throw new ImageNotSupportedException("JPEG XL: too many HF contexts");
                 hfCodes[p] = JxlEntropyCode.Read(br, (int)nctx);
             }
             br.CheckEnd();

@@ -877,7 +877,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             streams.Prepare(tree, lp, f.Parallel);
 
             // HF entropy code over all groups
-            var hf = new JxlEntropyEncoder(NumHfContexts) { MaxClusters = f.Effort >= 7 ? 64 : 32, ClusterEffort = f.Effort >= 5 ? 2 : 1 };
+            int presets = opt.HfPresets;   // all but the first left unused (a test hook)
+            var hf = new JxlEntropyEncoder(NumHfContexts * presets) { MaxClusters = f.Effort >= 7 ? 64 : 32, ClusterEffort = f.Effort >= 5 ? 2 : 1 };
             hf.Build(f.HfTokens, f.Parallel);
 
             // sections
@@ -904,13 +905,14 @@ namespace Aardvark.ImageCodecs.JpegXl
             {
                 w.WriteBool(f.DequantMatrices == null);   // default dequantization matrices
                 f.DequantMatrices?.Invoke(w);
-                w.Write(JxlHybridUint.CeilLog2(dims.NumGroups), 0);   // one histogram set
+                w.Write(JxlHybridUint.CeilLog2(dims.NumGroups), (uint)(presets - 1));   // histogram sets
                 w.WriteU32(0, Val(0x5F), Val(0x13), Val(0), Bits(13));   // natural coefficient orders
                 hf.WriteCode(w);
             }
             void PassGroup(int g, JxlBitWriter w)
             {
-                // the single histogram set needs no selector bits
+                // the first histogram set (no selector bits for a single one)
+                w.Write(JxlHybridUint.CeilLog2(presets), 0);
                 hf.WriteTokens(w, f.HfTokens[g]);
                 if (groupIdx[g] >= 0) streams.WriteStream(w, groupIdx[g], none);
             }

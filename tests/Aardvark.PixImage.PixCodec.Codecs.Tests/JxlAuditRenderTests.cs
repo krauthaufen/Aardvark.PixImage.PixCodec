@@ -511,6 +511,22 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         Assert.True(m == null || m < 2 / 255.0, $"{m}");
     }
 
+    /// <summary>
+    /// I.4: the HF histograms have 495 * num_hf_presets * nb_block_ctx distributions, num_hf_presets up to num_groups,
+    /// and no limit beyond that. 144 groups with 144 presets and the 15 default block contexts: 1069200 distributions.
+    /// </summary>
+    [Fact]
+    public void ManyHfPresets()
+    {
+        const int W = 3072, H = 3072;
+        var d = new byte[W * H * 3];
+        for (int i = 0; i < d.Length; i++) { int p = i / 3; d[i] = (byte)(64 + (p % W) / 24 + (p / W) / 32 + 20 * (i % 3)); }
+        var img = new RawImage(W, H, ColorModel.Rgb, d, 3);
+        var data = Jxl.Encode(img, new JxlEncodeOptions { Distance = 2, Effort = 3, HfPresets = 144 });
+        var m = LossyDiff(data, "hf presets 144");
+        Assert.True(m == null || m < 2 / 255.0, $"{m}");
+    }
+
     // ------------------------------------------------------------------ I.2 dequantization matrices
 
     /// <summary>Table I.6: DCT128x256 (and DCT256x128), channel B, starts at 12979.84647584004484.</summary>
