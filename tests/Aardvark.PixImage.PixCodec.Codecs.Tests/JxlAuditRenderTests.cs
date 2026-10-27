@@ -216,6 +216,63 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         AssertClose(data, $"patch colour {colourMode} alpha {alphaMode}", 1e-4);
     }
 
+    // ------------------------------------------------------------------ K.4 splines, K.5 noise
+
+    /// <summary>Splines (K.4.1) with the given control points; colour and sigma DCTs from a seeded generator.</summary>
+    static void WriteSplines(JxlBitWriter w, (int x, int y)[][] splines, int seed)
+    {
+        var t = new Tokens(6);
+        t.Add(2, splines.Length - 1);
+        for (int i = 0; i < splines.Length; i++)
+        {
+            var p = splines[i][0];
+            if (i == 0) { t.Add(1, p.x); t.Add(1, p.y); }
+            else { t.AddSigned(1, p.x - splines[i - 1][0].x); t.AddSigned(1, p.y - splines[i - 1][0].y); }
+        }
+        t.AddSigned(0, 0);
+        var rng = new Random(seed);
+        foreach (var sp in splines)
+        {
+            t.Add(3, sp.Length - 1);
+            int dx = 0, dy = 0;
+            for (int j = 1; j < sp.Length; j++)
+            {
+                int ndx = sp[j].x - sp[j - 1].x, ndy = sp[j].y - sp[j - 1].y;
+                t.AddSigned(4, ndx - dx); t.AddSigned(4, ndy - dy);
+                dx = ndx; dy = ndy;
+            }
+            for (int c = 0; c < 4; c++)
+                for (int k = 0; k < 32; k++) t.AddSigned(5, k == 0 ? (c == 3 ? 6 : 14 + 3 * c) : k < 6 ? rng.Next(-4, 5) : 0);
+        }
+        t.WriteTo(w);
+    }
+
+    static void WriteNoise(JxlBitWriter w) { foreach (int v in new[] { 80, 150, 260, 330, 420, 610, 700, 1010 }) w.Write(10, (uint)v); }
+
+    /// <summary>
+    /// K.4.2 and K.5.2 add splines and noise to the colour channels (X, Y, B) only, never to extra channels. Grey and RGB
+    /// images with up to two extra channels, against libjxl.
+    /// </summary>
+    [Theory]
+    [InlineData(true, 2, false)]
+    [InlineData(true, 2, true)]
+    [InlineData(true, 0, false)]
+    [InlineData(true, 1, true)]
+    [InlineData(false, 2, false)]
+    [InlineData(false, 1, true)]
+    public void SplinesAndNoiseOnColourOnly(bool grey, int extra, bool noise)
+    {
+        const int W = 72, H = 56;
+        var ex = new[] { JxlExtraChannelType.Alpha, JxlExtraChannelType.Depth }.Take(extra).ToArray();
+        var s = new Stream(W, H, grey, ex);
+        var f = s.NewFrame(W, H);
+        f.IsLast = true; f.Flags = noise ? JxlFrameHeader.FlagNoise : JxlFrameHeader.FlagSplines;
+        var splines = new[] { new[] { (10, 12), (40, 20), (60, 45) }, new[] { (8, 50), (30, 30) } };
+        s.Frame(f, Planes(W, H, s.NumColour + extra, 3).Select(p => new Plane(W, H, (x, y) => 0.2f + 0.5f * p.V[y * W + x])).ToArray(),
+            bw => { if (noise) WriteNoise(bw); else WriteSplines(bw, splines, 5); });
+        AssertClose(s.ToArray(), $"{(noise ? "noise" : "splines")} {(grey ? "grey" : "rgb")} + {extra}", noise ? 2e-5 : 0.02);
+    }
+
     // ------------------------------------------------------------------ K.2 upsampling weights
 
     /// <summary>d_up2, d_up4 and d_up8 of K.2 as printed in 18181-1:2024.</summary>
