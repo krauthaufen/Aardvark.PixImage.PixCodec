@@ -117,6 +117,27 @@ public class IccBpcTests
     }
 
     [Fact]
+    public void DeviceBlackAsLittleCms()
+    {
+        // ISO 18619 4.2.2.2 takes the darkest of a vertex set; LittleCMS (PIL.ImageCms 2.16, black box) takes device black
+        // alone, gives black 0 when that is lighter than L* 50, and black 0 for an intent without its own A2B table.
+        var rgb = Profile(IccProfileClass.Display, IccColorSpace.Rgb, ("A2B0", Lut16(3, 3, 2, x => Gray(5 + 95 * (x[0] + x[1] + x[2]) / 3))));
+        Near(5, BlackL(rgb, IccRenderingIntent.Perceptual, true));
+        Near(0, BlackL(rgb, IccRenderingIntent.RelativeColorimetric, true)); // spec: D = 5 through A2B0
+        Near(0, BlackL(rgb, IccRenderingIntent.Saturation, true));
+        // inverse polarity: device black is L* 100 (spec: D = (1, 1, 1) -> 5, resp. 1 -> 10)
+        var rgbInv = Profile(IccProfileClass.Display, IccColorSpace.Rgb, ("A2B0", Lut16(3, 3, 2, x => Gray(100 - 95 * (x[0] + x[1] + x[2]) / 3))));
+        Near(0, BlackL(rgbInv, IccRenderingIntent.Perceptual, true));
+        var grayInv = IccProfile.CreateGray("inverse", CieXy.D65, IccCurve.Table(Enumerable.Range(0, 256).Select(i => (ushort)(65535 - 257 * i)).ToArray()), 2);
+        foreach (var intent in Intents) Near(0, BlackL(grayInv, intent, true));
+        // CMYK without a B2A: full ink, L* 20 (spec: D = 0001 -> 15)
+        var cmyk = Profile(IccProfileClass.Output, IccColorSpace.Cmyk,
+            ("A2B0", Lut16(4, 3, 2, x => Gray(100 - 85 * x[3] - 10 * x[0] + 15 * x[0] * x[3]))));
+        Near(20, BlackL(cmyk, IccRenderingIntent.Perceptual, true));
+        Near(0, BlackL(cmyk, IccRenderingIntent.Saturation, true));
+    }
+
+    [Fact]
     public void RgbOutputProfileUsesDarkestColour()
     {
         // ISO 18619 4.2.3: only CMYK (or xCLR) output-capable profiles start from the B2A; an RGB profile, of the output

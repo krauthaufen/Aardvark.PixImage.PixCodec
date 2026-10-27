@@ -239,6 +239,7 @@ namespace Aardvark.ImageCodecs
                 && (UsesLut(p, intent, true) || UsesLut(p, intent, false)))
                 return PerceptualBlack;
             float[] device;
+            bool corner = false;
             bool subtractive = p.ColorSpace is IccColorSpace.Cmyk or IccColorSpace.Cmy;
             bool colorimetric = intent is IccRenderingIntent.RelativeColorimetric or IccRenderingIntent.AbsoluteColorimetric;
             if (colorimetric && subtractive
@@ -252,16 +253,27 @@ namespace Aardvark.ImageCodecs
                 device = LabBlack(p, intent);
             else
             {
+                // ISO 18619 4.2.2.2 defines D as the darkest of a vertex set ({0, 1}, {000, 111}, {0000, 1111, 0001, 1110}),
+                // whatever the polarity; LittleCMS takes device black alone (no light, or full ink), gives no compensation (black
+                // 0) when that is lighter than L* 50 instead of limiting it to 50, and none for an intent whose own A2B table the
+                // profile lacks (IccBpcTests.DeviceBlackAsLittleCms, against PIL.ImageCms). We follow LittleCMS.
+                if (!HasIntent(p, intent)) return default;
+                corner = true;
                 device = new float[p.Channels];
                 if (subtractive) Array.Fill(device, 1f);
             }
             var fwd = ToPcs(p, intent == IccRenderingIntent.AbsoluteColorimetric ? IccRenderingIntent.RelativeColorimetric : intent, trilinear, out var fpcs);
             if (fpcs == IccColorSpace.Xyz) fwd.Add(new XyzToLabStage());
             var lab = IccPipeline.Eval(fwd, device);
+            if (corner && !(lab[0] <= 50)) return default;
             double l = Math.Clamp((double)lab[0], 0, 50);
             var (x, y, z) = IccMath.LabToXyz(l, 0, 0);
             return new CieXyz(x, y, z);
         }
+
+        /// <summary>Whether the profile serves the intent in LittleCMS's sense: matrix / TRC profiles every intent, LUT profiles
+        /// those with their own A2B table.</summary>
+        static bool HasIntent(IccProfile p, IccRenderingIntent intent) => p.IsMatrixShaper || p.HasLut(intent, true);
 
         /// <summary>Lab (0, 0, 0) as the normalised device values of a profile with a Lab data colour space (ISO 18619 4.2.3):
         /// a* = b* = 0 is 0x8000 in the lut16 encoding, 128 / 255 in the others (ICC.1 6.3.4).</summary>
