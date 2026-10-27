@@ -44,6 +44,16 @@ namespace Aardvark.ImageCodecs
         /// </summary>
         public bool ApplyOrientation { get; set; } = true;
 
+        /// <summary>
+        /// Upper bound for the decoded image (the region, for DecodeRegion) in pixels; larger requests are rejected with an
+        /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit
+        /// beyond the array size. Lower it when decoding untrusted data with a memory budget.
+        /// </summary>
+        public long MaxPixels { get; set; }
+
+        /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per strip or tile.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Decoded size in bytes from which <see cref="Parallel"/> kicks in.</summary>
         internal long ParallelThreshold = 512 * 1024;
 
@@ -95,6 +105,9 @@ namespace Aardvark.ImageCodecs
 
     public sealed class TiffEncodeOptions
     {
+        /// <summary>Stops the encode with an <see cref="OperationCanceledException"/>; checked per strip or tile.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         public TiffCompression Compression { get; set; } = TiffCompression.Deflate;
 
         /// <summary>
@@ -477,6 +490,14 @@ namespace Aardvark.ImageCodecs
         public static void Encode(RawImage image, Stream output, TiffEncodeOptions? options = null)
             => TiffEncoder.Encode(new[] { new TiffPage(image ?? throw new ArgumentNullException(nameof(image))) }, output, options ?? new TiffEncodeOptions());
 
+        /// <summary>Encodes an image as TIFF into a byte array.</summary>
+        public static byte[] Encode(RawImage image, TiffEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
+
         /// <summary>
         /// Writes several images into one TIFF (multi-page file, or a pyramid when the further pages are marked
         /// <see cref="TiffPage.ReducedResolution"/>). File level settings (BigTiff, BigEndian) come from
@@ -569,6 +590,8 @@ namespace Aardvark.ImageCodecs
                     throw new TiffArgumentException("region", "TIFF: region lies outside of the image");
                 (x, y, w, h) = ExifTags.StoredRegion(o, img.Width, img.Height, r);
             }
+            if (options.MaxPixels > 0 && (long)w * h > options.MaxPixels)
+                throw new ImageNotSupportedException($"TIFF image of {w}x{h} exceeds TiffDecodeOptions.MaxPixels ({options.MaxPixels})");
             var raw = img.Decode(x, y, w, h, options);
             return o > 1 ? ImageOps.ApplyOrientation(raw) : raw;
         }

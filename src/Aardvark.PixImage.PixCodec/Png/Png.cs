@@ -70,6 +70,16 @@ namespace Aardvark.ImageCodecs
         /// Composited animation frames are turned upright too, raw frames (sub-rectangles of the canvas) are always as stored.
         /// </summary>
         public bool ApplyOrientation { get; set; } = true;
+
+        /// <summary>
+        /// Upper bound for the image (and an animation's canvas) in pixels; larger files are rejected with an
+        /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit
+        /// beyond the array size. Lower it when decoding untrusted data with a memory budget.
+        /// </summary>
+        public long MaxPixels { get; set; }
+
+        /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
     }
 
     /// <summary>Row filter used by the PNG encoder.</summary>
@@ -88,6 +98,9 @@ namespace Aardvark.ImageCodecs
 
     public sealed class PngEncodeOptions
     {
+        /// <summary>Stops the encode with an <see cref="OperationCanceledException"/>; checked per row.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>zlib level 0..9.</summary>
         public int CompressionLevel { get; set; } = 6;
 
@@ -358,6 +371,19 @@ namespace Aardvark.ImageCodecs
         /// HasIccProfile is set without inflating the profile, which Decode drops if its compressed data is corrupt.
         /// </summary>
         public static ImageInfo GetInfo(ReadOnlySpan<byte> data) => ColorTags.With(PngDecoder.GetInfo(data), data);
+
+        /// <summary>
+        /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom, without holding the whole image (interlaced
+        /// files, and all files with the BCL zlib backend, are decoded whole and then cut into bands). <paramref name="onBand"/>
+        /// gets each band and the index of its first row; all bands but the last have <paramref name="bandHeight"/> rows. The
+        /// band image is reused for the next band: copy what has to outlive the call. The pixels are as stored (the
+        /// orientation is not applied; the metadata keeps it). For an APNG this is the default image. Returns the metadata.
+        /// </summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, PngDecodeOptions? options = null)
+        {
+            ImageBands.CheckArguments(bandHeight, onBand);
+            return PngDecoder.DecodeBands(data, bandHeight, onBand, options ?? DefaultDecode);
+        }
 
         /// <summary>Decodes a complete PNG file held in memory. For an APNG this is the default image.</summary>
         public static RawImage Decode(ReadOnlySpan<byte> data, PngDecodeOptions? options = null)

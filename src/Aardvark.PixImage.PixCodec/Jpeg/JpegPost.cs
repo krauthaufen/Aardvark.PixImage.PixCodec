@@ -49,14 +49,27 @@ namespace Aardvark.ImageCodecs.JpegImpl
             readonly byte[]? _tmpArr, _rowArr;
             readonly byte* _tmp, _row;
             readonly int _orientation;
+            /// <summary>Gray / RGB rows are expanded to RGBA with opaque alpha (from <see cref="_conv"/>, holding _convChannels).</summary>
+            readonly bool _rgba;
+            readonly int _convChannels;
+            readonly byte[]? _convArr;
+            readonly byte* _conv;
             int _y;
+
+            /// <summary>
+            /// Band mode: the output holds <see cref="BandRows"/> rows, and <see cref="OnBand"/> (first row, row count) is
+            /// called whenever they are full and after the last row. Only without orientation.
+            /// </summary>
+            public int BandRows;
+            public Action<int, int>? OnBand;
+            int _bandStart;
 
             /// <summary>
             /// Writes the top left <paramref name="w"/> x <paramref name="h"/> pixels of <paramref name="d"/> to
             /// <paramref name="output"/> in color handling <paramref name="cs"/>. With an EXIF <paramref name="orientation"/>
             /// 2..8 rows go where they belong in the upright image (h x w for 5..8), as <see cref="ImageOps.ApplyOrientation"/> turns them.
             /// </summary>
-            public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1)
+            public Assembler(JpegDecoder d, byte* output, int w, int h, JpegColorSpace cs, int orientation = 1, bool rgba = false)
             {
                 _d = d; _out = output; _w = w; _h = h; _cs = cs; _orientation = orientation;
                 int nc = d.Comps.Length;
@@ -75,6 +88,14 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     fixed (byte* t = _tmpArr) _tmp = t;
                 }
                 _outChannels = cs == JpegColorSpace.Gray ? 1 : cs is JpegColorSpace.Raw or JpegColorSpace.Rgb ? nc : cs == JpegColorSpace.YcckToCmyk ? 4 : 3;
+                if (rgba && _outChannels is 1 or 3)
+                {
+                    _rgba = true;
+                    _convChannels = _outChannels;
+                    _outChannels = 4;
+                    _convArr = GC.AllocateUninitializedArray<byte>(w * 3 + 64, pinned: true);
+                    fixed (byte* t = _convArr) _conv = t;
+                }
                 if (orientation > 1)
                 {
                     _rowArr = GC.AllocateUninitializedArray<byte>(w * _outChannels + 64, pinned: true);
@@ -123,6 +144,11 @@ namespace Aardvark.ImageCodecs.JpegImpl
                         if (units != int.MaxValue && LastRow(c, _y) >= Math.Min((long)units * c.UnitRows, c.SampledH)) return;
                     }
                     Emit(_y++);
+                    if (BandRows > 0 && (_y - _bandStart == BandRows || _y == _h))
+                    {
+                        OnBand!(_bandStart, _y - _bandStart);
+                        _bandStart = _y;
+                    }
                 }
                 if (units == int.MaxValue) Release();
             }
@@ -165,7 +191,8 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 int nc = ups.Length, w = _w;
                 byte** lines = stackalloc byte*[4];
                 for (int i = 0; i < nc; i++) lines[i] = GetLine(ups[i], y, w, ups[i].Line, ups[i].Sum);
-                byte* dst = _orientation > 1 ? _row : _out + (nint)y * w * _outChannels;
+                byte* final = _orientation > 1 ? _row : _out + (nint)(BandRows > 0 ? y - _bandStart : y) * w * _outChannels;
+                byte* dst = _rgba ? _conv : final;
                 byte* tmp = _tmp;
                 {
                     switch (_cs)
@@ -203,7 +230,36 @@ namespace Aardvark.ImageCodecs.JpegImpl
                             break;
                     }
                 }
+                if (_rgba) ExpandToRgba(_conv, _convChannels, final, w);
                 if (_orientation > 1) Place(y);
+            }
+        }
+
+        static void ExpandToRgba(byte* src, int channels, byte* dst, int w)
+        {
+            int x = 0;
+            var opaque = Vector128.Create(0xFF000000u).AsByte();
+            if (channels == 1)
+            {
+                if (Vector128.IsHardwareAccelerated)
+                    for (; x + 16 <= w; x += 16)
+                    {
+                        var g = Vector128.Load(src + x);
+                        byte* d = dst + 4 * x;
+                        (Vector128.Shuffle(g, Vector128.Create((byte)0, 0, 0, 0x80, 1, 1, 1, 0x80, 2, 2, 2, 0x80, 3, 3, 3, 0x80)) | opaque).Store(d);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)4, 4, 4, 0x80, 5, 5, 5, 0x80, 6, 6, 6, 0x80, 7, 7, 7, 0x80)) | opaque).Store(d + 16);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)8, 8, 8, 0x80, 9, 9, 9, 0x80, 10, 10, 10, 0x80, 11, 11, 11, 0x80)) | opaque).Store(d + 32);
+                        (Vector128.Shuffle(g, Vector128.Create((byte)12, 12, 12, 0x80, 13, 13, 13, 0x80, 14, 14, 14, 0x80, 15, 15, 15, 0x80)) | opaque).Store(d + 48);
+                    }
+                for (; x < w; x++) ((uint*)dst)[x] = src[x] * 0x010101u | 0xFF000000u;
+            }
+            else
+            {
+                // 16 bytes read for the 12 of four pixels: the row buffer has 64 bytes to spare
+                if (Vector128.IsHardwareAccelerated)
+                    for (; x + 4 <= w; x += 4)
+                        (Vector128.Shuffle(Vector128.Load(src + 3 * x), Vector128.Create((byte)0, 1, 2, 0x80, 3, 4, 5, 0x80, 6, 7, 8, 0x80, 9, 10, 11, 0x80)) | opaque).Store(dst + 4 * x);
+                for (src += 3 * x; x < w; x++, src += 3) ((uint*)dst)[x] = src[0] | (uint)src[1] << 8 | (uint)src[2] << 16 | 0xFF000000u;
             }
         }
 

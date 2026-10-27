@@ -20,6 +20,16 @@ namespace Aardvark.ImageCodecs
         public int ScaleDenominator { get; set; } = 1;
 
         /// <summary>
+        /// Decode at k/8 of the size, k = 1..8, by inverse DCTs of size k (0, the default, uses <see cref="ScaleDenominator"/>
+        /// instead). The output is ceil(size * k / 8); each output sample is the area average of the full size decode over
+        /// the part of the block it covers (the samples weighted by their overlap), so the result is close to decoding at
+        /// full size and averaging areas, with memory for the smaller output only. k = 1, 2, 4 are also faster than a full
+        /// decode; 3, 5, 6, 7 take about as long or longer. k = 1, 2, 4 give exactly what the matching
+        /// <see cref="ScaleDenominator"/> gives; 3, 5, 6, 7 are not bit identical to any other decoder. Ignored for lossless JPEG.
+        /// </summary>
+        public int ScaleEighths { get; set; }
+
+        /// <summary>
         /// Return 4 component (CMYK / YCCK) images as 4 channel <see cref="ColorModel.Other"/> data instead of converting
         /// them to RGB. The samples are C, M, Y, K as stored, which for the usual Adobe files means inverted (255 = no ink);
         /// YCCK is brought to that same form.
@@ -43,6 +53,32 @@ namespace Aardvark.ImageCodecs
         /// first SOI marker (some cameras and container formats prepend data). Set to require the data to start with it.
         /// </summary>
         public bool RequireSoiAtStart { get; set; }
+
+        /// <summary>
+        /// Decode what is there when the file ends before its EOI marker (a cut-off download or copy) instead of throwing
+        /// <see cref="ImageFormatException"/>, which is the default: data units that were never coded come out mid gray, the
+        /// missing scans of a progressive file leave its detail coarse. <see cref="ImageMetadata.Truncated"/> tells such a
+        /// result apart.
+        /// </summary>
+        public bool AllowTruncated { get; set; }
+
+        /// <summary>
+        /// Upper bound for the decoded size (after <see cref="ScaleDenominator"/> or <see cref="ScaleEighths"/>) in pixels; larger files are rejected with an
+        /// <see cref="ImageNotSupportedException"/> before any pixel memory is allocated. 0 (the default) sets no limit beyond
+        /// the format's own (65535 x 65535) and the array size. Lower it when decoding untrusted data with a memory budget.
+        /// </summary>
+        public long MaxPixels { get; set; }
+
+        /// <summary>
+        /// Return Gray and Rgb images as Rgba with an opaque alpha channel (gray expanded), written straight into the
+        /// output while decoding instead of in a second copy. Other layouts (CMYK and YCbCr kept raw) are not affected.
+        /// </summary>
+        public bool Rgba { get; set; }
+
+        /// <summary>Stops the decode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
+        internal JpegDecodeOptions Clone() => (JpegDecodeOptions)MemberwiseClone();
     }
 
     /// <summary>Chroma resolution of an encoded color JPEG.</summary>
@@ -74,6 +110,9 @@ namespace Aardvark.ImageCodecs
 
     public sealed class JpegEncodeOptions
     {
+        /// <summary>Stops the encode with an <see cref="OperationCanceledException"/>; checked per row of MCUs.</summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Quality 1..100.</summary>
         public int Quality { get; set; } = 90;
 
@@ -167,8 +206,9 @@ namespace Aardvark.ImageCodecs
         static JpegDecoder Open(byte* p, ReadOnlySpan<byte> data, JpegDecodeOptions o, bool headerOnly, Func<JpegDecoder, JpegPost.Assembler?>? stream = null)
         {
             if (o.ScaleDenominator is not (1 or 2 or 4 or 8)) throw new ArgumentException("ScaleDenominator must be 1, 2, 4 or 8");
+            if (o.ScaleEighths is < 0 or > 8) throw new ArgumentException("ScaleEighths must be 1..8 (or 0 to use ScaleDenominator)");
             int start = FindStart(data, o);
-            var d = new JpegDecoder(p + start, data.Length - start) { ScaleDenominator = o.ScaleDenominator, OnStream = stream };
+            var d = new JpegDecoder(p + start, data.Length - start) { ScaleEighths = o.ScaleEighths != 0 ? o.ScaleEighths : 8 / o.ScaleDenominator, OnStream = stream, MaxPixels = o.MaxPixels, Cancel = o.CancellationToken };
             d.Parse(headerOnly);
             return d;
         }
@@ -232,7 +272,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Decodes a complete JPEG file held in memory. 8 bit frames give UInt8 samples, deeper ones (12 bit DCT, lossless
         /// up to 16 bit) UInt16 holding the values as coded, e.g. 0..4095 for 12 bit - they are not scaled to the full
-        /// 16 bit range. Files that end early decode as far as the data goes (the remainder is gray). The EXIF orientation
+        /// 16 bit range. Files that end early throw unless <see cref="JpegDecodeOptions.AllowTruncated"/> is set. The EXIF orientation
         /// is applied unless <see cref="JpegDecodeOptions.ApplyOrientation"/> is off.
         /// </summary>
         public static RawImage Decode(ReadOnlySpan<byte> data, JpegDecodeOptions? options = null)
@@ -248,12 +288,15 @@ namespace Aardvark.ImageCodecs
                 JpegPost.Assembler? Stream(JpegDecoder dd)
                 {
                     streamPlan = Plan(dd, options);
+                    if (options.Rgba && streamPlan.Item2 is ColorModel.Gray or ColorModel.Rgb) streamPlan = (streamPlan.Item1, ColorModel.Rgba, 4);
                     int o = options.ApplyOrientation && dd.HasMetadata ? dd.Metadata.Orientation : 1;
                     streamOrientation = o is >= 2 and <= 8 ? o : 1;
                     streamed = GC.AllocateUninitializedArray<byte>(checked(dd.OutWidth * dd.OutHeight * streamPlan.Item3), pinned: true);
-                    fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation);
+                    fixed (byte* q = streamed) return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, streamPlan.Item1, streamOrientation, streamPlan.Item3 == 4 && options.Rgba);
                 }
                 var d = Open(p, data, options, headerOnly: false, Stream);
+                if (d.Truncated && !options.AllowTruncated)
+                    throw new ImageFormatException("invalid JPEG: the file ends before its EOI marker (truncated; JpegDecodeOptions.AllowTruncated decodes what is there)");
                 // (as planned when the scan started, should a marker after it change the color space)
                 var (cs, model, channels) = d.Streamed ? streamPlan : Plan(d, options);
                 int w = d.OutWidth, h = d.OutHeight;
@@ -279,12 +322,73 @@ namespace Aardvark.ImageCodecs
                         pixels = bytes;
                     }
                 }
-                var meta = d.HasMetadata ? d.Metadata : null;
+                var meta = d.HasMetadata || d.Truncated ? d.Metadata : null;
+                if (d.Truncated) meta!.Truncated = true;
                 if (d.Streamed && streamOrientation >= 5) (w, h) = (h, w);
                 if (d.Streamed && streamOrientation > 1) ImageOps.MarkUpright(meta, streamOrientation);
                 var img = new RawImage(w, h, model, pixels, channels, meta);
+                if (options.Rgba && model is ColorModel.Gray or ColorModel.Rgb)
+                    img = img.Data is byte[] ? ToRgba(img, (byte)255) : ToRgba(img, (ushort)((1 << d.Precision) - 1));
                 return options.ApplyOrientation ? ImageOps.ApplyOrientation(img) : img;
             }
+        }
+
+        /// <summary>
+        /// Decodes in bands of <paramref name="bandHeight"/> rows, top to bottom, without ever holding the whole image: 8 bit
+        /// files go through small ring buffers, so memory stays at a few rows of MCUs plus one band, whatever the image size
+        /// (12 bit, lossless and multi-scan sequential files are decoded whole and then cut into bands). Progressive files
+        /// are streamed too, but keep the coefficients of the whole image until the last scan: two bytes per sample of every
+        /// component, as much as the decoded image or more. <paramref name="onBand"/>
+        /// gets each band and the index of its first row; all bands but the last have <paramref name="bandHeight"/> rows. The
+        /// band image is reused for the next band: copy what has to outlive the call. The pixels are as stored - the
+        /// orientation is not applied (the metadata keeps it) - otherwise the options apply as for <see cref="Decode"/>
+        /// (scaling, Rgba, MaxPixels, cancellation). A truncated file throws after the bands that could be decoded, unless
+        /// <see cref="JpegDecodeOptions.AllowTruncated"/> is set. Returns the image's metadata (null if it has none).
+        /// </summary>
+        public static ImageMetadata? DecodeBands(ReadOnlySpan<byte> data, int bandHeight, Action<RawImage, int> onBand, JpegDecodeOptions? options = null)
+        {
+            ImageBands.CheckArguments(bandHeight, onBand);
+            options ??= s_defaults;
+            fixed (byte* p = data)
+            {
+                RawImage? band = null;
+                JpegPost.Assembler? Stream(JpegDecoder dd)
+                {
+                    var (cs, model, channels) = Plan(dd, options);
+                    bool rgba = options.Rgba && model is ColorModel.Gray or ColorModel.Rgb;
+                    if (rgba) (model, channels) = (ColorModel.Rgba, 4);
+                    int rows = Math.Min(bandHeight, dd.OutHeight);
+                    var buf = GC.AllocateUninitializedArray<byte>(checked(dd.OutWidth * rows * channels), pinned: true);
+                    var b = band = new RawImage(dd.OutWidth, rows, model, buf, channels, dd.HasMetadata ? dd.Metadata : null);
+                    fixed (byte* q = buf)
+                        return new JpegPost.Assembler(dd, q, dd.OutWidth, dd.OutHeight, cs, 1, rgba) { BandRows = rows, OnBand = (y, n) => ImageBands.Deliver(b, y, n, onBand) };
+                }
+                var d = Open(p, data, options, headerOnly: false, Stream);
+                if (d.Truncated && !options.AllowTruncated)
+                    throw new ImageFormatException("invalid JPEG: the file ends before its EOI marker (truncated; JpegDecodeOptions.AllowTruncated decodes what is there)");
+                var meta = d.HasMetadata || d.Truncated ? d.Metadata : null;
+                if (d.Truncated) meta!.Truncated = true;
+                if (d.Streamed) return meta;
+            }
+            // not decodable in bands: whole, then cut
+            var o = options.Clone();
+            o.ApplyOrientation = false;
+            var img = Decode(data, o);
+            ImageBands.Slice(img, bandHeight, onBand);
+            return img.Metadata;
+        }
+
+        /// <summary>Rgba of a Gray / Rgb image that was not assembled as such (12 bit and lossless frames); alpha = <paramref name="opaque"/>.</summary>
+        static RawImage ToRgba<T>(RawImage img, T opaque) where T : unmanaged
+        {
+            int n = img.Width * img.Height, c = img.Channels, g = c == 1 ? 0 : 1;
+            var s = (T[])img.Data;
+            var o = GC.AllocateUninitializedArray<T>(n * 4);
+            for (int i = 0; i < n; i++)
+            {
+                o[4 * i] = s[i * c]; o[4 * i + 1] = s[i * c + g]; o[4 * i + 2] = s[i * c + 2 * g]; o[4 * i + 3] = opaque;
+            }
+            return new RawImage(img.Width, img.Height, ColorModel.Rgba, o, 4, img.Metadata);
         }
 
         // ---------------------------------------------------------------- JPEG inside TIFF
@@ -440,6 +544,14 @@ namespace Aardvark.ImageCodecs
         /// <summary>Encodes an image as JPEG to the stream (which only needs to be writable, not seekable).</summary>
         public static void Encode(RawImage image, Stream output, JpegEncodeOptions? options = null)
             => JpegEncoder.Encode(image, output, options ?? new JpegEncodeOptions());
+
+        /// <summary>Encodes an image as JPEG into a byte array.</summary>
+        public static byte[] Encode(RawImage image, JpegEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
     }
 
     /// <summary>

@@ -319,6 +319,14 @@ namespace Aardvark.ImageCodecs
             enc.Run(new[] { new GifInputFrame(image, 0) });
         }
 
+        /// <summary>Encodes an image as GIF into a byte array.</summary>
+        public static byte[] Encode(RawImage image, GifEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
+
         /// <summary>
         /// Encodes an animation. All frames must have the same size (the logical screen) and are complete pictures; the
         /// encoder picks frame rectangles and disposal methods itself. Delays are rounded to 1/100 s.

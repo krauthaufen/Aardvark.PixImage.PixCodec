@@ -25,25 +25,29 @@ namespace Aardvark.ImageCodecs
             dst[2] = Clip8(yy + ((u * 33050) >> 8) - 17685);
         }
 
-        /// <summary>Writes the visible part of the frame as interleaved RGB with <paramref name="step"/> bytes per pixel
-        /// (the fourth byte, if any, is set to 255).</summary>
+        /// <summary>Writes the visible part of the frame as interleaved RGB with <paramref name="step"/> bytes per pixel.
+        /// The fourth byte, if any, comes from <paramref name="alpha"/> (width x height, row after row) or is 255.</summary>
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        public static void ToRgb(Vp8Frame f, byte[] dst, int step, bool threaded = false)
+        public static void ToRgb(Vp8Frame f, byte[] dst, int step, bool threaded = false, byte[]? alpha = null)
         {
             int h = f.Height;
             int bands = threaded && (long)f.Width * h >= 1 << 19 && !OperatingSystem.IsBrowser() ? Math.Min(4, Environment.ProcessorCount) : 1;
-            if (bands <= 1) ToRgb(f, dst, step, 0, h);
-            else System.Threading.Tasks.Parallel.For(0, bands, i => ToRgb(f, dst, step, (int)((long)h * i / bands), (int)((long)h * (i + 1) / bands)));
+            if (bands <= 1) ToRgb(f, dst, step, alpha, 0, h);
+            else System.Threading.Tasks.Parallel.For(0, bands, i => ToRgb(f, dst, step, alpha, (int)((long)h * i / bands), (int)((long)h * (i + 1) / bands)));
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        static void ToRgb(Vp8Frame f, byte[] dst, int step, int y0, int y1)
+        static void ToRgb(Vp8Frame f, byte[] dst, int step, byte[]? alpha, int y0, int y1)
         {
             int w = f.Width, uvH = (f.Height + 1) >> 1;
-            var chroma = new byte[2 * w + 32];
-            fixed (byte* py = f.Y, pu = f.U, pv = f.V, pd = dst, pc = chroma)
+            byte* chroma = null;
+            byte[]? rented = null;
+            int need = 2 * w + 32;
+            if (need <= 4096) { byte* b = stackalloc byte[need]; chroma = b; }
+            else rented = System.Buffers.ArrayPool<byte>.Shared.Rent(need);
+            fixed (byte* py = f.Y, pu = f.U, pv = f.V, pd = dst, pr = rented, pa = alpha)
             {
-                byte* u = pc, v = pc + w + 16;
+                byte* u = rented != null ? pr : chroma, v = u + w + 16;
                 for (int y = y0; y < y1; y++)
                 {
                     // rows 2k-1 and 2k lie between the chroma rows k-1 and k; the nearer one weighs three times as much
@@ -51,9 +55,10 @@ namespace Aardvark.ImageCodecs
                     if (far < 0 || far >= uvH) far = near;
                     UpsampleLine(pu + (long)near * f.UVStride, pu + (long)far * f.UVStride, u, w);
                     UpsampleLine(pv + (long)near * f.UVStride, pv + (long)far * f.UVStride, v, w);
-                    ConvertLine(py + (long)y * f.YStride, u, v, pd + (long)y * w * step, w, step);
+                    ConvertLine(py + (long)y * f.YStride, u, v, pd + (long)y * w * step, w, step, pa == null ? null : pa + (long)y * w);
                 }
             }
+            if (rented != null) System.Buffers.ArrayPool<byte>.Shared.Return(rented);
         }
 
         /// <summary>
@@ -113,7 +118,7 @@ namespace Aardvark.ImageCodecs
         }
 
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-        static void ConvertLine(byte* y, byte* u, byte* v, byte* dst, int w, int step)
+        static void ConvertLine(byte* y, byte* u, byte* v, byte* dst, int w, int step, byte* alpha = null)
         {
             int x = 0;
             if (Vector128.IsHardwareAccelerated)
@@ -132,7 +137,7 @@ namespace Aardvark.ImageCodecs
                     if (step == 4)
                     {
                         var rg0 = Vp8LoopFilterSimd.ZipLo8(r, g); var rg1 = Vp8LoopFilterSimd.ZipHi8(r, g);
-                        var a = Vector128.Create((byte)255);
+                        var a = alpha == null ? Vector128.Create((byte)255) : Vector128.Load(alpha + x);
                         var ba0 = Vp8LoopFilterSimd.ZipLo8(b, a); var ba1 = Vp8LoopFilterSimd.ZipHi8(b, a);
                         Vp8LoopFilterSimd.ZipLo16(rg0, ba0).Store(d);
                         Vp8LoopFilterSimd.ZipHi16(rg0, ba0).Store(d + 16);
@@ -158,7 +163,7 @@ namespace Aardvark.ImageCodecs
             {
                 byte* d = dst + x * step;
                 Store(y[x], u[x], v[x], d);
-                if (step == 4) d[3] = 255;
+                if (step == 4) d[3] = alpha == null ? (byte)255 : alpha[x];
             }
         }
 
@@ -200,7 +205,7 @@ namespace Aardvark.ImageCodecs
         /// <see cref="WebpChroma.Sharp"/>: plain mean, then every luma sample is corrected for the chroma the decoder
         /// will actually interpolate at its pixel, so that the decoded RGB comes out as close as luma alone can make it.
         /// </summary>
-        public static Vp8Frame FromArgb(uint[] argb, int w, int h, WebpChroma mode = WebpChroma.Average)
+        public static Vp8Frame FromArgb(uint[] argb, int w, int h, WebpChroma mode = WebpChroma.Average, System.Threading.CancellationToken cancel = default)
         {
             int mbW = (w + 15) >> 4, mbH = (h + 15) >> 4;
             var f = new Vp8Frame
@@ -214,6 +219,7 @@ namespace Aardvark.ImageCodecs
             {
                 for (int y = 0; y < h; y++)
                 {
+                    if ((y & 15) == 0) cancel.ThrowIfCancellationRequested();
                     uint* s = src + (long)y * w;
                     byte* d = py + (long)y * f.YStride;
                     for (int x = 0; x < w; x++)
@@ -228,6 +234,7 @@ namespace Aardvark.ImageCodecs
 
                 for (int y = 0; y < uvH; y++)
                 {
+                    if ((y & 7) == 0) cancel.ThrowIfCancellationRequested();
                     uint* s0 = src + (long)(2 * y) * w;
                     uint* s1 = 2 * y + 1 < h ? s0 + w : s0;
                     byte* du = pu + (long)y * f.UVStride, dv = pv + (long)y * f.UVStride;
@@ -258,7 +265,7 @@ namespace Aardvark.ImageCodecs
                     Buffer.MemoryCopy(pu + (long)(uvH - 1) * f.UVStride, pu + (long)y * f.UVStride, f.UVStride, f.UVStride);
                     Buffer.MemoryCopy(pv + (long)(uvH - 1) * f.UVStride, pv + (long)y * f.UVStride, f.UVStride, f.UVStride);
                 }
-                if (mode == WebpChroma.Sharp) CompensateLuma(src, f, py, pu, pv);
+                if (mode == WebpChroma.Sharp) CompensateLuma(src, f, py, pu, pv, cancel);
             }
             return f;
         }
@@ -267,7 +274,7 @@ namespace Aardvark.ImageCodecs
         /// Chroma is shared by four pixels and interpolated by the decoder, so on colored edges a pixel gets chroma
         /// that is not its own. Luma is per pixel: pick the value for which the decoded RGB is closest to the source.
         /// </summary>
-        static void CompensateLuma(uint* src, Vp8Frame f, byte* py, byte* pu, byte* pv)
+        static void CompensateLuma(uint* src, Vp8Frame f, byte* py, byte* pu, byte* pv, System.Threading.CancellationToken cancel)
         {
             int w = f.Width, h = f.Height, uvH = (h + 1) >> 1;
             var chroma = new byte[2 * w + 32];
@@ -278,6 +285,7 @@ namespace Aardvark.ImageCodecs
                 byte* u = pc, v = pc + w + 16;
                 for (int y = 0; y < h; y++)
                 {
+                    if ((y & 15) == 0) cancel.ThrowIfCancellationRequested();
                     int near = y >> 1, far = (y & 1) != 0 ? near + 1 : near - 1;
                     if (far < 0 || far >= uvH) far = near;
                     UpsampleLine(pu + (long)near * f.UVStride, pu + (long)far * f.UVStride, u, w);

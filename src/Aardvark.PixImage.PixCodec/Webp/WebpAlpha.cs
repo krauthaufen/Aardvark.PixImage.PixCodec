@@ -1,13 +1,14 @@
 using System;
+using System.Runtime.Intrinsics;
 
 namespace Aardvark.ImageCodecs
 {
     /// <summary>The ALPH chunk: an 8 bit alpha plane, raw or compressed as the green channel of a lossless image stream,
     /// optionally run through one of three prediction filters.</summary>
-    internal static class WebpAlpha
+    internal static unsafe class WebpAlpha
     {
         /// <summary>The alpha plane, in an array from <see cref="System.Buffers.ArrayPool{T}.Shared"/> that may be longer.</summary>
-        public static byte[] Decode(ReadOnlySpan<byte> chunk, int width, int height)
+        public static byte[] Decode(ReadOnlySpan<byte> chunk, int width, int height, System.Threading.CancellationToken cancel = default)
         {
             if (chunk.Length < 1) throw new ImageFormatException("empty WebP alpha chunk");
             int method = chunk[0] & 3, filter = (chunk[0] >> 2) & 3;     // the pre-processing bits are informative only
@@ -20,13 +21,32 @@ namespace Aardvark.ImageCodecs
             }
             else if (method == 1)
             {
-                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height, out bool rented);
-                for (int i = 0; i < n; i++) alpha[i] = (byte)(argb[i] >> 8);
+                var argb = Vp8lDecoder.DecodeHeaderless(chunk.Slice(1), width, height, out bool rented, cancel);
+                GreenToBytes(argb, alpha, n);
                 if (rented) System.Buffers.ArrayPool<uint>.Shared.Return(argb);
             }
             else throw new ImageFormatException("unknown WebP alpha compression method");
             Unfilter(alpha, width, height, filter);
             return alpha;
+        }
+
+        /// <summary>The green byte of n ARGB pixels.</summary>
+        static void GreenToBytes(uint[] argb, byte[] dst, int n)
+        {
+            int i = 0;
+            fixed (uint* s = argb)
+            fixed (byte* d = dst)
+            {
+                if (Vector128.IsHardwareAccelerated)
+                    for (; i + 16 <= n; i += 16)
+                    {
+                        // the narrowing keeps the low half of every lane: bits 8..15 of each pixel are what is left
+                        var lo = Vector128.Narrow(Vector128.ShiftRightLogical(Vector128.Load(s + i), 8), Vector128.ShiftRightLogical(Vector128.Load(s + i + 4), 8));
+                        var hi = Vector128.Narrow(Vector128.ShiftRightLogical(Vector128.Load(s + i + 8), 8), Vector128.ShiftRightLogical(Vector128.Load(s + i + 12), 8));
+                        Vector128.Narrow(lo, hi).Store(d + i);
+                    }
+                for (; i < n; i++) d[i] = (byte)(s[i] >> 8);
+            }
         }
 
         static void Unfilter(byte[] a, int w, int h, int filter)
@@ -45,12 +65,24 @@ namespace Aardvark.ImageCodecs
                         for (int x = 1; x < w; x++) cur[x] += cur[x - 1];
                         break;
                     case 2:
-                        for (int x = 1; x < w; x++) cur[x] += up[x];
+                    {
+                        int x = 1;
+                        if (Vector128.IsHardwareAccelerated)
+                            fixed (byte* pc = cur, pu = up)
+                                for (; x + 16 <= w; x += 16) (Vector128.Load(pc + x) + Vector128.Load(pu + x)).Store(pc + x);
+                        for (; x < w; x++) cur[x] += up[x];
                         break;
+                    }
                     default:
+                    {
+                        int l = cur[0];
                         for (int x = 1; x < w; x++)
-                            cur[x] += (byte)Math.Clamp(cur[x - 1] + up[x] - up[x - 1], 0, 255);
+                        {
+                            int p = l + up[x] - up[x - 1];
+                            cur[x] = (byte)(l = (byte)(cur[x] + ((uint)p <= 255 ? p : p < 0 ? 0 : 255)));
+                        }
                         break;
+                    }
                 }
             }
         }

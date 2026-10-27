@@ -4,9 +4,10 @@ namespace Aardvark.ImageCodecs.Tests;
 
 /// <summary>
 /// Decoders allocate about their output: no second full copy of the pixels, no per-chunk buffers that add up to one.
-/// Large working buffers come from the shared array pool, so the second decode is measured. Counted on the current
-/// thread, so multithreaded decoding is switched off.
+/// Large working buffers come from the shared array pool, so the second decode is measured; no other test runs in
+/// between to take them. Counted on the current thread, so multithreaded decoding is switched off.
 /// </summary>
+[Collection("Measurements")]
 public class AllocationTests
 {
     const int W = 1024, H = 768;
@@ -35,12 +36,29 @@ public class AllocationTests
         return ms.ToArray();
     }
 
+    /// <summary>
+    /// The bytes <paramref name="measured"/> allocates on this thread right after <paramref name="warmUp"/>, with no
+    /// garbage collection in between: under high memory load a collection empties the shared array pool.
+    /// </summary>
+    static long AllocatedAfterWarmUp(Action warmUp, Action measured)
+    {
+        Assert.True(GC.TryStartNoGCRegion(NoGCBytes), "no-GC region refused");
+        try
+        {
+            warmUp();
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            measured();
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+        finally { GC.EndNoGCRegion(); }
+    }
+
+    const long NoGCBytes = 64 << 20;
+
     static void AssertAboutOutput(Func<RawImage> decode, double factor)
     {
-        decode();
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        var img = decode();
-        long used = GC.GetAllocatedBytesForCurrentThread() - before;
+        RawImage img = null!;
+        long used = AllocatedAfterWarmUp(() => decode(), () => img = decode());
         long output = (long)img.Data.Length * RawImage.BytesPerSample(img.SampleType);
         Assert.True(used < output * factor, $"{used} bytes allocated for {output} bytes of pixels");
     }
@@ -112,11 +130,8 @@ public class AllocationTests
     static void AssertSmallEncode(RawImage img, Action<Stream> encode)
     {
         var first = new MemoryStream();
-        encode(first);
-        var target = new MemoryStream((int)first.Length + 4096);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        encode(target);
-        long used = GC.GetAllocatedBytesForCurrentThread() - before;
+        var target = new MemoryStream();
+        long used = AllocatedAfterWarmUp(() => { encode(first); target = new MemoryStream((int)first.Length + 4096); }, () => encode(target));
         Assert.Equal(first.Length, target.Length);
         long input = (long)img.Data.Length * RawImage.BytesPerSample(img.SampleType);
         Assert.True(used < input / 20, $"{used} bytes allocated to encode {input} bytes of pixels");
@@ -148,6 +163,23 @@ public class AllocationTests
     {
         var img = Photo(3);
         AssertSmallEncode(img, s => ImageCodecs.Tiff.Encode(img, s, new TiffEncodeOptions { Parallel = false }));
+    }
+
+    // resizing keeps a ring of filtered rows per worker (pooled), the box filter at power of two factors only integer rows:
+    // no workspace that grows with the image height
+    [Theory]
+    [InlineData("lanczos3", 4, 1024, 384)]
+    [InlineData("lanczos3", 3, 2048, 1536)]
+    [InlineData("box", 4, 512, 384)]
+    [InlineData("box", 3, 512, 192)]
+    [InlineData("bilinear", 4, 300, 700)]
+    public void Resize(string filter, int channels, int width, int height)
+    {
+        var f = filter switch { "box" => ResampleFilter.Box, "bilinear" => ResampleFilter.Bilinear, _ => ResampleFilter.Lanczos3 };
+        var img = Photo(channels);
+        var o = new ResizeOptions { Filter = f, MaxDegreeOfParallelism = 1 };
+        AssertAboutOutput(() => ImageOps.Resize(img, width, height, o), 1.2);
+        AssertAboutOutput(() => ImageOps.Downsample(img, 2, 4, alphaWeighted: true), 1.2);
     }
 
     // a MemoryStream is decoded from its own buffer, from the current position on

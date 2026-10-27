@@ -328,6 +328,314 @@ public class ImageOpsTests
         Assert.Equal((200, 100), (u.Width, u.Height));
     }
 
+    #region Integer box, downsampling, cancellation
+
+    // random samples, with a share of extreme alpha (0 and max) and of flat blocks, where means hit rounding ties
+    static RawImage Mixed(int w, int h, int nc, SampleType t, int seed)
+    {
+        var img = Random(w, h, nc, t, seed);
+        var rng = new Random(seed + 1);
+        int max = t == SampleType.UInt8 ? 255 : 65535;
+        for (int p = 0; p < w * h; p++)
+        {
+            int mode = rng.Next(6);
+            for (int c = 0; c < nc; c++)
+            {
+                int i = p * nc + c, v = -1;
+                bool alpha = (nc == 2 || nc == 4) && c == nc - 1;
+                if (alpha && mode == 0) v = 0;
+                else if (alpha && mode == 1) v = max;
+                else if (mode == 2) v = (p % 2) * max; // 0 / max neighbours: ties at even block sizes
+                else if (mode == 3) v = 1 + (p % 3);
+                if (v < 0) continue;
+                if (t == SampleType.UInt8) ((byte[])img.Data)[i] = (byte)v; else ((ushort[])img.Data)[i] = (ushort)v;
+            }
+        }
+        return img;
+    }
+
+    public static IEnumerable<object[]> IntegerBoxCases()
+    {
+        (int fx, int fy)[] factors = { (1, 1), (2, 2), (4, 4), (8, 8), (2, 1), (1, 4), (4, 2), (16, 16), (32, 8), (3, 3), (2, 6), (5, 2) };
+        foreach (var t in new[] { SampleType.UInt8, SampleType.UInt16 })
+            foreach (var (fx, fy) in factors)
+                foreach (int nc in new[] { 1, 2, 3, 4, 5 })
+                    yield return new object[] { t, fx, fy, nc };
+    }
+
+    // the integer path of the box filter gives the float path's bytes, for every size, factor, channel count and alpha mode
+    [Theory, MemberData(nameof(IntegerBoxCases))]
+    public void IntegerBoxMatchesFloatPath(SampleType t, int fx, int fy, int nc)
+    {
+        foreach (var (dw, dh) in new[] { (1, 1), (3, 2), (7, 5), (16, 9), (33, 17) })
+        {
+            var src = Mixed(dw * fx, dh * fy, nc, t, dw * 7 + fx * 3 + nc);
+            if (nc == 5) src = new RawImage(src.Width, src.Height, ColorModel.Other, src.Data, 5);
+            foreach (var premul in new[] { true, false })
+                foreach (int? alpha in nc == 5 ? new int?[] { null, 2 } : nc == 3 ? new int?[] { null, 0 } : new int?[] { null })
+                {
+                    var o = new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = premul, AlphaChannel = alpha };
+                    var f = new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = premul, AlphaChannel = alpha, FloatPathOnly = true };
+                    AssertEqual(ImageOps.Resize(src, dw, dh, f), ImageOps.Resize(src, dw, dh, o));
+                    // Downsample is the box resize at multiples, alpha weighted = premultiplied
+                    if (alpha == null)
+                        AssertEqual(ImageOps.Resize(src, dw, dh, f), ImageOps.Downsample(src, fx, fy, premul));
+                }
+        }
+    }
+
+    [Fact]
+    public void IntegerBoxLargeParallel()
+    {
+        var src = Mixed(1024, 770, 4, SampleType.UInt8, 4);
+        foreach (var premul in new[] { true, false })
+        {
+            var f = ImageOps.Resize(src, 256, 385, new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = premul, FloatPathOnly = true });
+            AssertEqual(f, ImageOps.Resize(src, 256, 385, new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = premul }));
+            AssertEqual(f, ImageOps.Resize(src, 256, 385, new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = premul, MaxDegreeOfParallelism = 1 }));
+        }
+    }
+
+    // straight from the definition: the mean of each (possibly cut) block, alpha weighted colour 0 where all alpha is 0
+    static double[] BlockMeans(double[] s, int w, int h, int nc, int fx, int fy, int alpha)
+    {
+        int dw = (w + fx - 1) / fx, dh = (h + fy - 1) / fy;
+        var r = new double[dw * dh * nc];
+        for (int y = 0; y < dh; y++)
+            for (int x = 0; x < dw; x++)
+            {
+                double sa = 0;
+                var sum = new double[nc];
+                int n = 0;
+                for (int v = y * fy; v < Math.Min(h, y * fy + fy); v++)
+                    for (int u = x * fx; u < Math.Min(w, x * fx + fx); u++, n++)
+                    {
+                        int p = (v * w + u) * nc;
+                        double a = alpha >= 0 ? s[p + alpha] : 1;
+                        sa += a;
+                        for (int c = 0; c < nc; c++) sum[c] += alpha >= 0 && c != alpha ? s[p + c] * a : s[p + c];
+                    }
+                for (int c = 0; c < nc; c++)
+                    r[(y * dw + x) * nc + c] = alpha >= 0 && c != alpha ? (sa > 0 ? sum[c] / sa : 0) : sum[c] / n;
+            }
+        return r;
+    }
+
+    [Theory]
+    [InlineData(SampleType.UInt8)] [InlineData(SampleType.UInt16)] [InlineData(SampleType.Float32)] [InlineData(SampleType.Int16)]
+    public void DownsampleAveragesBlocks(SampleType t)
+    {
+        foreach (var (w, h, fx, fy) in new[] { (17, 9, 2, 2), (16, 16, 4, 2), (10, 7, 3, 3), (5, 3, 4, 4), (9, 1, 2, 1) })
+            foreach (int nc in new[] { 1, 3, 4 })
+                foreach (var weighted in new[] { false, true })
+                {
+                    var src = Random(w, h, nc, t, w + nc);
+                    var got = ImageOps.Downsample(src, fx, fy, weighted);
+                    Assert.Equal(((w + fx - 1) / fx, (h + fy - 1) / fy), (got.Width, got.Height));
+                    var exp = BlockMeans(ToDoubles(src), w, h, nc, fx, fy, weighted && nc == 4 ? 3 : -1);
+                    var g = ToDoubles(got);
+                    bool isFloat = t == SampleType.Float32;
+                    for (int i = 0; i < exp.Length; i++)
+                    {
+                        // (integer results are rounded; premultiplied colour of nearly transparent blocks is imprecise)
+                        if (weighted && nc == 4 && i % 4 != 3 && exp[i - i % 4 + 3] < (isFloat ? 1e-2 : 2)) continue;
+                        // (the float path of Int16 and premultiplied UInt16 rounds a little on the way)
+                        Assert.True(Math.Abs(exp[i] - g[i]) <= (isFloat ? 1e-5 : 0.6),
+                            $"{t} {w}x{h} / {fx}x{fy} c{nc} {weighted}: [{i}] expected {exp[i]}, got {g[i]}");
+                    }
+                    // the integer path at the cut blocks too
+                    if (t is SampleType.UInt8 or SampleType.UInt16)
+                    {
+                        var fo = new ResizeOptions { Filter = ResampleFilter.Box, PremultiplyAlpha = weighted, FloatPathOnly = true };
+                        var f = Processing.Resampler.Resize(src, Processing.AxisWeights.Blocks(w, fx), Processing.AxisWeights.Blocks(h, fy), fo);
+                        AssertEqual(f, got);
+                    }
+                }
+    }
+
+    [Fact]
+    public void DownsampleAlphaWeighted()
+    {
+        // transparent red next to opaque green: weighted gives pure green, plain the average; transparent blocks get 0
+        var img = RawImage.Create(4, 2, ColorModel.Rgba, SampleType.UInt8);
+        var d = (byte[])img.Data;
+        for (int p = 0; p < 8; p++)
+        {
+            int x = p % 4;
+            if (x == 0) { d[p * 4] = 255; }
+            if (x == 1) { d[p * 4 + 1] = 255; d[p * 4 + 3] = 255; }
+            if (x >= 2) { d[p * 4] = 200; d[p * 4 + 1] = 100; }
+        }
+        var w = (byte[])ImageOps.Downsample(img, 2, true).Data;
+        Assert.Equal(new byte[] { 0, 255, 0, 128, 0, 0, 0, 0 }, w);
+        var s = (byte[])ImageOps.Downsample(img, 2).Data;
+        Assert.Equal(new byte[] { 128, 128, 0, 128, 200, 100, 0, 0 }, s);
+        Assert.Throws<ArgumentOutOfRangeException>(() => ImageOps.Downsample(img, 0));
+    }
+
+    [Theory]
+    [InlineData("lanczos3", SampleType.UInt8)] [InlineData("box", SampleType.UInt8)] [InlineData("nearest", SampleType.UInt8)]
+    [InlineData("bilinear", SampleType.Float32)]
+    public void ResizeCancels(string filter, SampleType t)
+    {
+        var src = Random(64, 64, 4, t, 1);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.ThrowsAny<OperationCanceledException>(() =>
+            ImageOps.Resize(src, 32, 32, new ResizeOptions { Filter = Filters[filter], CancellationToken = cts.Token }));
+    }
+
+    [Fact]
+    public void ResizeCancelsWhileRunning()
+    {
+        // about a second of work on one thread
+        var src = Random(1000, 1000, 1, SampleType.UInt8, 1);
+        using var cts = new CancellationTokenSource();
+        var o = new ResizeOptions { CancellationToken = cts.Token, MaxDegreeOfParallelism = 1 };
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var task = Task.Run(() => ImageOps.Resize(src, 8000, 8000, o));
+        Thread.Sleep(30);
+        cts.Cancel();
+        var e = Assert.ThrowsAny<Exception>(() => task.GetAwaiter().GetResult());
+        Assert.IsAssignableFrom<OperationCanceledException>(e);
+        output.WriteLine($"cancelled after {sw.ElapsedMilliseconds} ms");
+    }
+
+    // the resampler's ring of filtered rows: every output row band and thread count gives the same bytes
+    [Fact]
+    public void RingWorkspaceIsExact()
+    {
+        var src = Random(61, 203, 3, SampleType.Float32, 2);
+        foreach (var (w, h, f) in new[] { (23, 61, ResampleFilter.Lanczos3), (130, 410, ResampleFilter.Bicubic), (61, 50, ResampleFilter.Gaussian), (9, 203, ResampleFilter.Bilinear) })
+        {
+            var a = ImageOps.Resize(src, w, h, new ResizeOptions { Filter = f, MaxDegreeOfParallelism = 1 });
+            AssertEqual(a, ImageOps.Resize(src, w, h, new ResizeOptions { Filter = f, MaxDegreeOfParallelism = 3 }));
+            AssertEqual(a, ImageOps.Resize(src, w, h, f));
+            var exp = Reference(ToDoubles(src), 61, 203, 3, w, h, f, -1);
+            var g = ToDoubles(a);
+            for (int i = 0; i < exp.Length; i++) Assert.True(Math.Abs(exp[i] - g[i]) < 2e-5, $"{f} {w}x{h}: [{i}]");
+        }
+    }
+
+    #endregion
+
+    #region Sample types, channels, alpha
+
+    [Fact]
+    public void RetypeRescalesAndRounds()
+    {
+        var b = new RawImage(4, 1, ColorModel.Gray, new byte[] { 0, 1, 128, 255 });
+        var u = ImageOps.Retype(b, SampleType.UInt16);
+        Assert.Equal(new ushort[] { 0, 257, 32896, 65535 }, (ushort[])u.Data);
+        AssertEqual(b, ImageOps.Retype(u, SampleType.UInt8));
+        var f = (float[])ImageOps.Retype(b, SampleType.Float32).Data;
+        var d = (double[])ImageOps.Retype(b, SampleType.Float64).Data;
+        for (int i = 0; i < 4; i++)
+        {
+            Assert.Equal(((byte[])b.Data)[i] / 255.0, f[i], 6);
+            Assert.Equal(((byte[])b.Data)[i] / 255.0, d[i], 12);
+        }
+        Assert.Equal(1f, f[3]);
+        // round half up, clamped, NaN -> 0
+        var us = new RawImage(4, 1, ColorModel.Gray, new ushort[] { 128, 129, 385, 65535 });
+        Assert.Equal(new byte[] { 0, 1, 1, 255 }, (byte[])ImageOps.Retype(us, SampleType.UInt8).Data);
+        var fl = new RawImage(5, 1, ColorModel.Gray, new float[] { -0.5f, 0.75f / 255, 2, float.NaN, 0.25f });
+        Assert.Equal(new byte[] { 0, 1, 255, 0, 64 }, (byte[])ImageOps.Retype(fl, SampleType.UInt8).Data);
+        Assert.Equal((float[])fl.Data, (float[])ImageOps.Retype(ImageOps.Retype(fl, SampleType.Float64), SampleType.Float32).Data);
+        Assert.Equal((Half)0.25f, ((Half[])ImageOps.Retype(fl, SampleType.Float16).Data)[4]);
+        // metadata and layout kept, a copy for the same type
+        b.Metadata = new ImageMetadata { DpiX = 300 };
+        var same = ImageOps.Retype(b, SampleType.UInt8);
+        Assert.NotSame(b.Data, same.Data);
+        Assert.Equal(300, same.Metadata!.DpiX);
+        Assert.Throws<ArgumentException>(() => ImageOps.Retype(b, SampleType.Int16));
+        Assert.Throws<ArgumentException>(() => ImageOps.Retype(Random(2, 2, 1, SampleType.UInt32, 1), SampleType.UInt8));
+    }
+
+    [Fact]
+    public void ConvertChannelsLayouts()
+    {
+        var rgb = new RawImage(2, 1, ColorModel.Rgb, new byte[] { 10, 20, 30, 255, 0, 100 });
+        var rgba = ImageOps.ConvertChannels(rgb, ImageChannels.Rgba);
+        Assert.Equal(ColorModel.Rgba, rgba.Color);
+        Assert.Equal(new byte[] { 10, 20, 30, 255, 255, 0, 100, 255 }, (byte[])rgba.Data);
+        AssertEqual(rgb, ImageOps.ConvertChannels(rgba, ImageChannels.Rgb));
+        // Rec. 601 luma, rounded
+        var gray = ImageOps.ConvertChannels(rgb, ImageChannels.Gray);
+        Assert.Equal(new byte[] { 18, 88 }, (byte[])gray.Data); // 18.15, 87.645
+        var ga = ImageOps.ConvertChannels(rgba, ImageChannels.GrayAlpha);
+        Assert.Equal(new byte[] { 18, 255, 88, 255 }, (byte[])ga.Data);
+        var ga2 = new RawImage(2, 1, ColorModel.GrayAlpha, new byte[] { 18, 7, 88, 9 });
+        Assert.Equal(new byte[] { 18, 18, 18, 7, 88, 88, 88, 9 }, (byte[])ImageOps.ConvertChannels(ga2, ImageChannels.Rgba).Data);
+        Assert.Equal(new byte[] { 18, 18, 18, 88, 88, 88 }, (byte[])ImageOps.ConvertChannels(ga2, ImageChannels.Rgb).Data);
+        Assert.Equal(new byte[] { 18, 88 }, (byte[])ImageOps.ConvertChannels(ga2, ImageChannels.Gray).Data);
+        Assert.Equal(new byte[] { 18, 255, 88, 255 }, (byte[])ImageOps.ConvertChannels(gray, ImageChannels.GrayAlpha).Data);
+        Assert.Same(rgb, ImageOps.ConvertChannels(rgb, ImageChannels.AsDecoded));
+        Assert.Same(rgb, ImageOps.ConvertChannels(rgb, ImageChannels.Rgb));
+
+        // opaque alpha for every type, floats not rounded
+        Assert.Equal(new ushort[] { 7, 65535 }, (ushort[])ImageOps.ConvertChannels(new RawImage(1, 1, ColorModel.Gray, new ushort[] { 7 }), ImageChannels.GrayAlpha).Data);
+        Assert.Equal(new sbyte[] { -3, -3, -3, 127 }, (sbyte[])ImageOps.ConvertChannels(new RawImage(1, 1, ColorModel.Gray, new sbyte[] { -3 }), ImageChannels.Rgba).Data);
+        Assert.Equal(new[] { 0.5f, 0.5f, 0.5f, 1f }, (float[])ImageOps.ConvertChannels(new RawImage(1, 1, ColorModel.Gray, new[] { 0.5f }), ImageChannels.Rgba).Data);
+        var fg = (float[])ImageOps.ConvertChannels(new RawImage(1, 1, ColorModel.Rgb, new[] { 1f, 0.5f, 0.25f }), ImageChannels.Gray).Data;
+        Assert.Equal(0.299f + 0.587f * 0.5f + 0.114f * 0.25f, fg[0], 6);
+        Assert.Equal(new double[] { 2, 2, 2 }, (double[])ImageOps.ConvertChannels(new RawImage(1, 1, ColorModel.GrayAlpha, new double[] { 2, 0.5 }), ImageChannels.Rgb).Data);
+
+        // Other by channel count, more than 4 channels have no layout
+        var other = new RawImage(2, 1, ColorModel.Other, new byte[] { 10, 20, 30, 255, 0, 100 }, 3);
+        var asRgb = ImageOps.ConvertChannels(other, ImageChannels.Rgb);
+        Assert.Equal(ColorModel.Rgb, asRgb.Color);
+        Assert.Equal((byte[])other.Data, (byte[])asRgb.Data);
+        Assert.Throws<ArgumentException>(() => ImageOps.ConvertChannels(Random(2, 2, 5, SampleType.UInt8, 1), ImageChannels.Rgb));
+
+        // the ICC profile goes where gray becomes colour
+        var g8 = new RawImage(1, 1, ColorModel.Gray, new byte[] { 1 }, 0, new ImageMetadata { IccProfile = new byte[] { 1, 2 }, DpiX = 72 });
+        var c8 = ImageOps.ConvertChannels(g8, ImageChannels.Rgb);
+        Assert.Null(c8.Metadata!.IccProfile);
+        Assert.Equal(72, c8.Metadata.DpiX);
+        Assert.NotNull(ImageOps.ConvertChannels(g8, ImageChannels.GrayAlpha).Metadata!.IccProfile);
+    }
+
+    [Fact]
+    public void PremultiplyAndBack()
+    {
+        var img = new RawImage(3, 1, ColorModel.Rgba, new byte[] { 255, 128, 1, 128, 200, 100, 50, 0, 10, 20, 30, 255 });
+        var p = (byte[])ImageOps.Premultiply(img).Data;
+        // colour * alpha / 255, rounded half up exactly
+        Assert.Equal(new byte[] { 128, 64, 1, 128, 0, 0, 0, 0, 10, 20, 30, 255 }, p);
+        var u = (byte[])ImageOps.Unpremultiply(new RawImage(3, 1, ColorModel.Rgba, p)).Data;
+        Assert.Equal(new byte[] { 255, 128, 2, 128, 0, 0, 0, 0, 10, 20, 30, 255 }, u);
+        // premultiplied colour above alpha is clamped
+        Assert.Equal(new byte[] { 255, 10 }, (byte[])ImageOps.Unpremultiply(new RawImage(1, 1, ColorModel.GrayAlpha, new byte[] { 20, 10 })).Data);
+
+        // every opaque or straight-representable value survives the round trip, 16 bit too
+        var r16 = Random(64, 64, 4, SampleType.UInt16, 3);
+        var d16 = (ushort[])r16.Data;
+        for (int i = 3; i < d16.Length; i += 4) d16[i] = 65535;
+        AssertEqual(r16, ImageOps.Unpremultiply(ImageOps.Premultiply(r16)));
+
+        var f = new RawImage(2, 1, ColorModel.GrayAlpha, new[] { 0.8f, 0.5f, 0.3f, 0f });
+        Assert.Equal(new[] { 0.4f, 0.5f, 0f, 0f }, (float[])ImageOps.Premultiply(f).Data);
+        Assert.Equal(new[] { 0.8f, 0.5f, 0f, 0f }, (float[])ImageOps.Unpremultiply(ImageOps.Premultiply(f)).Data);
+        // no alpha: unchanged; explicit alpha channel
+        var rgb = Random(3, 3, 3, SampleType.UInt8, 1);
+        Assert.Same(rgb, ImageOps.Premultiply(rgb));
+        var o = new RawImage(1, 1, ColorModel.Other, new byte[] { 255, 100, 51 }, 3);
+        Assert.Equal(new byte[] { 51, 20, 51 }, (byte[])ImageOps.Premultiply(o, alphaChannel: 2).Data);
+        Assert.Throws<ArgumentException>(() => ImageOps.Premultiply(Random(2, 2, 4, SampleType.Int16, 1)));
+    }
+
+    // what the resize does with PremultiplyAlpha, for a resize that changes nothing: premultiply, unpremultiply
+    [Fact]
+    public void PremultiplyMatchesResizeIdentity()
+    {
+        var src = Random(40, 30, 4, SampleType.Float32, 5);
+        var viaResize = ImageOps.Resize(src, 40, 30, new ResizeOptions { Filter = ResampleFilter.Box, FloatPathOnly = true });
+        AssertEqual(viaResize, ImageOps.Unpremultiply(ImageOps.Premultiply(src)));
+    }
+
+    #endregion
+
     #region Lossless rearrangements
 
     // destination (x, y) -> source (x, y) for EXIF orientations, from the TIFF 6.0 definitions

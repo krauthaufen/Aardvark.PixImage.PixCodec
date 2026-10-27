@@ -271,7 +271,7 @@ namespace Aardvark.ImageCodecs
                 return info with { Metadata = TryReadMetadata(StreamMetadata.Collect(stream, start, info.Format, prefix)) };
             }
             catch (IOException) { return info with { Metadata = TryReadMetadata(prefix) }; }
-            catch (NotSupportedException) { return info with { Metadata = TryReadMetadata(prefix) }; }
+            catch (Exception e) when (e is NotSupportedException or ImageNotSupportedException) { return info with { Metadata = TryReadMetadata(prefix) }; }
         }
 
         static ImageInfo HeaderInfo(Stream stream, int initialSize, out byte[] prefix)

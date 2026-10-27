@@ -45,6 +45,12 @@ namespace Aardvark.ImageCodecs
 
     public sealed class WebpDecodeOptions
     {
+        /// <summary>
+        /// Stops the decode with an <see cref="OperationCanceledException"/>: checked per macroblock row for lossy data,
+        /// every 65536 pixels and between the inverse transforms of lossless data (alpha planes included).
+        /// </summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Content of the frames returned by the animation API. <see cref="Webp.Decode"/> ignores it.</summary>
         public WebpFrameMode FrameMode { get; set; } = WebpFrameMode.Composited;
 
@@ -83,6 +89,13 @@ namespace Aardvark.ImageCodecs
 
     public sealed class WebpEncodeOptions
     {
+        /// <summary>
+        /// Stops the encode with an <see cref="OperationCanceledException"/>: checked before the pixels are converted, per
+        /// row of the colour conversion and per macroblock row of the lossy passes, between the phases of a lossless
+        /// encode (alpha planes included) and every 65536 positions of its match search.
+        /// </summary>
+        public System.Threading.CancellationToken CancellationToken { get; set; }
+
         /// <summary>Quality 0..100 for lossy output.</summary>
         public int Quality { get; set; } = 75;
         /// <summary>Write lossless (VP8L) instead of lossy (VP8).</summary>
@@ -95,7 +108,8 @@ namespace Aardvark.ImageCodecs
         /// searched and matches are chosen by a cost model; higher levels search longer, and 5 / 6 also encode with
         /// alternative transform sets and keep the smallest result.
         /// Lossy: 0 predicts whole macroblocks only; from 1 on 4x4 prediction is tried, with more candidate modes
-        /// run through a full encode-and-measure trial the higher the level.
+        /// run through a full encode-and-measure trial the higher the level. The alpha plane of a lossy image is
+        /// compressed losslessly at the same level, except that 3 and 4 use the lossless level 2 for it.
         /// </summary>
         public int Method { get; set; } = 4;
 
@@ -324,6 +338,14 @@ namespace Aardvark.ImageCodecs
             ArgumentNullException.ThrowIfNull(image);
             ArgumentNullException.ThrowIfNull(output);
             WebpEncoder.EncodeStill(image, output, options ?? new WebpEncodeOptions());
+        }
+
+        /// <summary>Encodes an image as WebP into a byte array.</summary>
+        public static byte[] Encode(RawImage image, WebpEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
         }
 
         /// <summary>

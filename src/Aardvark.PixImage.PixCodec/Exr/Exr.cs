@@ -216,7 +216,7 @@ namespace Aardvark.ImageCodecs
             Options = options ?? throw new ArgumentNullException(nameof(options));
         }
 
-        /// <summary>A part from an interleaved image, with the channel naming and options of <see cref="Exr.Encode"/>.</summary>
+        /// <summary>A part from an interleaved image, with the channel naming and options of <see cref="Exr.Encode(RawImage, Stream, ExrEncodeOptions)"/>.</summary>
         public static ExrPart FromImage(string? name, RawImage image, ExrEncodeOptions? options = null)
         {
             if (image == null) throw new ArgumentNullException(nameof(image));
@@ -618,6 +618,14 @@ namespace Aardvark.ImageCodecs
         public static void Encode(RawImage image, Stream output, ExrEncodeOptions? options = null)
             => ExrEncoder.Encode(new[] { ExrPart.FromImage(null, image, options) }, output, false);
 
+        /// <summary>Encodes an image as OpenEXR into a byte array.</summary>
+        public static byte[] Encode(RawImage image, ExrEncodeOptions? options = null)
+        {
+            using var ms = new MemoryStream();
+            Encode(image, ms, options);
+            return ms.ToArray();
+        }
+
         /// <summary>
         /// Encodes arbitrary named channels (AOVs, depth, ids, layers such as "diffuse.R") as one part. Every channel
         /// has width * height samples (fewer for subsampled channels); types may be mixed. Custom header attributes go
@@ -636,7 +644,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Writes a deep image as a single-part deep scan line file, or a deep tiled one when
         /// <see cref="ExrEncodeOptions.TileWidth"/> / TileHeight are set. Compression None, Rle or Zips (the default Zip
-        /// is taken as Zips); samples are written in the order given, HALF channels rounded like in <see cref="Encode"/>.
+        /// is taken as Zips); samples are written in the order given, HALF channels rounded like in <see cref="Encode(RawImage, Stream, ExrEncodeOptions)"/>.
         /// For deep parts next to others use <see cref="EncodeParts"/> with <see cref="ExrPart(string, ExrDeepImage, ExrEncodeOptions)"/>.
         /// </summary>
         public static void EncodeDeep(ExrDeepImage image, Stream output, ExrEncodeOptions? options = null)

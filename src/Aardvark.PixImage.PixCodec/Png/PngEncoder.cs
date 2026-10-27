@@ -34,6 +34,7 @@ namespace Aardvark.ImageCodecs
 
         static void WriteStill(Source source, ImageMetadata? metadata, Stream output, PngEncodeOptions options)
         {
+            source.Cancel = options.CancellationToken;
             int level = Math.Clamp(options.CompressionLevel, 0, 9);
             WriteHead(source, metadata, output, options, level);
             using (var chunks = new DataStream(output, PngChunks.IDAT, null))
@@ -65,6 +66,7 @@ namespace Aardvark.ImageCodecs
 
             int level = Math.Clamp(options.CompressionLevel, 0, 9);
             var sources = Source.ForFrames(list, options);
+            foreach (var src in sources) src.Cancel = options.CancellationToken;
             var filter = ResolveFilter(options, sources[0], level);
             WriteHead(sources[0], first.Metadata, output, options, level);
 
@@ -171,7 +173,9 @@ namespace Aardvark.ImageCodecs
                     var blend = PngBlend.Source;
                     if (canBlend && OverFrame(list[k].Image, canvas, target, x, y, w, h) is { } sparse)
                     {
-                        var over = Deflate(Source.ForImage(sparse, options, allowTransforms: false), 0, 0, w, h, options.Interlace, filter, level);
+                        var sparseSource = Source.ForImage(sparse, options, allowTransforms: false);
+                        sparseSource.Cancel = options.CancellationToken;
+                        var over = Deflate(sparseSource, 0, 0, w, h, options.Interlace, filter, level);
                         if (over.Length < data.Length) { data = over; blend = PngBlend.Over; }
                     }
                     if (best == null || data.Length < best.Data.Length)
@@ -312,6 +316,8 @@ namespace Aardvark.ImageCodecs
 
             public int Width, Height, ColorType, BitDepth, Channels;
             public byte[]? Plte, Trns;
+            /// <summary>Checked per row (PngEncodeOptions.CancellationToken).</summary>
+            public System.Threading.CancellationToken Cancel;
             /// <summary>The palette was given by the caller (rather than derived from the pixels).</summary>
             public bool ExplicitPalette;
             /// <summary>Divisor applied to 8 bit gray samples when writing at a lower bit depth, else 1.</summary>
@@ -635,6 +641,7 @@ namespace Aardvark.ImageCodecs
 
                     for (int r = 0; r < ph; r++)
                     {
+                        source.Cancel.ThrowIfCancellationRequested();
                         int y = y0 + py0 + r * dy;
                         var curSpan = new Span<byte>(cur, n);
                         if (full == null) source.FillRow(y, x0, w, curSpan);

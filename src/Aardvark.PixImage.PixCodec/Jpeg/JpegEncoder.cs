@@ -481,6 +481,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                     if (UseTrellis && _raw == null) _raw = new short[_comps.Length][];
                     for (int my = 0; my < (StripPlanes ? _mcusY : 1); my++)
                     {
+                        _opt.CancellationToken.ThrowIfCancellationRequested();
                         if (StripPlanes) FillStrip(src!, ch, my);
                         int row = StripPlanes ? my : -1;
                         if (UseTrellis) TransformRaw(row); else Transform(row);
@@ -1061,6 +1062,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
                 sink.Acc = _acc; sink.Bits = _accBits; sink.Out = (nint)(buf + _pos);
                 for (int my = 0; my < mcusY; my++)
                 {
+                    _opt.CancellationToken.ThrowIfCancellationRequested();
                     if (src != null) FillStrip(src, ch, my);
                     for (int mx = 0; mx < mcusX; mx++)
                     {
@@ -1205,6 +1207,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             foreach (var c in _comps) { c.Pred = 0; c.LastDc = 0; }
             for (int my = 0; my < mcusY; my++)
             {
+                _opt.CancellationToken.ThrowIfCancellationRequested();
                 FillStrip(src, ch, my);
                 for (int mx = 0; mx < mcusX; mx++)
                 {
@@ -1341,6 +1344,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             coder.Start();
             for (int my = 0; my < mcusY; my++)
             {
+                _opt.CancellationToken.ThrowIfCancellationRequested();
                 for (int mx = 0; mx < mcusX; mx++)
                 {
                     if (_restart != 0)
@@ -1501,6 +1505,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
 
             for (int my = 0; my < mcusY; my++)
             {
+                _opt.CancellationToken.ThrowIfCancellationRequested();
                 for (int mx = 0; mx < mcusX; mx++)
                 {
                     if (_restart != 0)
@@ -1557,6 +1562,7 @@ namespace Aardvark.ImageCodecs.JpegImpl
             {
                 for (int my = 0; my < mcusY; my++)
                 {
+                    _opt.CancellationToken.ThrowIfCancellationRequested();
                     for (int mx = 0; mx < mcusX; mx++)
                     {
                         if (_restart != 0)

@@ -160,34 +160,6 @@ namespace Aardvark.ImageCodecs
             };
         }
 
-        /// <summary>The same samples in another type (rescaled between integer ranges, rounded and clamped).</summary>
-        static RawImage Retype(RawImage image, SampleType type)
-        {
-            int n = image.Data.Length;
-            double inMax = Processing.Samples.MaxValue(image.SampleType), outMax = Processing.Samples.MaxValue(type);
-            var dst = RawImage.CreateArray(type, n);
-            if (type == image.SampleType) Array.Copy(image.Data, dst, n);
-            else
-            {
-                double s = outMax / inMax;
-                for (int i = 0; i < n; i++)
-                {
-                    double v = image.Data switch
-                    {
-                        byte[] b => b[i], ushort[] u => u[i], Half[] h => (double)h[i], float[] f => f[i], double[] d => d[i], _ => 0,
-                    } * s;
-                    switch (dst)
-                    {
-                        case byte[] b: b[i] = (byte)Math.Clamp(Math.Floor(v + 0.5), 0, 255); break;
-                        case ushort[] u: u[i] = (ushort)Math.Clamp(Math.Floor(v + 0.5), 0, 65535); break;
-                        case Half[] h: h[i] = (Half)v; break;
-                        case float[] f: f[i] = (float)v; break;
-                    }
-                }
-            }
-            return new RawImage(image.Width, image.Height, image.Color, dst, image.Channels);
-        }
-
         static ImageMetadata CopyAllMetadata(ImageMetadata? m) => m == null ? new ImageMetadata() : new ImageMetadata
         {
             IccProfile = m.IccProfile, Exif = m.Exif, Xmp = m.Xmp, DpiX = m.DpiX, DpiY = m.DpiY, Gamma = m.Gamma,

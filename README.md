@@ -76,10 +76,19 @@ LERC encoding is not offered because Esri holds patents on LERC compression.
 ```csharp
 using Aardvark.ImageCodecs;
 
-RawImage img = ImageCodec.Decode("photo.jpg");      // format is sniffed from the content
+RawImage img = ImageCodec.Decode("photo.jpg");      // format is sniffed from the content, upright (EXIF orientation applied)
+RawImage stored = ImageCodec.Decode("photo.jpg", new ImageDecodeOptions
+{
+    ApplyOrientation = false,                       // pixels as stored: what calibrations and GeoTIFF tiepoints refer to
+    MaxPixels = 100_000_000,                        // refuse larger images before allocating
+    Channels = ImageChannels.Rgba, SampleType = SampleType.UInt8,
+    CancellationToken = token,
+});
 ImageCodec.Encode(img, "out.png");                  // format from the extension
 Jpeg.Encode(img, stream, new JpegEncodeOptions { Quality = 85, Progressive = true });
 
+Jpeg.DecodeBands(bytes, 64, (band, y) => Consume(band, y));   // rows 64 at a time, the pixels are never whole (JPEG, PNG; progressive JPEG keeps its coefficients)
+Jpeg.Decode(bytes, new JpegDecodeOptions { ScaleEighths = 5, Rgba = true });   // 5/8 size by reduced IDCTs, straight to Rgba
 ImageInfo info = ImageCodec.GetInfo("scan.tif");    // headers and metadata, no pixels
 // info.Format, Width, Height, Channels, SampleType, Color, FrameCount,
 // BitsPerSample, Orientation (+ StoredWidth/Height), DpiX, DpiY, HasIccProfile, IsAnimated, MipLevels, Metadata
@@ -111,13 +120,16 @@ Icns.Encode(new[] { img16, img32, img128, img512 }, stream);   // Icns.ReadEntri
 in R,G,B,A order with straight alpha. Images come back upright: the EXIF/TIFF orientation (JPEG, PNG, WebP, TIFF, DNG, JPEG 2000, JPEG XL, JPEG XR) and AVIF's irot / imir
 are applied while decoding, the metadata then says orientation 1 (also inside a kept EXIF blob, so a re-saved image is not
 turned again), and `ImageInfo` reports the upright size. Every format's options have `ApplyOrientation = false` for the
-stored pixels. Each format has its own static class (`Png`, `Jpeg`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Bmp`, `Tga`,
+stored pixels, and so has `ImageDecodeOptions` for `ImageCodec.Decode` and `PixCodec.Load`; with it, `ImageCodec.GetInfo`
+describes the stored size. Each format has its own static class (`Png`, `Jpeg`, `Tiff`, `Gif`, `Exr`, `Webp`, `Jp2`, `Bmp`, `Tga`,
 `Dds`, `Ktx`, `Pvr`, `Astc`, `Hdr`, `Pnm`, `Pfm`, `Qoi`, `Ico`, `Ani`, `Icns`, `Lerc`, `Jbig`, `Jxl`, `JpegXr`, `Avif`, `JpegLs`, `Dng`, `Pcx`, `Sgi`, `SunRaster`, `Xbm`, `Xpm`, `Wbmp`, `Nrrd`, `Nifti`, `MetaImage`, `Fits`, `Dicom`, `Dpx`, `Cineon`) with format specific options and extras: animations (GIF, APNG, WebP, JPEG XL, AVIF), TIFF pages / tags / regions / overviews,
 EXR headers, named channels, levels and deep data, DPX / Cineon headers (`Dpx.GetHeader`, `Cineon.GetHeader`) and DPX image
 elements. Bit depths that do not fill a sample type keep their stored values: 10 bit DPX and Cineon decode to UInt16 0..1023,
 12 bit to 0..4095 (as 12 bit TIFF and JPEG); 1, 2 and 4 bit samples are stretched to 0..255.
 
-Malformed files throw `ImageFormatException`, valid files using an unimplemented feature throw `ImageNotSupportedException`.
+Malformed files throw `ImageFormatException`, valid files using an unimplemented feature throw `ImageNotSupportedException`;
+both derive from `ImageCodecException`. Truncated files throw too, JPEG included (`JpegDecodeOptions.AllowTruncated`
+decodes what is there and sets `ImageMetadata.Truncated`).
 
 ### HDR gain maps and multi-picture JPEG
 
@@ -401,6 +413,13 @@ var w     = ImageOps.WarpPerspective(img, 800, 600, homography, new WarpOptions 
 - Resizing is separable and widens the filter when downscaling (no aliasing), with pixel areas aligned
   (the same conventions as Pillow, whose float results it reproduces). Alpha is premultiplied while filtering;
   `LinearLight` filters 8 and 16 bit sRGB in linear light. Integer results are rounded and clamped, float results are not.
+- The workspace is a small ring of filtered rows per thread, independent of the image size. The box filter at power of two
+  factors on 8 and 16 bit samples sums in integers, with the same bytes as the float path. `ResizeOptions.CancellationToken`
+  cancels between rows.
+- `Downsample(img, 2)` (or `Downsample(img, fx, fy, alphaWeighted: true)`) averages factor x factor blocks; the size is
+  rounded up, the last blocks are cut. At multiples it equals `Resize` with `Box`.
+- Samples and channels: `Retype` (UInt8 / UInt16 / Float16 / Float32 / Float64, rescaled and rounded), `ConvertChannels`
+  (gray, gray + alpha, RGB, RGBA; Rec. 601 luma for gray), `Premultiply` / `Unpremultiply`.
 - Lossless: `Crop`, `FlipHorizontal`, `FlipVertical`, `Rotate90`, `Rotate180`, `Rotate270`, `Transpose`, `Transverse`,
   `ApplyOrientation`.
 - Warps (`Rotate`, `WarpAffine`, `WarpPerspective`, `Remap`) interpolate with any filter and border mode
@@ -416,6 +435,11 @@ an animated cursor.
 
 `Aardvark.PixImage.PixCodec` provides an `IPixLoader`. It registers itself on `Aardvark.Init()`,
 or call `PixCodec.Init()`.
+
+> **Global registration.** `Aardvark.Init()` runs `PixCodec.Init()` (`[OnAardvarkInit]`), which installs the loader and
+> `PixCodecProcessor` with the highest priority. `PixImage.Load`, `Resized` and so on then use PixCodec in processes that
+> call `Aardvark.Init()`, and whatever else is registered in those that do not (command-line tools, tests). Code that
+> must behave the same everywhere calls `PixCodec.Load` and `ImageOps` directly.
 
 ```csharp
 using Aardvark.Data;
@@ -435,6 +459,8 @@ PixImage[] pages   = PixCodec.LoadAll("stack.tif");                       // pag
 ImageInfo info     = PixCodec.GetInfo("dem.tif");
 PixCodec.Save(img, "out.webp");
 PixImage p = rawImage.ToPixImage();   RawImage r = pixImage.ToRawImage();
+PixImage<byte> b   = PixCodec.ToPixImage<byte>(rawImage);                 // no copy when the sample type matches
+PixImage asStored  = PixCodec.Load("photo.jpg", new ImageDecodeOptions { ApplyOrientation = false });
 PixImageMipMap mm  = PixCodec.LoadMipmap("tex.dds");                     // also PixImageMipMap.Load (IPixMipmapLoader)
 PixCube cube       = PixCodec.LoadCube("sky.dds");                        // DDS, KTX or PVR cube map, every side with its mip chain
 PixCodec.SaveDds(cube, stream);

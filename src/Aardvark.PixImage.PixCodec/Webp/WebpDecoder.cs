@@ -37,7 +37,7 @@ namespace Aardvark.ImageCodecs
             if (!c.Animated) px = DecodeFrame(data, c.Frames[0], alpha ? 4 : 3, opt);
             else
             {
-                var st = new WebpDecoder(c, new WebpDecodeOptions { MaxPixels = opt.MaxPixels, Multithreaded = opt.Multithreaded, ApplyOrientation = false });
+                var st = new WebpDecoder(c, new WebpDecodeOptions { MaxPixels = opt.MaxPixels, Multithreaded = opt.Multithreaded, ApplyOrientation = false, CancellationToken = opt.CancellationToken });
                 px = (byte[])st.Next(data)!.Image.Data;
                 if (!alpha)
                 {
@@ -56,23 +56,29 @@ namespace Aardvark.ImageCodecs
             var bits = data.Slice(f.DataOffset, f.DataLength);
             if (f.Lossless)
             {
-                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels, out bool rented);
+                opt.CancellationToken.ThrowIfCancellationRequested();
+                var argb = Vp8lDecoder.Decode(bits, out int w, out int h, opt.MaxPixels, out bool rented, opt.CancellationToken);
+                opt.CancellationToken.ThrowIfCancellationRequested();
                 var px = GC.AllocateUninitializedArray<byte>(w * h * channels);
                 ArgbToBytes(argb, w * h, px, channels);
                 if (rented) ArrayPool<uint>.Shared.Return(argb);
                 return px;
             }
-            var frame = Vp8Decoder.Decode(bits, opt.MaxPixels, opt.Multithreaded);
-            var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
-            WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded);
-            frame.Release();
-            if (channels == 4 && f.AlphLength >= 0)
+            var frame = Vp8Decoder.Decode(bits, opt.MaxPixels, opt.Multithreaded, opt.CancellationToken);
+            byte[]? a = null;
+            try
             {
-                var a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height);
-                for (int i = 0, n = frame.Width * frame.Height; i < n; i++) dst[4 * i + 3] = a[i];
-                ArrayPool<byte>.Shared.Return(a);
+                // the alpha plane goes straight into the conversion
+                if (channels == 4 && f.AlphLength >= 0) a = WebpAlpha.Decode(data.Slice(f.AlphOffset, f.AlphLength), frame.Width, frame.Height, opt.CancellationToken);
+                var dst = GC.AllocateUninitializedArray<byte>(frame.Width * frame.Height * channels);
+                WebpYuv.ToRgb(frame, dst, channels, opt.Multithreaded, a);
+                return dst;
             }
-            return dst;
+            finally
+            {
+                frame.Release();
+                if (a != null) ArrayPool<byte>.Shared.Return(a);
+            }
         }
 
         /// <summary>0xAARRGGBB pixels to interleaved R, G, B(, A) bytes.</summary>
