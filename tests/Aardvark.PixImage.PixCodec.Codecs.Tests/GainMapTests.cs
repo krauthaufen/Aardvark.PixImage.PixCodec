@@ -91,7 +91,11 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.Equal(5 + 16 + 3 * 40, b.Length);
         Assert.Equal(0x80, b[4]);   // is_multichannel, not use_base_colour_space
         var r = GainMapMetadata.FromIso21496(b)!;
-        Assert.Equal((0, 3, true, false), (r.MinimumVersion, r.WriterVersion, r.IsMultichannel, r.UseBaseColourSpace));
+        // writer_version is the structure version this writer produces (0, C.2.3), whatever was read; the read one is kept
+        Assert.Equal((0, 0, true, false), (r.MinimumVersion, r.WriterVersion, r.IsMultichannel, r.UseBaseColourSpace));
+        Assert.Equal(new byte[] { 0, 0, 0, 0 }, b[..4]);
+        b[3] = 7;
+        Assert.Equal(7, GainMapMetadata.FromIso21496(b)!.WriterVersion);
         Assert.Equal(0.25, r.BaseHdrHeadroom, 9); Assert.Equal(3.75, r.AlternateHdrHeadroom, 9);
         for (int c = 0; c < 3; c++)
         {

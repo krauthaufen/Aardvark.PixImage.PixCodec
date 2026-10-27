@@ -23,7 +23,10 @@ namespace Aardvark.ImageCodecs
 
         /// <summary>minimum_version (C.2.3): 0 for this edition.</summary>
         public int MinimumVersion { get; init; }
-        /// <summary>writer_version (C.2.3).</summary>
+        /// <summary>
+        /// writer_version (C.2.3) as read: the structure version of the writer that made the metadata, for information.
+        /// <see cref="ToIso21496"/> always writes 0, the version of the structure it produces.
+        /// </summary>
         public int WriterVersion { get; init; }
         /// <summary>Whether separate per-component values are stored for R, G and B (is_multichannel); not the channel count of the gain map image.</summary>
         public bool IsMultichannel { get; init; }
@@ -140,7 +143,7 @@ namespace Aardvark.ImageCodecs
                 if (n == 0) throw new ArgumentException($"gain map gamma {v} is too small for ISO 21496-1 (numerator 0, C.2.3)");
                 U32((uint)n); U32(d);
             }
-            U16(0); U16(WriterVersion);
+            U16(0); U16(0);   // minimum_version and writer_version: the first edition's structure (5.2.8)
             b[p++] = (byte)((IsMultichannel ? 0x80 : 0) | (UseBaseColourSpace ? 0x40 : 0));
             Unsigned(BaseHdrHeadroom); Unsigned(AlternateHdrHeadroom);
             for (int c = 0; c < channels; c++)
@@ -151,7 +154,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>The GainMapVersion structure alone (C.4.3: what the baseline image of a JPEG carries).</summary>
-        internal static byte[] VersionOnly(int writerVersion = 0) => new byte[] { 0, 0, (byte)(writerVersion >> 8), (byte)writerVersion };
+        internal static byte[] VersionOnly() => new byte[4];
 
         /// <summary>
         /// A fraction for <paramref name="v"/>: the largest power of two denominator (up to 2^30) that keeps the numerator in
