@@ -40,6 +40,8 @@ namespace Aardvark.ImageCodecs.JpegXl
         /// <summary>Set when the colour planes are still XYB: the conversion to linear RGB is left to the output stage.</summary>
         public JxlOpsinParams? PendingXyb;
         public float PendingIntensityTarget;
+        /// <summary>Set when the colour planes are Cb, Y, Cr of a do_YCbCr frame: the colour transform (L.3) is still to come.</summary>
+        public bool YCbCr;
         /// <summary>Set when the colour went to this sink: the colour planes are then absent.</summary>
         public JxlTileSink? Sink;
 
@@ -375,6 +377,13 @@ namespace Aardvark.ImageCodecs.JpegXl
             JxlProfile.Mark("filters");
             if (fh.Upsampling > 1)
                 for (int c = 0; c < colour.Length; c++) colour[c] = Upsample(colour[c], dims.XSize, dims.YSize, fh.Upsampling, dims.Width, dims.Height);
+            if (fh.DoYCbCr && colour.Length == 3)
+            {
+                // Cb, Y, Cr stay so through patches, splines and noise (K.3.2); the frame's colour transform makes RGB
+                // of them (L.3). A grey image keeps only the first channel, R, so it is converted here.
+                if (result.NumColour == 3) result.YCbCr = true;
+                else JxlColour.YCbCrToRgbInPlace(colour[0], colour[1], colour[2], dims.Width * dims.Height);
+            }
             var planes = new float[result.NumColour + img.ExtraChannels.Length][];
             for (int c = 0; c < result.NumColour; c++) planes[c] = colour[Math.Min(c, colour.Length - 1)];
 
@@ -457,12 +466,11 @@ namespace Aardvark.ImageCodecs.JpegXl
             for (int c = 0; c < n; c++) res[c] = ToFloat(chans[c], img.BitDepth);
             if (fh.DoYCbCr)
             {
-                // chroma channels may be subsampled
+                // chroma channels may be subsampled; modular channels are Cb, Y, Cr, converted to RGB by the colour
+                // transform after filters and features (J.1, L.3)
                 var full = new float[3][];
                 for (int c = 0; c < 3; c++) full[c] = UpsampleChroma(res[c], chans[c], dims.XSize, dims.YSize);
-                // modular channels are Cb, Y, Cr
-                JxlColour.YCbCrToRgb(full[1], full[0], full[2], dims.XSize * dims.YSize, out var r, out var g, out var bb);
-                return new[] { r, g, bb };
+                return full;
             }
             return Expand(res, chans[0].W, chans[0].H);
         }

@@ -62,6 +62,12 @@ namespace Aardvark.ImageCodecs
         internal int? EpfIterations { get; set; }
         /// <summary>Test hook: writes custom dequantization matrix encodings (after the "not all default" bit).</summary>
         internal Action<JxlBitWriter>? DequantMatrices { get; set; }
+        /// <summary>Test hook: the HfMul of each 8 x 8 block (by block index) instead of the adaptive quantization's.</summary>
+        internal Func<int, int>? HfMul { get; set; }
+        /// <summary>Test hook: the number of HF histogram sets written (num_hf_presets, at most the number of groups).</summary>
+        internal int HfPresets { get; set; } = 1;
+        /// <summary>Test hook: XFromY and BFromY of each 64 x 64 tile (by tile index) written instead of the fitted ones.</summary>
+        internal Func<int, (int x, int b)>? CflOverride { get; set; }
 
         /// <summary>The distance that will be used (0 = lossless).</summary>
         public float EffectiveDistance

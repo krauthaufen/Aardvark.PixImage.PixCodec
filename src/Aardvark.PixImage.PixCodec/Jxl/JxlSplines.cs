@@ -25,7 +25,9 @@ namespace Aardvark.ImageCodecs.JpegXl
             var code = JxlEntropyCode.Read(br, 6);
             var r = new JxlSymbolReader(code, br, 0);
             uint num = r.ReadUint(br, 2) + 1;
-            long maxSplines = Math.Min(1L << 24, numPixels / 4 + 16);
+            // level 10 (18181-1:2024 Table M.1): min(2^24, frame pixels / 4) splines, min(2^20, frame pixels / 2) control
+            // points in all (num_control_points counts the starting point)
+            long maxSplines = Math.Min(1L << 24, numPixels / 4);
             if (num > maxSplines) throw new ImageFormatException("JPEG XL: too many splines");
             var starts = new (long x, long y)[num];
             long lx = 0, ly = 0;
@@ -47,8 +49,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             {
                 var sp = new Spline();
                 uint np = r.ReadUint(br, 3);
-                totalPoints += np;
-                if (totalPoints > Math.Min(1L << 20, numPixels / 2 + 64)) throw new ImageFormatException("JPEG XL: too many spline control points");
+                totalPoints += 1 + (long)np;
+                if (totalPoints > Math.Min(1L << 20, numPixels / 2)) throw new ImageFormatException("JPEG XL: too many spline control points");
                 long cx = starts[i].x, cy = starts[i].y, dx = 0, dy = 0;
                 sp.Points.Add((cx, cy));
                 for (int j = 0; j < np; j++)
@@ -220,6 +222,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                 var curve = CatmullRom(sp.Points);
                 var pts = EquallySpaced(curve);
                 double arcLength = (pts.Count - 2) * 1.0 + pts[pts.Count - 1].M;
+                // A single control point gives arc length 0 and K.4.2 then needs min(1, 0 / 0) for its first sample, which
+                // the text leaves undefined; libjxl draws nothing for it (JxlAuditRenderTests.SinglePointSpline).
                 if (!(arcLength > 0)) continue;
                 for (int i = 0; i < pts.Count; i++)
                 {

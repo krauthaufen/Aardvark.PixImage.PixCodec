@@ -222,6 +222,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     if (x + sx > w || y + sy > h) throw new ImageFormatException("JPEG XL: varblock outside of the LF group");
                     int abx = bx0 + x, aby = by0 + y;
                     if (abx % gd + sx > gd || aby % gd + sy > gd) throw new ImageFormatException("JPEG XL: varblock crosses a group boundary");
+                    // G.2.4 makes HfMul 1 + mul without bounds; libjxl clamps mul to [0, 255] (it decodes mul = -1, and
+                    // mul = 699 as 255). libjxl is followed (JxlAuditRenderTests.HfMulIsClampedAsLibjxl).
                     int qf = 1 + Math.Clamp(q, 0, 255);
                     for (int j = 0; j < sy; j++)
                         for (int i = 0; i < sx; i++)
@@ -235,6 +237,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     firstBlock![b] = true;
                 }
             }
+            // every BlockInfo column is a varblock placed at the earliest uncovered block inside the LF group (G.2.4): a
+            // column left over when all blocks are covered has no valid position
             if (num != count) throw new ImageFormatException("JPEG XL: unused varblock entries");
         }
 
@@ -251,7 +255,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                             dc![c][y * dcw[c] + x] = lf.Planes[c][Math.Min(y, lf.Height - 1) * lf.Width + Math.Min(x, lf.Width - 1)];
                 return;
             }
-            if (fh.Has(JxlFrameHeader.FlagSkipAdaptiveLfSmoothing) || !Is444) return;
+            if (fh.Has(JxlFrameHeader.FlagSkipAdaptiveLfSmoothing)) return;
+            // "If this adaptive smoothing procedure is applied, no channel is subsampled" (I.5.2); libjxl refuses it too
+            if (!Is444) throw new ImageFormatException("JPEG XL: adaptive LF smoothing with subsampled chroma");
             int W = dims.XBlocks, H = dims.YBlocks;
             if (W < 3 || H < 3) return;
             float mul = InvGlobalScale / quantLf;
@@ -317,8 +323,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                     r.CheckFinalState();
                 }
+                // no limit in the text (I.4): num_hf_presets is at most num_groups, so the size follows the frame's
                 long nctx = 495L * numHistoSets * numBlockCtx;
-                if (nctx > 1 << 20) throw new ImageFormatException("JPEG XL: too many HF contexts");
+                if (nctx > int.MaxValue) throw new ImageNotSupportedException("JPEG XL: too many HF contexts");
                 hfCodes[p] = JxlEntropyCode.Read(br, (int)nctx);
             }
             br.CheckEnd();
@@ -566,6 +573,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                         int size = sx * sy * 64;
                         int table = JxlAcStrategy.QuantTable[st];
                         float mul = inv / qfField![b];
+                        // I.6 takes the factors of "the 64 x 64 rectangle containing the current sample"; for varblocks
+                        // over several such tiles libjxl uses the tile of the top-left block, as here
+                        // (JxlAuditRenderTests.ChromaFromLumaOfLargeVarblocksFromTheirFirstTile)
                         int tile = ((by0 + y) / 8) * tilesX + (bx0 + x) / 8;
                         float rx = baseCorrX + cflX![tile] / (float)colourFactor;
                         float rb = baseCorrB + cflB![tile] / (float)colourFactor;
@@ -660,7 +670,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 for (int y = 0; y < dims.YSize; y++) Array.Copy(p, y * pst, o, y * dims.XSize, dims.XSize);
                 r[c] = o;
             }
-            if (fh.DoYCbCr) JxlColour.YCbCrToRgbInPlace(r[0], r[1], r[2], dims.XSize * dims.YSize);
+            // YCbCr stays Cb, Y, Cr until the colour transform (J.1, L.3)
             return r;
         }
     }

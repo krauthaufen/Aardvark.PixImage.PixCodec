@@ -175,10 +175,17 @@ namespace Aardvark.ImageCodecs.JpegXl
 
         /// <summary>
         /// XYB to linear RGB (sRGB primaries), and with <paramref name="encoded"/> on to the header's colour encoding, where
-        /// blending happens (F.2, L.2.2); other frames are already in the output colour space.
+        /// blending happens (F.2, L.2.2); YCbCr to RGB; other frames are already in the output colour space.
         /// </summary>
         JxlFrameImage ColourTransform(JxlFrameImage f, bool encoded)
         {
+            if (f.YCbCr)
+            {
+                var p = (float[][])f.Planes.Clone();
+                p[0] = (float[])p[0].Clone(); p[1] = (float[])p[1].Clone(); p[2] = (float[])p[2].Clone();
+                JxlColour.YCbCrToRgbInPlace(p[0], p[1], p[2], f.Width * f.Height);
+                return new JxlFrameImage { Width = f.Width, Height = f.Height, NumColour = f.NumColour, Planes = p };
+            }
             if (!Header.XybEncoded) return f;
             var r = new JxlFrameImage { Width = f.Width, Height = f.Height, NumColour = f.NumColour, Planes = (float[][])f.Planes.Clone() };
             int n = f.Width * f.Height;

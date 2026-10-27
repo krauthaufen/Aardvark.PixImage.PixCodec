@@ -293,7 +293,7 @@ public class JxlSpecTests(ITestOutputHelper output)
         if (lib != null) Assert.Equal((byte[])img.Data, (byte[])lib.Data);
     }
 
-    /// <summary>Table M.1: at most min(2^24, frame pixels / 16) patches (we allow at least 4096).</summary>
+    /// <summary>Table M.1: at most min(2^24, frame pixels / 16) patches.</summary>
     [Fact]
     public void TooManyPatchesAreRejected()
     {
@@ -310,9 +310,10 @@ public class JxlSpecTests(ITestOutputHelper output)
             w.ZeroPadToByte();
             return w.ToArray();
         }
-        Assert.Equal(4096, JxlPatches.Read(new JxlBitReader(Dictionary(4096)), 0, 64 * 64).Items.Count);
-        Assert.Throws<ImageFormatException>(() => JxlPatches.Read(new JxlBitReader(Dictionary(4097)), 0, 64 * 64));
-        Assert.Equal(5000, JxlPatches.Read(new JxlBitReader(Dictionary(5000)), 0, 300 * 300).Items.Count);
+        Assert.Equal(256, JxlPatches.Read(new JxlBitReader(Dictionary(256)), 0, 64 * 64).Items.Count);
+        Assert.Throws<ImageFormatException>(() => JxlPatches.Read(new JxlBitReader(Dictionary(257)), 0, 64 * 64));
+        Assert.Equal(5625, JxlPatches.Read(new JxlBitReader(Dictionary(5625)), 0, 300 * 300).Items.Count);
+        Assert.Throws<ImageFormatException>(() => JxlPatches.Read(new JxlBitReader(Dictionary(5626)), 0, 300 * 300));
     }
 
     /// <summary>

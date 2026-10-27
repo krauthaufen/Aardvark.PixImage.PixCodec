@@ -31,9 +31,8 @@ namespace Aardvark.ImageCodecs.JpegXl
             var p = new JxlPatches();
             uint numRef = r.ReadUint(br, 0);
             // level 10 allows min(2^24, frame pixels / 16) patches (18181-1:2024 Table M.1)
-            long maxPatches = Math.Max(1 << 12, Math.Min(1L << 24, maxPixels / 16));
+            long maxPatches = Math.Min(1L << 24, maxPixels / 16);
             if (numRef > maxPatches) throw new ImageFormatException("JPEG XL: too many patches");
-            long total = 0;
             for (uint i = 0; i < numRef; i++)
             {
                 int rf = (int)r.ReadUint(br, 1);
@@ -60,6 +59,10 @@ namespace Aardvark.ImageCodecs.JpegXl
                         uint mode = r.ReadUint(br, 5);
                         if (mode > 7) throw new ImageFormatException("JPEG XL: bad patch blend mode");
                         bl[k].Mode = (JxlPatchBlend)mode;
+                        // K.3.1 reads alpha_channel when there is more than one alpha channel; libjxl reads it when there
+                        // is more than one extra channel of any type and refuses a stream with {depth, alpha} that leaves
+                        // it out. That is followed here (JxlAuditRenderTests.PatchAlphaChannelFollowsLibjxl). Otherwise
+                        // it is 0, the only extra channel.
                         if (mode >= 4 && numExtra > 1)
                         {
                             bl[k].Alpha = (int)r.ReadUint(br, 8);
@@ -67,8 +70,6 @@ namespace Aardvark.ImageCodecs.JpegXl
                         }
                         if (mode >= 3) bl[k].Clamp = r.ReadUint(br, 9) != 0;
                     }
-                    total += (long)w * h;
-                    if (total > Math.Max(maxPixels, 1 << 20) * 4) throw new ImageNotSupportedException("JPEG XL: patches cover too much");
                     p.Items.Add(new Patch { Ref = rf, X0 = x0, Y0 = y0, W = w, H = h, X = x, Y = y, Blend = bl });
                 }
                 if (br.Overrun) throw new ImageFormatException("JPEG XL: truncated patches");
@@ -81,8 +82,9 @@ namespace Aardvark.ImageCodecs.JpegXl
         /// Blends the patches into the frame (all channels at frame resolution, before the colour transform). Colour and each
         /// extra channel blend by their own mode (18181-1:2024 K.3.2, Table K.1); with clamping only the alpha of the
         /// sample blended on top (the patch for the "above" modes, the frame for the "below" ones) is clamped, as for
-        /// frames (Table F.7). Where the text leaves it open, libjxl's behaviour is followed: when the colour blends with
-        /// alpha (kBlendAbove / kBlendBelow), its alpha channel ends up alpha-composited whatever that channel's own mode.
+        /// frames (Table F.7). One exception: K.3.2 blends every channel by its own mode[c], but libjxl, when the colour
+        /// blends with alpha (kBlendAbove / kBlendBelow), alpha-composites that alpha channel whatever its own mode. libjxl
+        /// is followed (JxlAuditRenderTests.PatchAlphaModeWithBlendedColour; the text's reading differs from it by up to 1.2).
         /// </summary>
         public void Apply(JxlFrameImage frame, JxlDecoderState state, JxlImageHeader img)
         {
