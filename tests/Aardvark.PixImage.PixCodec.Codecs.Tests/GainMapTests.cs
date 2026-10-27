@@ -552,6 +552,31 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.False(Jpeg.GetInfo(bad).HasGainMap && Jpeg.GetMultiPicture(bad) == null);
     }
 
+    /// <summary>
+    /// C.4.3: the baseline carries the GainMapVersion APP2 segment; without it the file does not conform and its ISO
+    /// gain map metadata is ignored (4.1 NOTE), the XMP form is used when present.
+    /// </summary>
+    [Fact]
+    public void IsoMetadataNeedsTheBaselineVersionSegment()
+    {
+        var hdr = SyntheticHdr(48, 32);
+        static byte[] NoPrimaryIso(byte[] jpeg)
+        {
+            var r = (byte[])jpeg.Clone();
+            int i = r.AsSpan().IndexOf("urn:iso:std:iso:ts:21496:-1\0"u8);
+            Assert.True(i < Jpeg.GetMultiPicture(jpeg)!.Images[1].Offset);
+            Assert.Equal((0xFF, 0xE2), (r[i - 4], r[i - 3]));
+            r[i - 3] = 0xEF;   // APP2 -> APP15, offsets stay valid
+            return r;
+        }
+        var both = UltraHdr(hdr);
+        Assert.Equal(GainMapSource.Iso21496, Jpeg.GetGainMap(both)!.Source);
+        Assert.Equal(GainMapSource.Xmp, Jpeg.GetGainMap(NoPrimaryIso(both))!.Source);
+        var isoOnly = UltraHdr(hdr, new UltraHdrEncodeOptions { WriteXmp = false });
+        Assert.NotNull(Jpeg.GetGainMap(isoOnly));
+        Assert.Null(Jpeg.GetGainMap(NoPrimaryIso(isoOnly)));
+    }
+
     [Fact]
     public void MetadataWritingKeepsTheGainMap()
     {

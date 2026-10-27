@@ -157,7 +157,8 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// The HDR gain map of a JPEG file, or null when there is none or it is unusable (Ultra HDR v1.1: invalid metadata
         /// means showing the SDR image). Both signallings are read; ISO 21496-1 metadata (APP2 "urn:iso:std:iso:ts:21496:-1"
-        /// in the gain map image, Annex C.4) wins over Ultra HDR / Adobe XMP (hdrgm). The gain map image is found through
+        /// in the gain map image, Annex C.4; used only when the primary has the version segment too, C.4.3) wins over Ultra
+        /// HDR / Adobe XMP (hdrgm). The gain map image is found through
         /// its MPF entry (MP Type gain map), the GContainer directory of the primary's XMP (Item:Semantic GainMap), or as an
         /// MPF image whose headers carry gain map metadata. Its image is decoded and turned upright with the primary's
         /// orientation (unless <see cref="JpegDecodeOptions.ApplyOrientation"/> is off); for ISO 21496-1 metadata, an ICC
@@ -207,7 +208,9 @@ namespace Aardvark.ImageCodecs
                 if (gh == null) continue;
                 GainMapMetadata? meta = null;
                 var source = GainMapSource.Iso21496;
-                if (gh.IsoAt >= 0 && (primaryIso || h.IsoAt < 0))
+                // C.4.3: a conforming file has the GainMapVersion APP2 in the baseline too; without it the ISO metadata is
+                // ignored (4.1 NOTE) and XMP is used if there is any
+                if (gh.IsoAt >= 0 && primaryIso)
                 {
                     try { meta = GainMapMetadata.FromIso21496(gh.Iso(data)); } catch (ImageFormatException) { meta = null; }
                 }
