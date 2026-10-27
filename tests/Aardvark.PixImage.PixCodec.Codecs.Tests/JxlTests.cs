@@ -424,14 +424,16 @@ public class JxlTests(ITestOutputHelper output)
 
     public static IEnumerable<object[]> ConformanceCases()
     {
+        // ISO/IEC 18181-3 clause 5: the cases of Level 5 and of Level 10 of the Main profile, as the suite lists them
         var root = TestDataDir == null ? null : Path.Combine(TestDataDir, "downloads", "jxl-conformance");
-        if (root == null || !Directory.Exists(root))
+        if (root == null || !File.Exists(Path.Combine(root, "main_level5.txt")) || !File.Exists(Path.Combine(root, "main_level10.txt")))
         {
-            yield return new object[] { "bike" };   // the theory is skipped without the test data
+            yield return new object[] { 5, "bike_5" };   // the theory is skipped without the test data
             yield break;
         }
-        foreach (var d in Directory.GetDirectories(root).OrderBy(d => d, StringComparer.Ordinal))
-            if (File.Exists(Path.Combine(d, "input.jxl"))) yield return new object[] { Path.GetFileName(d) };
+        foreach (var level in new[] { 5, 10 })
+            foreach (var name in File.ReadAllLines(Path.Combine(root, $"main_level{level}.txt")).Select(l => l.Trim()).Where(l => l.Length > 0))
+                yield return new object[] { level, name };
     }
 
     /// <summary>Cases that do not meet the suite's tolerance, and why.</summary>
@@ -477,8 +479,8 @@ public class JxlTests(ITestOutputHelper output)
             && SameCurve(a.RedTrc, b.RedTrc) && SameCurve(a.GreenTrc, b.GreenTrc) && SameCurve(a.BlueTrc, b.BlueTrc);
     }
 
-    [TestDataTheory("downloads/jxl-conformance/bike/test.json"), MemberData(nameof(ConformanceCases))]
-    public void Conformance(string name)
+    [TestDataTheory("downloads/jxl-conformance/main_level5.txt", "downloads/jxl-conformance/main_level10.txt"), MemberData(nameof(ConformanceCases))]
+    public void Conformance(int level, string name)
     {
         var dir = Path.Combine(TestDataDir!, "downloads", "jxl-conformance", name);
         var desc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, "test.json"))).RootElement;
@@ -544,7 +546,7 @@ public class JxlTests(ITestOutputHelper output)
             ok &= good;
             if (!good || k < 2) lines.Add($"f{k} rms {rms:E2}/{rmsTol:E0} peak {peak:E2}/{peakTol:E0}");
         }
-        output.WriteLine($"{name}: {(ok ? "PASS" : "FAIL")} {ms} ms {string.Join("; ", lines.Take(4))}");
+        output.WriteLine($"level {level} {name}: {(ok ? "PASS" : "FAIL")} {ms} ms {string.Join("; ", lines.Take(4))}");
         if (KnownFailures.TryGetValue(name, out var why))
         {
             output.WriteLine("known failure: " + why);

@@ -40,6 +40,8 @@ def main():
         rel = m.name[len(prefix):]
         if rel in ('LICENSE', 'testcases/README.md'):
             dst = os.path.join(out, 'LICENSE.conformance' if rel == 'LICENSE' else 'README.testcases.md')
+        elif rel in ('testcases/main_level5.txt', 'testcases/main_level10.txt'):
+            dst = os.path.join(out, os.path.basename(rel))   # the test cases of each level (ISO/IEC 18181-3 clause 5)
         elif rel.startswith('testcases/') and rel.count('/') == 2 and os.path.basename(rel) in keep:
             name = rel.split('/')[1]
             cases[name] = True
