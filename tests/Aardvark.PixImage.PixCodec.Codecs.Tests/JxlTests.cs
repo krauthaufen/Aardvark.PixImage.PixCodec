@@ -479,7 +479,7 @@ public class JxlTests(ITestOutputHelper output)
         {
             var img = anim.Frames[k].Image;
             Assert.Equal((w, h), (img.Width, img.Height));
-            Assert.True(img.Channels >= nc, $"frame {k}: {img.Channels} channels, reference {nc}");
+            Assert.True(img.Channels == nc, $"frame {k}: {img.Channels} channels, reference {nc}");
             var a = (float[])img.Data;
             int ac = img.Channels;
             int ncol = nc is 1 or 2 ? 1 : 3;
