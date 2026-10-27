@@ -39,6 +39,8 @@ runs:
           testdata/fixtures/avif/libavif/io/
           testdata/fixtures/avif/libavif/README.md
           testdata/fixtures/mpo/pillow/*.jpg
+          testdata/fixtures/nitf/jitc/*.ntf
+          testdata/fixtures/nitf/jitc/*.nsf
 
     - name: Fetch
       if: inputs.mode == 'fetch' && steps.lookup.outputs.cache-hit != 'true'
@@ -89,6 +91,8 @@ runs:
           testdata/fixtures/avif/libavif/io/
           testdata/fixtures/avif/libavif/README.md
           testdata/fixtures/mpo/pillow/*.jpg
+          testdata/fixtures/nitf/jitc/*.ntf
+          testdata/fixtures/nitf/jitc/*.nsf
 
     - name: Restore downloads
       if: inputs.mode == 'restore'
@@ -112,3 +116,5 @@ runs:
           testdata/fixtures/avif/libavif/io/
           testdata/fixtures/avif/libavif/README.md
           testdata/fixtures/mpo/pillow/*.jpg
+          testdata/fixtures/nitf/jitc/*.ntf
+          testdata/fixtures/nitf/jitc/*.nsf
