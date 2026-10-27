@@ -678,6 +678,9 @@ def gen_container():
       * transform_order.avif: imir 0, irot 1, then clap 64x48 (in this association order). avifdec takes the clap on the
         stored image, (28, 62), and orders clap, irot, imir (as MIAF 7.3.6.7 requires; HEIF 6.5.1 says association
         order): avifdec's output, which is the stored pixels of nat_420_s6.avif cropped, turned and mirrored so.
+    and from gainmap/irot.avif (base item 1 with irot 1, imir 1; tmap item 2; gain map item 3):
+      * tmap_primary_irot.avif: the tmap item primary, with irot 2 of its own (avifdec rejects both): avifdec's output of
+        gainmap/irot.avif (the base's output image) turned 180 degrees (HEIF Amd 1 6.6.2.4 and 6.6.1).
     """
     os.makedirs(CONTAINER, exist_ok=True)
     os.makedirs(TMP, exist_ok=True)
@@ -699,6 +702,12 @@ def gen_container():
     out = os.path.join(CONTAINER, 'transform_order.avif')
     heif_write(out, items, refs, primary)
     write_ref(out + '.ref', avifdec_png(out))
+    src = os.path.join(OUT, 'gainmap', 'irot.avif')
+    items, refs, primary = heif_items(src)
+    items[2]['props'].append((irot(2), True))
+    out = os.path.join(CONTAINER, 'tmap_primary_irot.avif')
+    heif_write(out, items, refs, 2, compatible=(b'avif', b'mif1', b'miaf', b'tmap'), groups=[('altr', 4, [2, 1])])
+    write_ref(out + '.ref', np.rot90(avifdec_png(src), 2))
     print('container')
 
 

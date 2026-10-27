@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Aardvark.ImageCodecs.Av1;
 using Aardvark.ImageCodecs.Heif;
 
@@ -78,8 +79,8 @@ namespace Aardvark.ImageCodecs
         public int Height { get; internal set; }
 
         internal AvifReader Reader = null!;
-        internal uint GainMapItemId, BaseItemId;
-        internal bool ApplyOrientation = true;
+        internal uint GainMapItemId, BaseItemId, TmapItemId;
+        internal bool ApplyOrientation = true, TmapIsPrimary;
 
         /// <summary>
         /// Decodes the gain map image: its stored pixels, which match the base image's stored pixels (scaled), without any
@@ -105,7 +106,7 @@ namespace Aardvark.ImageCodecs
         /// The gain map in the format independent form that <see cref="GainMap.Apply(RawImage, GainMap, double?)"/> takes
         /// (as JPEG and JPEG XL files give it), for the image <see cref="Avif.Decode(ReadOnlySpan{byte}, AvifDecodeOptions)"/>
         /// returns: the stored gain map image with the base image's clean aperture (scaled to the gain map's size), rotation
-        /// and mirroring (ISO 21496-1 4.5), the alternate colour space from the tmap item's ICC profile or nclx (none: the
+        /// and mirroring (ISO 21496-1 4.5), then a tmap primary item's own, the alternate colour space from the tmap item's ICC profile or nclx (none: the
         /// base's, 5.3.3). Null when the metadata is unusable.
         /// </summary>
         public GainMap? ToGainMap()
@@ -117,9 +118,11 @@ namespace Aardvark.ImageCodecs
             var img = DecodeImage();
             img.Metadata = null;
             var bi = rd.File.Items[BaseItemId];
+            // the transforms of the base and, when Decode returns the tmap item's output image, of the tmap item
+            var chain = TmapIsPrimary ? new[] { bi, rd.File.Items[TmapItemId] } : new[] { bi };
             if (rd.Ispe(bi) is var (bw, bh) && bw > 0 && bh > 0)
             {
-                foreach (var t in rd.Transforms(bi))
+                foreach (var t in chain.SelectMany(rd.Transforms))
                 {
                     switch (t.Kind)
                     {
@@ -135,16 +138,16 @@ namespace Aardvark.ImageCodecs
                             }
                             break;
                         case 'r':
-                            if (!ApplyOrientation) break;
                             img = t.A switch { 1 => ImageOps.Rotate270(img), 2 => ImageOps.Rotate180(img), 3 => ImageOps.Rotate90(img), _ => img };
                             if ((t.A & 1) != 0) (bw, bh) = (bh, bw);
                             break;
                         case 'm':
-                            if (!ApplyOrientation) break;
                             img = t.A == 0 ? ImageOps.FlipVertical(img) : ImageOps.FlipHorizontal(img);
                             break;
                     }
                 }
+                // without ApplyOrientation: back to the stored order, as the image Decode returns
+                if (!ApplyOrientation) img = ImageOps.ApplyOrientation(img, AvifReader.InverseOrientation(rd.Orientation(chain)));
             }
             // the alternate's colour space: an ICC profile, else nclx primaries (a profile is only needed for them)
             byte[]? alt = AlternateIcc;
@@ -201,20 +204,24 @@ namespace Aardvark.ImageCodecs
             if (primary != null && !(track != null && rd.File.MajorBrand == "avis" && primary.Type is not ("av01" or "grid" or "iden" or "tmap" or "iovl")))
             {
                 var it = primary;
-                if (it.Type == "tmap" && it.Refs("dimg").Length > 0 && rd.File.Items.TryGetValue(it.Refs("dimg")[0], out var b)) it = b;
+                // a tmap primary: the base's output image with the tmap item's transforms
+                var chain = new[] { it };
+                if (it.Type == "tmap" && it.Refs("dimg").Length > 0 && rd.File.Items.TryGetValue(it.Refs("dimg")[0], out var b)) chain = new[] { it = b, primary };
                 var size = rd.Ispe(it) ?? throw new ImageFormatException("AVIF: primary item without ispe");
                 int w = size.w, h = size.h;
-                foreach (var t in rd.Transforms(it))
-                {
-                    if (t.Kind == 'c' && AvifReader.Clap(t.Clap!, w, h) is var (_, _, cw, ch)) { w = cw; h = ch; }
-                    else if (t.Kind == 'r' && (t.A & 1) != 0 && opt.ApplyOrientation) (w, h) = (h, w);
-                }
+                foreach (var c in chain)
+                    foreach (var t in rd.Transforms(c))
+                    {
+                        if (t.Kind == 'c' && rd.ApplyCrop && AvifReader.Clap(t.Clap!, w, h) is var (_, _, cw, ch)) { w = cw; h = ch; }
+                        else if (t.Kind == 'r' && (t.A & 1) != 0) (w, h) = (h, w);
+                    }
+                int orient = rd.Orientation(chain);
+                if (!opt.ApplyOrientation && orient >= 5) (w, h) = (h, w);
                 int bits = rd.ItemBitDepth(it);
                 bool mono = Monochrome(rd, it);
                 bool alpha = !opt.IgnoreAlpha && rd.HasAlpha(it);
                 var color = mono ? (alpha ? ColorModel.GrayAlpha : ColorModel.Gray) : (alpha ? ColorModel.Rgba : ColorModel.Rgb);
                 var colr = ColourOf(rd, it);
-                int orient = rd.Orientation(it);
                 int frames = track != null ? track.Samples.Count : 1;
                 return new ImageInfo(ImageFormat.Avif, w, h, RawImage.ChannelCount(color), bits <= 8 ? SampleType.UInt8 : SampleType.UInt16, color, Math.Max(1, frames))
                 {
@@ -489,7 +496,8 @@ namespace Aardvark.ImageCodecs
                     AlternateTransfer = c.HasNclx ? AvifReader.TransferOf(c.Transfer, out _) : TransferFunction.Unknown,
                     AlternateIcc = c.Icc,
                     Width = size?.w ?? 0, Height = size?.h ?? 0,
-                    Reader = rd, GainMapItemId = refs[1], BaseItemId = refs[0], ApplyOrientation = opt.ApplyOrientation,
+                    Reader = rd, GainMapItemId = refs[1], BaseItemId = refs[0], TmapItemId = it.Id, TmapIsPrimary = rd.Primary?.Id == it.Id,
+                    ApplyOrientation = opt.ApplyOrientation,
                 };
             }
             return null;

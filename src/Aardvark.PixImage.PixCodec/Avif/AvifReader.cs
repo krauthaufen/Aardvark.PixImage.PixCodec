@@ -459,7 +459,18 @@ namespace Aardvark.ImageCodecs.Heif
                     {
                         var r = it.Refs("dimg");
                         if (r.Length < 1 || !File.Items.TryGetValue(r[0], out var src)) throw new ImageFormatException("AVIF: bad tmap item");
-                        return DecodeItem(src, applyTransforms, depth + 1);
+                        if (stored) return DecodeItem(src, false, depth + 1, stored: true);
+                        // the base image's output image, then the tmap item's own transforms (HEIF Amd 1 6.6.2.4, 6.6.1;
+                        // avifdec 1.4.2 rejects transforms on a tmap item and a tmap primary item)
+                        img = ApplyTransforms(it, DecodeItem(src, true, depth + 1), true);
+                        if (!applyTransforms && Orientation(src, it) is int o && o > 1)
+                        {
+                            var meta = img.Metadata;
+                            img = ImageOps.ApplyOrientation(img, InverseOrientation(o));
+                            img.Metadata = meta;
+                            if (meta != null) meta.Orientation = o;
+                        }
+                        return img;
                     }
                 default:
                     {
@@ -517,13 +528,17 @@ namespace Aardvark.ImageCodecs.Heif
             return img;
         }
 
-        /// <summary>The EXIF orientation the irot / imir properties of an item amount to (1 if none).</summary>
-        public int Orientation(HeifItem it)
+        /// <summary>The EXIF orientation that undoes orientation <paramref name="o"/>.</summary>
+        public static int InverseOrientation(int o) => o == 6 ? 8 : o == 8 ? 6 : o;
+
+        /// <summary>The EXIF orientation the irot / imir properties of the items, applied one after the other, amount to (1 if none).</summary>
+        public int Orientation(params HeifItem[] chain)
         {
             // apply the transforms to a 3x2 marker image and find the EXIF orientation that does the same
             var probe = new RawImage(3, 2, ColorModel.Gray, new byte[] { 0, 1, 2, 3, 4, 5 });
             var t = probe;
             bool any = false;
+            foreach (var it in chain)
             foreach (var x in Transforms(it))
             {
                 if (x.Kind == 'r') { any = true; t = x.A switch { 1 => ImageOps.Rotate270(t), 2 => ImageOps.Rotate180(t), 3 => ImageOps.Rotate90(t), _ => t }; }

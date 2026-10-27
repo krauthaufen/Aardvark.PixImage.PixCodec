@@ -649,6 +649,31 @@ public class AvifTests(ITestOutputHelper output)
         AssertEqual(img, ImageOps.ApplyOrientation(kept, kept.Metadata!.Orientation));
     }
 
+    /// <summary>
+    /// A tmap primary item with an irot of its own (gen_avif.py container; avifdec refuses it): the base's output image
+    /// (avifdec's decode of gainmap/irot.avif) turned 180 degrees (HEIF Amd 1 6.6.2.4); the gain map follows.
+    /// </summary>
+    [Fact]
+    public void TmapItemTransforms()
+    {
+        var path = Fixture("avif/container/tmap_primary_irot.avif");
+        var data = File.ReadAllBytes(path);
+        var img = Avif.Decode(data);
+        var expected = LoadRef(path + ".ref");
+        Assert.True(MaxDiff(expected, img) <= 1, $"max difference {MaxDiff(expected, img)}");
+        var info = Avif.GetInfo(data);
+        Assert.Equal((img.Width, img.Height), (info.Width, info.Height));
+        var kept = Avif.Decode(data, new AvifDecodeOptions { ApplyOrientation = false });
+        Assert.Equal((64, 48), (kept.Width, kept.Height));
+        AssertEqual(img, ImageOps.ApplyOrientation(kept, kept.Metadata!.Orientation));
+        Assert.Equal((64, 48), (Avif.GetInfo(data, new AvifDecodeOptions { ApplyOrientation = false }).Width, Avif.GetInfo(data, new AvifDecodeOptions { ApplyOrientation = false }).Height));
+        // the gain map: the one of the base primary file turned too
+        var original = Avif.GetGainMap(File.ReadAllBytes(Fixture("avif/gainmap/irot.avif")))!.ToGainMap()!.Image;
+        AssertEqual(ImageOps.Rotate180(original), Avif.GetGainMap(data)!.ToGainMap()!.Image);
+        var hdr = Avif.DecodeHdr(data, 2.5);
+        Assert.Equal((img.Width, img.Height), (hdr.Width, hdr.Height));
+    }
+
     // ------------------------------------------------------------------ robustness
 
     [Fact]
