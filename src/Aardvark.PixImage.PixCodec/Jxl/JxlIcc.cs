@@ -139,6 +139,12 @@ namespace Aardvark.ImageCodecs.JpegXl
             return v;
         }
 
+        /// <summary>
+        /// Shuffle of E.4.5: the input fills `width` rows of ceil(size / width) bytes each (the last rows shorter), the
+        /// output reads the matrix column by column. This is what libjxl (djxl 0.12) does. The text of 18181-1:2024 has
+        /// only the last column short (rows of ceil and ceil - 1 bytes); the two differ when two or more elements are
+        /// missing (size % width of 1 or 2 with width 4) and agree on the example there.
+        /// </summary>
         static byte[] Unshuffle(byte[] d, int start, int size, int width)
         {
             var r = new byte[size];
@@ -151,6 +157,17 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (j >= size) j = ++s;
             }
             return r;
+        }
+
+        /// <summary>
+        /// E.4.2: the decoder reads both streams to their ends and the profile has exactly output_size bytes (data left
+        /// over is not copied: no command produces it).
+        /// </summary>
+        static byte[] Finish(List<byte> o, ulong osize, int pos, int end, int cpos = 0, int cend = 0)
+        {
+            if ((ulong)o.Count != osize) throw new ImageFormatException("JPEG XL: ICC profile has the wrong size");
+            if (pos != end || cpos != cend) throw new ImageFormatException("JPEG XL: ICC stream has unused bytes");
+            return o.ToArray();
         }
 
         /// <summary>Turns the ICC encoding into the profile.</summary>
@@ -172,7 +189,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (pos >= end) throw new ImageFormatException("JPEG XL: truncated ICC header");
                 o.Add((byte)(enc[pos++] + header[i]));
             }
-            if ((ulong)o.Count == osize) return o.ToArray();
+            if ((ulong)o.Count == osize) return Finish(o, osize, pos, end, cpos, cend);
 
             // tag list (none when the command stream is already used up); the start predicted for a tag is the previous
             // tag's start plus its size, after the three tags of an XYZ triple too (18181-1:2024 E.4.4)
@@ -234,6 +251,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 if (command == 1 || command == 2 || command == 3)
                 {
                     ulong num = VarInt(enc, ref cpos, cend);
+                    if (num == 0) throw new ImageFormatException("JPEG XL: empty ICC data command");
                     if (num > (ulong)(end - pos)) throw new ImageFormatException("JPEG XL: truncated ICC data");
                     if (command == 1) for (int i = 0; i < (int)num; i++) o.Add(enc[pos + i]);
                     else o.AddRange(Unshuffle(enc, pos, (int)num, command == 2 ? 2 : 4));
@@ -255,6 +273,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                     }
                     if (o.Count == 0 || (ulong)((o.Count - 1) >> 2) < stride) throw new ImageFormatException("JPEG XL: bad ICC prediction stride");
                     ulong num = VarInt(enc, ref cpos, cend);
+                    if (num == 0) throw new ImageFormatException("JPEG XL: empty ICC data command");
                     if (num > (ulong)(end - pos) || stride > int.MaxValue) throw new ImageFormatException("JPEG XL: truncated ICC data");
                     byte[] shuffled;
                     if (width > 1) shuffled = Unshuffle(enc, pos, (int)num, width);
@@ -278,10 +297,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                 }
                 else throw new ImageFormatException("JPEG XL: bad ICC command");
             }
-            // any remaining data is copied
-            while (pos < end && (ulong)o.Count < osize) o.Add(enc[pos++]);
-            if ((ulong)o.Count != osize) throw new ImageFormatException("JPEG XL: ICC profile has the wrong size");
-            return o.ToArray();
+            return Finish(o, osize, pos, end);
         }
     }
 }
