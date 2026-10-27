@@ -60,6 +60,10 @@ namespace Aardvark.ImageCodecs.JpegXl
                         uint mode = r.ReadUint(br, 5);
                         if (mode > 7) throw new ImageFormatException("JPEG XL: bad patch blend mode");
                         bl[k].Mode = (JxlPatchBlend)mode;
+                        // K.3.1 reads alpha_channel when there is more than one alpha channel; libjxl reads it when there
+                        // is more than one extra channel of any type and refuses a stream with {depth, alpha} that leaves
+                        // it out. That is followed here (JxlAuditRenderTests.PatchAlphaChannelFollowsLibjxl). Otherwise
+                        // it is 0, the only extra channel.
                         if (mode >= 4 && numExtra > 1)
                         {
                             bl[k].Alpha = (int)r.ReadUint(br, 8);

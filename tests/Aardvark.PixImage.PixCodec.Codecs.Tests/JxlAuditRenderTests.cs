@@ -168,6 +168,34 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
         return s.ToArray();
     }
 
+    /// <summary>
+    /// K.3.1 reads a patch's alpha_channel when its mode uses alpha and "there is more than 1 alpha channel". libjxl
+    /// reads it whenever there is more than one extra channel: with extra channels {depth, alpha} it decodes the stream
+    /// that carries the index and refuses the one written by the letter of the text. We do the same.
+    /// </summary>
+    [Fact]
+    public void PatchAlphaChannelFollowsLibjxl()
+    {
+        var ex = new[] { JxlExtraChannelType.Depth, JxlExtraChannelType.Alpha };
+        AssertClose(PatchStream(ex, new[] { 4, 1, 4 }, _ => 1), "patch alpha index, depth + alpha", 1e-4);
+        var letter = PatchStream(ex, new[] { 4, 1, 4 }, _ => null);
+        Dump("patch alpha index by the letter", letter);
+        Assert.ThrowsAny<ImageFormatException>(() => Jxl.Decode(letter));
+        if (PythonAvailable)
+        {
+            var tmp = Path.Combine(FixtureDir, "_tmp");
+            Directory.CreateDirectory(tmp);
+            var f = Path.Combine(tmp, Guid.NewGuid().ToString("N") + ".jxl");
+            try
+            {
+                File.WriteAllBytes(f, letter);
+                var (exit, text) = RunPython($"decode_to_ref.py \"{f}\" \"{f}.ref\"");
+                if (!CannotVerify(exit, text)) Assert.NotEqual(0, exit);
+            }
+            finally { File.Delete(f); File.Delete(f + ".ref"); }
+        }
+    }
+
     // ------------------------------------------------------------------ K.2 upsampling weights
 
     /// <summary>d_up2, d_up4 and d_up8 of K.2 as printed in 18181-1:2024.</summary>
