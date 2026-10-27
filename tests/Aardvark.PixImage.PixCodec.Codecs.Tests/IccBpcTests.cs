@@ -181,4 +181,87 @@ public class IccBpcTests
         Near(0, BlackL(input, IccRenderingIntent.RelativeColorimetric, true));
         Near(10, BlackL(input, IccRenderingIntent.Perceptual, true));
     }
+
+    // ------------------------------------------------------------------ destination black points
+
+    /// <summary>A CMYK printer whose B2A tables are sampled from functions of L* alone (a grid of 21 points per input),
+    /// with the ink limited A2B of <see cref="InkLimited"/>.</summary>
+    static IccProfile Printer(Func<double, double[]> b2a0, Func<double, double[]> b2a1)
+    {
+        var a2b = Lut16(4, 3, 2, x => Gray(100 - 80 * x[3] - 10 * x[0]));
+        return Profile(IccProfileClass.Output, IccColorSpace.Cmyk, ("A2B0", a2b), ("A2B1", a2b), ("A2B2", a2b),
+            ("B2A0", Lut16(3, 4, 21, x => b2a0(LOf(x[0])))), ("B2A1", Lut16(3, 4, 21, x => b2a1(LOf(x[0])))),
+            ("B2A2", Lut16(3, 4, 21, x => b2a0(LOf(x[0])))));
+    }
+
+    [Fact]
+    public void LutDestinationBlack()
+    {
+        // ISO 18619 4.2.5. Ink limited: BT (B2A0 / B2A2 and back) = max(L*, 20); the quadratic through the shadow points is
+        // the straight line through (20, 0), z = 20. Relative colorimetric: BT through B2A1 = 10 + 0.9 L* above L* 20 (28
+        // below), the midrange is not straight (L* 50: 55), the fit through the line gives z = 20 again.
+        var p = InkLimited();
+        foreach (var intent in Intents) Near(20, BlackL(p, intent, false), 0.05);
+        // a straight midrange keeps InitialLab = T(T(Lab 0, B2A0), A2B1): B2A0 adds C below L* 10, giving black L* 10, where
+        // B2A1 (K only) stops at 20
+        double K(double l) => Math.Clamp((100 - l) / 80, 0, 1);
+        var q = Printer(l => new[] { Math.Clamp((10 - l) / 10, 0, 1), 0, 0, K(l) }, l => new[] { 0, 0, 0, K(l) });
+        Near(10, BlackL(q, IccRenderingIntent.RelativeColorimetric, false), 0.05);
+        // 4.2.5.3: a flat BT is no valid ramp, black 0
+        var flat = Printer(l => new[] { 0, 0, 0, 0.5 }, l => new[] { 0, 0, 0, 0.5 });
+        foreach (var intent in Intents) Near(0, BlackL(flat, intent, false));
+    }
+
+    [Fact]
+    public void DestinationWithoutTheIntentsB2A()
+    {
+        // LittleCMS (PIL.ImageCms, black box) takes device black, as for matrix / TRC profiles (4.2.4), when the intent has no
+        // B2A table of its own, except CMYK in relative colorimetric; ISO 18619 4.2.5 would use the B2A0 table
+        var a2b = Lut16(4, 3, 2, x => Gray(100 - 80 * x[3] - 10 * x[0]));
+        var b2a = Lut16(3, 4, 21, x => new[] { 0, 0, 0, Math.Clamp((100 - LOf(x[0])) / 80, 0, 1) });
+        var noB2A2 = Profile(IccProfileClass.Output, IccColorSpace.Cmyk, ("A2B0", a2b), ("A2B2", a2b), ("B2A0", b2a));
+        Near(10, BlackL(noB2A2, IccRenderingIntent.Saturation, false)); // full ink
+        Near(20, BlackL(noB2A2, IccRenderingIntent.RelativeColorimetric, false)); // 4.2.5 with B2A0
+        var noA2B2 = Profile(IccProfileClass.Output, IccColorSpace.Cmyk, ("A2B0", a2b), ("B2A0", b2a));
+        Near(0, BlackL(noA2B2, IccRenderingIntent.Saturation, false));
+        var rgbA2b = Lut16(3, 3, 2, x => Gray(5 + 95 * (x[0] + x[1] + x[2]) / 3));
+        var rgb = Profile(IccProfileClass.Output, IccColorSpace.Rgb, ("A2B0", rgbA2b),
+            ("B2A0", Lut16(3, 3, 21, x => Enumerable.Repeat(Math.Clamp((LOf(x[0]) - 5) / 95, 0, 1), 3).ToArray())));
+        Near(0, BlackL(rgb, IccRenderingIntent.RelativeColorimetric, false));
+    }
+
+    static readonly Dictionary<string, byte[]> PilBpc = new()
+    {
+        ["FOGRA29L_uncoated/0"] = new byte[] { 241, 81, 143, 248, 233, 94, 124, 243, 216, 115, 91, 236, 189, 118, 87, 212, 152, 116, 92, 178, 130, 105, 91, 112, 107, 86, 77, 67, 64, 48, 46, 5, 0, 0, 0, 0 },
+        ["FOGRA29L_uncoated/1"] = new byte[] { 236, 90, 130, 245, 227, 102, 111, 241, 211, 119, 84, 233, 182, 118, 88, 206, 151, 116, 92, 174, 129, 105, 90, 110, 107, 85, 77, 66, 64, 48, 46, 5, 0, 0, 0, 0 },
+        ["FOGRA29L_uncoated/2"] = new byte[] { 241, 81, 143, 248, 233, 94, 124, 243, 216, 115, 91, 236, 189, 118, 87, 212, 152, 116, 92, 178, 130, 105, 91, 112, 107, 86, 77, 67, 64, 48, 46, 5, 0, 0, 0, 0 },
+        ["FOGRA39L_coated/0"] = new byte[] { 201, 178, 136, 249, 196, 177, 148, 241, 194, 171, 154, 207, 193, 168, 158, 162, 183, 156, 151, 128, 155, 129, 127, 79, 128, 104, 103, 45, 74, 55, 58, 1, 0, 0, 0, 0 },
+        ["FOGRA39L_coated/1"] = new byte[] { 202, 178, 136, 249, 196, 177, 147, 241, 194, 171, 154, 207, 193, 168, 158, 163, 183, 156, 151, 128, 155, 129, 127, 80, 128, 104, 103, 45, 74, 55, 58, 1, 0, 0, 0, 0 },
+        ["FOGRA39L_coated/2"] = new byte[] { 201, 178, 136, 249, 196, 177, 148, 241, 194, 171, 154, 207, 193, 168, 158, 162, 183, 156, 151, 128, 155, 129, 127, 79, 128, 104, 103, 45, 74, 55, 58, 1, 0, 0, 0, 0 },
+        ["IFRA26S_2004_newsprint/0"] = new byte[] { 155, 183, 0, 242, 155, 183, 0, 242, 126, 183, 28, 242, 125, 176, 35, 242, 125, 138, 72, 242, 97, 61, 58, 242, 22, 4, 0, 186, 5, 1, 0, 76, 0, 0, 0, 0 },
+        ["IFRA26S_2004_newsprint/1"] = new byte[] { 107, 72, 68, 242, 100, 64, 60, 242, 85, 47, 45, 242, 61, 22, 24, 242, 45, 14, 14, 228, 22, 4, 0, 187, 14, 3, 0, 137, 3, 0, 0, 65, 0, 0, 0, 0 },
+        ["IFRA26S_2004_newsprint/2"] = new byte[] { 155, 183, 0, 242, 155, 183, 0, 242, 126, 183, 28, 242, 125, 176, 35, 242, 125, 138, 72, 242, 97, 61, 58, 242, 22, 4, 0, 186, 5, 1, 0, 76, 0, 0, 0, 0 },
+    };
+
+    [TestDataTheory("fixtures/icc/colord/FOGRA29L_uncoated.icc", "fixtures/icc/colord/FOGRA39L_coated.icc", "fixtures/icc/colord/IFRA26S_2004_newsprint.icc")]
+    [InlineData("FOGRA29L_uncoated")]
+    [InlineData("FOGRA39L_coated")]
+    [InlineData("IFRA26S_2004_newsprint")]
+    public void PrinterDestinationsMatchLittleCms(string name)
+    {
+        // sRGB grays to colord's CMYK profiles with BPC, against PIL.ImageCms (LittleCMS 2.16); IFRA26S's perceptual
+        // black is z = 0 by the curve fit (4.2.5.5), where full ink would say L* 39
+        var dst = IccProfile.Parse(File.ReadAllBytes(Path.Combine(TestUtil.TestDataFixtureDir!, "icc", "colord", name + ".icc")));
+        byte[] ramp = { 0, 16, 32, 48, 64, 96, 128, 192, 255 };
+        var img = new RawImage(ramp.Length, 1, ColorModel.Rgb, ramp.SelectMany(v => new[] { v, v, v }).ToArray());
+        for (int it = 0; it < 3; it++)
+        {
+            var res = ImageOps.ConvertColor(img, IccProfile.Srgb, dst,
+                new ColorConvertOptions { Intent = (IccRenderingIntent)it, BlackPointCompensation = true }).GetData<byte>();
+            var expected = PilBpc[$"{name}/{it}"];
+            int max = 0;
+            for (int i = 0; i < expected.Length; i++) max = Math.Max(max, Math.Abs(res[i] - expected[i]));
+            Assert.True(max <= 1, $"{name} intent {it}: max difference {max}");
+        }
+    }
 }

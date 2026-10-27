@@ -266,13 +266,92 @@ namespace Aardvark.ImageCodecs
             return DeviceBlack(p, intent, trilinear);
         }
 
-        /// <summary>L* of the DestinationBlackPoint.</summary>
+        /// <summary>L* of the DestinationBlackPoint (ISO 18619 4.2.4, 4.2.5, ISO/TS 21830 4.2.3).</summary>
         static double DestinationBlack(IccProfile p, IccRenderingIntent intent, bool trilinear)
         {
-            if (intent == IccRenderingIntent.RelativeColorimetric && CmykLike(p.ColorSpace) && UsesLut(p, intent, false) && UsesLut(p, intent, true))
-                return ToLab(p, intent, trilinear, FromLab(p, intent, trilinear, 0, 0, 0))[0];
-            if (p.ColorSpace == IccColorSpace.Lab) return ToLab(p, intent, trilinear, LabBlack(p, intent))[0];
-            return DeviceBlack(p, intent, trilinear);
+            bool relative = intent == IccRenderingIntent.RelativeColorimetric;
+            // 4.2.4: matrix / TRC profiles. LittleCMS also takes this way, instead of 4.2.5 with the B2A0 table, for LUT
+            // profiles without the intent's own B2A table, except CMYK in relative colorimetric
+            // (IccBpcTests.DestinationWithoutTheIntentsB2A, against PIL.ImageCms); we follow it.
+            if (!UsesLut(p, intent, false) || !p.HasLut(intent, false) && !(relative && CmykLike(p.ColorSpace)))
+                return DeviceBlack(p, intent, trilinear);
+            // 4.2.5.2.1 InitialLab
+            double l0 = 0, a0 = 0, b0 = 0;
+            if (relative)
+            {
+                float[] local = CmykLike(p.ColorSpace) ? FromLab(p, IccRenderingIntent.Perceptual, trilinear, 0, 0, 0)
+                    : p.ColorSpace == IccColorSpace.Lab ? LabBlack(p, intent)
+                    : DeviceColour(p);
+                var lab = ToLab(p, intent, trilinear, local);
+                l0 = Math.Min(lab[0], 50);
+                if (!CmykLike(p.ColorSpace)) { a0 = lab[1]; b0 = lab[2]; }
+            }
+            // 4.2.5.2.2, 4.2.5.2.3: inRamp from (0, ka, kb) to (100, 0, 0), outRamp = L* of BT (through the B2A of the intent and
+            // back through the relative colorimetric A2B), made monotonically increasing
+            double ka = Math.Clamp(a0, -50, 50), kb = Math.Clamp(b0, -50, 50);
+            var back = FromLabStages(p, intent, trilinear);
+            var fwd = ToLabStages(p, IccRenderingIntent.RelativeColorimetric, trilinear);
+            const int n = 256;
+            var inRamp = new double[n];
+            var outRamp = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                double t = i / (n - 1.0);
+                inRamp[i] = 100 * t;
+                var dev = IccPipeline.Eval(back, new[] { (float)inRamp[i], (float)(ka * (1 - t)), (float)(kb * (1 - t)) });
+                outRamp[i] = IccPipeline.Eval(fwd, dev)[0];
+            }
+            for (int i = n - 2; i >= 0; i--) outRamp[i] = Math.Min(outRamp[i], outRamp[i + 1]);
+            // 4.2.5.3
+            double minL = outRamp[0], maxL = outRamp[n - 1];
+            if (!(minL < maxL)) return 0;
+            // 4.2.5.4: relative colorimetric with a straight midrange keeps InitialLab
+            if (relative)
+            {
+                bool straight = true;
+                for (int i = 0; i < n && straight; i++)
+                    if (inRamp[i] > minL + 0.2 * (maxL - minL) && Math.Abs(inRamp[i] - outRamp[i]) >= 4) straight = false;
+                if (straight) return l0;
+            }
+            // 4.2.5.5: least squares quadratic through the shadow points of yRamp, z = its root with the positive gradient
+            double lo = relative ? 0.1 : 0.03, hi = relative ? 0.5 : 0.25;
+            var sx = new double[5];
+            var sy = new double[3];
+            int count = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double y = (outRamp[i] - minL) / (maxL - minL);
+                if (!(y >= lo && y < hi)) continue;
+                double x = inRamp[i], xk = 1;
+                for (int k = 0; k < 5; k++, xk *= x)
+                {
+                    sx[k] += xk;
+                    if (k < 3) sy[k] += xk * y;
+                }
+                count++;
+            }
+            if (count < 3) return 0;
+            var (a, b, c) = Solve3(sx[4], sx[3], sx[2], sx[1], sx[0], sy[2], sy[1], sy[0]);
+            double z;
+            if (Math.Abs(a) < 1e-10) z = -c / b;
+            else
+            {
+                double d = b * b - 4 * a * c;
+                z = d <= 0 ? 0 : (-b + Math.Sqrt(d)) / (2 * a);
+            }
+            return double.IsFinite(z) ? Math.Clamp(z, 0, 50) : 0;
+        }
+
+        /// <summary>The normal equations of the least squares parabola: [s4 s3 s2; s3 s2 s1; s2 s1 s0] (a, b, c) = (t2, t1, t0),
+        /// by Cramer's rule.</summary>
+        static (double A, double B, double C) Solve3(double s4, double s3, double s2, double s1, double s0, double t2, double t1, double t0)
+        {
+            static double Det(double a, double b, double c, double d, double e, double f, double g, double h, double i)
+                => a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+            double det = Det(s4, s3, s2, s3, s2, s1, s2, s1, s0);
+            return (Det(t2, s3, s2, t1, s2, s1, t0, s1, s0) / det,
+                    Det(s4, t2, s2, s3, t1, s1, s2, t0, s0) / det,
+                    Det(s4, s3, t2, s3, s2, t1, s2, s1, t0) / det);
         }
 
         /// <summary>
@@ -285,10 +364,16 @@ namespace Aardvark.ImageCodecs
         static double DeviceBlack(IccProfile p, IccRenderingIntent intent, bool trilinear)
         {
             if (!HasIntent(p, intent)) return 0;
+            double l = ToLab(p, intent, trilinear, DeviceColour(p))[0];
+            return l <= 50 ? l : 0;
+        }
+
+        /// <summary>Device black: no light, or full ink.</summary>
+        static float[] DeviceColour(IccProfile p)
+        {
             var device = new float[p.Channels];
             if (CmykLike(p.ColorSpace)) Array.Fill(device, 1f);
-            double l = ToLab(p, intent, trilinear, device)[0];
-            return l <= 50 ? l : 0;
+            return device;
         }
 
         /// <summary>Whether the profile serves the intent in LittleCMS's sense: matrix / TRC profiles every intent, LUT profiles
