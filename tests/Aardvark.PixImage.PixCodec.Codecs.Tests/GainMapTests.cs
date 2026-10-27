@@ -226,6 +226,26 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.Equal(TransferFunction.Linear, a.Metadata!.Transfer);
     }
 
+    /// <summary>
+    /// 5.2.5.1: three per-component values apply to R, G and B separately "regardless of the number of components of the
+    /// gain map", so the one sample of an achromatic gain map is unnormalized three times (formula 1).
+    /// </summary>
+    [Fact]
+    public void AchromaticGainMapWithPerChannelMetadata()
+    {
+        var white = new RawImage(1, 1, ColorModel.Rgb, new byte[] { 255, 255, 255 });
+        var zero = new[] { 0.0, 0, 0 };
+        var m = new GainMapMetadata { IsMultichannel = true, AlternateHdrHeadroom = 3, GainMapMax = new[] { 1.0, 2, 3 }, BaseOffset = zero, AlternateOffset = zero };
+        // sample 255: G = max(G) per channel, 2^1, 2^2, 2^3
+        Assert.Equal(new float[] { 2, 4, 8 }, (float[])GainMap.Apply(white, new RawImage(1, 1, ColorModel.Gray, new byte[] { 255 }), m).Data);
+        // sample 51 = 0.2 with γ 1, 0.5, 2 (max(G) 1): G = 0.2, 0.2^2 = 0.04, 0.2^0.5 = 0.4472136
+        var g = new GainMapMetadata { IsMultichannel = true, AlternateHdrHeadroom = 1, GainMapMax = new[] { 1.0, 1, 1 }, Gamma = new[] { 1, 0.5, 2 }, BaseOffset = zero, AlternateOffset = zero };
+        var r = (float[])GainMap.Apply(white, new RawImage(1, 1, ColorModel.Gray, new byte[] { 51 }), g).Data;
+        Assert.Equal(1.148698355, r[0], 5);   // 2^0.2
+        Assert.Equal(1.028113827, r[1], 5);   // 2^0.04
+        Assert.Equal(1.363404449, r[2], 5);   // 2^0.4472136
+    }
+
     /// <summary>A gain map smaller than the baseline is resampled bilinearly at co-sited positions (6.2.2, NOTE 1).</summary>
     [Fact]
     public void SmallGainMapIsResampledCosited()

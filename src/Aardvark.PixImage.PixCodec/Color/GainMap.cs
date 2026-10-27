@@ -255,21 +255,26 @@ namespace Aardvark.ImageCodecs
             return new RawImage(img.Width, img.Height, alpha ? ColorModel.Rgba : ColorModel.Rgb, lin, alpha ? 4 : 3, meta);
         }
 
-        /// <summary>Formula (1) for every stored sample: log2 gains, 1 or 3 per pixel.</summary>
+        /// <summary>
+        /// Formula (1) for every stored sample: log2 gains, 1 or 3 per pixel. Per-component metadata with 3 different
+        /// values applies to R, G and B separately whatever the number of gain map components (5.2.5.1): the one sample of
+        /// an achromatic gain map is then unnormalized with each channel's min(G), max(G) and γ, giving 3 gains.
+        /// </summary>
         static float[] LogGains(RawImage gm, GainMapMetadata m, double max, out int gc)
         {
-            gc = gm.Color switch { ColorModel.Gray or ColorModel.GrayAlpha => 1, _ => gm.Channels >= 3 ? 3 : 1 };
+            int stored = gm.Color switch { ColorModel.Gray or ColorModel.GrayAlpha => 1, _ => gm.Channels >= 3 ? 3 : 1 };
+            var lo = m.GainMapMin; var hi = m.GainMapMax; var gamma = m.Gamma;
+            bool perChannel = lo[0] != lo[1] || lo[1] != lo[2] || hi[0] != hi[1] || hi[1] != hi[2] || gamma[0] != gamma[1] || gamma[1] != gamma[2];
+            gc = stored == 3 || perChannel ? 3 : 1;
             int ch = gm.Channels, n = gm.Width * gm.Height;
             if (max <= 0) max = gm.SampleType is SampleType.Float16 or SampleType.Float32 or SampleType.Float64 ? 1 : Samples.MaxValue(gm.SampleType);
             var r = new float[(long)n * gc];
-            var lo = m.GainMapMin; var hi = m.GainMapMax; var gamma = m.Gamma;
             float Un(double v, int c)
             {
                 v = Math.Clamp(v / max, 0, 1);
                 if (gamma[c] != 1) v = Math.Pow(v, 1 / gamma[c]);
                 return (float)(v * (hi[c] - lo[c]) + lo[c]);
             }
-            // gain maps with one component use the first metadata component for all three (5.2.5.1 with 4.3)
             float[]?[] lut = new float[3][];
             if (gm.SampleType is SampleType.UInt8 or SampleType.UInt16)
                 for (int c = 0; c < gc; c++)
@@ -281,7 +286,7 @@ namespace Aardvark.ImageCodecs
             for (int i = 0; i < n; i++)
                 for (int c = 0; c < gc; c++)
                 {
-                    long s = (long)i * ch + c;
+                    long s = (long)i * ch + (stored == 1 ? 0 : c);
                     r[(long)i * gc + c] = gm.SampleType switch
                     {
                         SampleType.UInt8 => lut[c]![((byte[])data)[s]],
