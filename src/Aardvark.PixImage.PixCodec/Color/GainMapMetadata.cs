@@ -28,7 +28,10 @@ namespace Aardvark.ImageCodecs
         /// <see cref="ToIso21496"/> always writes 0, the version of the structure it produces.
         /// </summary>
         public int WriterVersion { get; init; }
-        /// <summary>Whether separate per-component values are stored for R, G and B (is_multichannel); not the channel count of the gain map image.</summary>
+        /// <summary>
+        /// Whether separate per-component values are stored for R, G and B (is_multichannel); not the channel count of the gain
+        /// map image. Writing stores 3 sets also when this is false but the values differ.
+        /// </summary>
         public bool IsMultichannel { get; init; }
         /// <summary>
         /// Whether the gain map is applied in a linear space with the baseline image's primaries (use_base_colour_space,
@@ -49,6 +52,21 @@ namespace Aardvark.ImageCodecs
         public double[] BaseOffset { get; init; } = { 1 / 64.0, 1 / 64.0, 1 / 64.0 };
         /// <summary>k_alternate per component (5.2.5.5).</summary>
         public double[] AlternateOffset { get; init; } = { 1 / 64.0, 1 / 64.0, 1 / 64.0 };
+
+        /// <summary>
+        /// Whether the written forms (binary, XMP) hold 3 sets of per-component values: when <see cref="IsMultichannel"/>
+        /// says so or the values differ between channels (which one set would lose).
+        /// </summary>
+        bool StoresThreeSets
+        {
+            get
+            {
+                if (IsMultichannel) return true;
+                foreach (var a in new[] { GainMapMin, GainMapMax, Gamma, BaseOffset, AlternateOffset })
+                    if (a[0] != a[1] || a[1] != a[2]) return true;
+                return false;
+            }
+        }
 
         /// <summary>Whether the baseline is the HDR rendition and the gain map maps it down (H_alternate below H_baseline).</summary>
         public bool BaseRenditionIsHdr => AlternateHdrHeadroom < BaseHdrHeadroom;
@@ -130,7 +148,8 @@ namespace Aardvark.ImageCodecs
             if (!IsValid()) throw new ArgumentException("invalid gain map metadata");
             if (BaseHdrHeadroom < 0 || AlternateHdrHeadroom < 0) throw new ArgumentException("ISO 21496-1 headrooms are unsigned (C.2.3)");
             if (Rational(BaseHdrHeadroom, false) == Rational(AlternateHdrHeadroom, false)) throw new ArgumentException("the headrooms are equal as rationals (ISO 21496-1 5.2.7)");
-            int channels = IsMultichannel ? 3 : 1;
+            bool multi = StoresThreeSets;
+            int channels = multi ? 3 : 1;
             var b = new byte[5 + 16 + channels * 40];
             int p = 0;
             void U16(int v) { BinaryPrimitives.WriteUInt16BigEndian(b.AsSpan(p), (ushort)v); p += 2; }
@@ -144,7 +163,7 @@ namespace Aardvark.ImageCodecs
                 U32((uint)n); U32(d);
             }
             U16(0); U16(0);   // minimum_version and writer_version: the first edition's structure (5.2.8)
-            b[p++] = (byte)((IsMultichannel ? 0x80 : 0) | (UseBaseColourSpace ? 0x40 : 0));
+            b[p++] = (byte)((multi ? 0x80 : 0) | (UseBaseColourSpace ? 0x40 : 0));
             Unsigned(BaseHdrHeadroom); Unsigned(AlternateHdrHeadroom);
             for (int c = 0; c < channels; c++)
             {
@@ -237,7 +256,7 @@ namespace Aardvark.ImageCodecs
             var sb = new StringBuilder();
             sb.Append(" xmlns:hdrgm=\"").Append(HdrgmNs).Append("\" hdrgm:Version=\"1.0\"");
             void One(string name, double v) => sb.Append(" hdrgm:").Append(name).Append("=\"").Append(F(v)).Append('"');
-            void Attr(string name, double[] v) { if (!IsMultichannel || v[0] == v[1] && v[1] == v[2]) One(name, v[0]); }
+            void Attr(string name, double[] v) { if (v[0] == v[1] && v[1] == v[2]) One(name, v[0]); }
             Attr("GainMapMin", GainMapMin); Attr("GainMapMax", GainMapMax); Attr("Gamma", Gamma);
             Attr("OffsetSDR", hdr ? AlternateOffset : BaseOffset); Attr("OffsetHDR", hdr ? BaseOffset : AlternateOffset);
             One("HDRCapacityMin", Math.Min(BaseHdrHeadroom, AlternateHdrHeadroom));
@@ -249,7 +268,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>The per-component hdrgm properties that differ between channels, as rdf:Seq elements.</summary>
         internal string HdrgmElements()
         {
-            if (!IsMultichannel) return "";
+            if (!StoresThreeSets) return "";
             bool hdr = BaseRenditionIsHdr;
             var sb = new StringBuilder();
             void Seq(string name, double[] v)

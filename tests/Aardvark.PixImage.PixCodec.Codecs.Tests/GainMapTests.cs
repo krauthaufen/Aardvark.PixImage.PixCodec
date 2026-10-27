@@ -171,6 +171,27 @@ public class GainMapTests(ITestOutputHelper output)
         Assert.Throws<ArgumentException>(() => GainMap.Compute(SyntheticSdr(hdr), hdr, new GainMapOptions { BaseHeadroom = 2, AlternateHeadroom = -1 }));
     }
 
+    /// <summary>
+    /// Per-component values that differ are stored for 3 channels (is_multichannel, C.2.3; rdf:Seq in XMP) even when
+    /// <see cref="GainMapMetadata.IsMultichannel"/> is false, so nothing is lost.
+    /// </summary>
+    [Fact]
+    public void DifferingChannelValuesAreNotDropped()
+    {
+        var m = new GainMapMetadata { AlternateHdrHeadroom = 3, GainMapMax = new[] { 1.0, 2, 3 }, Gamma = new[] { 1, 1, 0.5 } };
+        var iso = GainMapMetadata.FromIso21496(m.ToIso21496())!;
+        Assert.True(iso.IsMultichannel);
+        Assert.Equal(new[] { 1.0, 2, 3 }, iso.GainMapMax);
+        Assert.Equal(new[] { 1, 1, 0.5 }, iso.Gamma);
+        var packet = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description rdf:about=\"\""
+            + m.HdrgmAttributes() + ">" + m.HdrgmElements() + "</rdf:Description></rdf:RDF></x:xmpmeta>";
+        var xmp = GainMapMetadata.FromHdrgm(XmpData.Parse(Encoding.UTF8.GetBytes(packet))!)!;
+        Assert.Equal(new[] { 1.0, 2, 3 }, xmp.GainMapMax);
+        Assert.Equal(new[] { 1, 1, 0.5 }, xmp.Gamma);
+        // equal values stay one channel
+        Assert.Equal(5 + 16 + 40, new GainMapMetadata { AlternateHdrHeadroom = 3, GainMapMax = new[] { 2.0, 2, 2 } }.ToIso21496().Length);
+    }
+
     static XmpData Xmp(string description)
         => XmpData.Parse(Encoding.UTF8.GetBytes("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">"
             + "<rdf:Description xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\" " + description + "</rdf:RDF></x:xmpmeta>"))!;
@@ -575,6 +596,38 @@ public class GainMapTests(ITestOutputHelper output)
         var isoOnly = UltraHdr(hdr, new UltraHdrEncodeOptions { WriteXmp = false });
         Assert.NotNull(Jpeg.GetGainMap(isoOnly));
         Assert.Null(Jpeg.GetGainMap(NoPrimaryIso(isoOnly)));
+    }
+
+    /// <summary>
+    /// C.4.4: Exif ColorSpace 1 makes the baseline sRGB whatever ICC profile it has, also when the gain map is applied to
+    /// what <see cref="Jpeg.Decode"/> returns (which keeps the profile); without an ICC profile in the gain map image the
+    /// alternate is sRGB too (C.4.7).
+    /// </summary>
+    [Fact]
+    public void ExifColorSpaceOneMakesTheBaselineSrgb()
+    {
+        // a TIFF structure: IFD0 with the Exif IFD pointer, the Exif IFD with ColorSpace (A001.H) = 1
+        var exif = Convert.FromHexString("49492A0008000000" + "0100" + "69870400010000001A000000" + "00000000"
+            + "0100" + "01A0030001000000" + "01000000" + "00000000");
+        var red = new RawImage(8, 8, ColorModel.Rgb, Enumerable.Range(0, 64).SelectMany(_ => new byte[] { 255, 0, 0 }).ToArray())
+        {
+            Metadata = new ImageMetadata { Exif = exif, IccProfile = IccProfile.DisplayP3.ToBytes() },
+        };
+        var zero = new[] { 0.0, 0, 0 };
+        var gm = new GainMap
+        {
+            Metadata = new GainMapMetadata { AlternateHdrHeadroom = 1, GainMapMax = zero, BaseOffset = zero, AlternateOffset = zero },
+            Image = new RawImage(8, 8, ColorModel.Gray, new byte[64]),
+        };
+        var ms = new MemoryStream();
+        Jpeg.EncodeWithGainMap(red, gm, ms);
+        var file = ms.ToArray();
+        var decoded = Jpeg.Decode(file);
+        Assert.Equal(1.0, ExifData.Parse(decoded.Metadata!.Exif!)!.Get(ExifIfd.Exif, 0xA001)!.GetDouble());
+        Assert.NotNull(decoded.Metadata.IccProfile);
+        var a = GainMap.Apply(decoded, Jpeg.GetGainMap(file)!);
+        Assert.Equal(IccProfile.LinearSrgb.RedColorant!.Value.X, IccProfile.Parse(a.Metadata!.IccProfile!).RedColorant!.Value.X, 1e-3);
+        TestUtil.AssertEqual(Jpeg.DecodeHdr(file), a);
     }
 
     [Fact]

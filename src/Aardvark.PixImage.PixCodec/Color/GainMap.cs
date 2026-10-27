@@ -47,6 +47,11 @@ namespace Aardvark.ImageCodecs
         public GainMapSource Source { get; init; }
         /// <summary>Largest code value of <see cref="Image"/> (255 for 8 bit, 4095 for 12 bit JPEG); 0 means the sample type's maximum.</summary>
         internal double ImageMax { get; init; }
+        /// <summary>
+        /// JPEG, ISO 21496-1 C.4.4: the baseline's Exif ColorSpace is 1, so it is sRGB whatever ICC profile it has (which
+        /// <see cref="Jpeg.Decode"/> keeps in the metadata); <see cref="Apply(RawImage, GainMap, double?)"/> ignores that profile.
+        /// </summary>
+        internal bool BaselineIsSrgb { get; init; }
 
         /// <summary>
         /// The alternate rendition (ISO 21496-1 clause 6): <paramref name="baseline"/> linearized, the gain map unnormalized
@@ -60,7 +65,8 @@ namespace Aardvark.ImageCodecs
         public static RawImage Apply(RawImage baseline, GainMap gainMap, double? headroom = null)
         {
             ArgumentNullException.ThrowIfNull(gainMap);
-            return Apply(baseline, gainMap.Image, gainMap.Metadata, gainMap.AlternateIcc, headroom, gainMap.ImageMax);
+            if (gainMap.BaselineIsSrgb && baseline?.Metadata?.IccProfile != null) baseline = WithoutIcc(baseline);
+            return Apply(baseline!, gainMap.Image, gainMap.Metadata, gainMap.AlternateIcc, headroom, gainMap.ImageMax);
         }
 
         /// <inheritdoc cref="Apply(RawImage, GainMap, double?)"/>
@@ -248,6 +254,14 @@ namespace Aardvark.ImageCodecs
         }
 
         // ------------------------------------------------------------------ helpers
+
+        /// <summary>The image with its metadata but without the ICC profile (the pixels are shared).</summary>
+        internal static RawImage WithoutIcc(RawImage img)
+        {
+            var m = img.Metadata!;
+            return new RawImage(img.Width, img.Height, img.Color, img.Data, img.Channels,
+                new ImageMetadata { Exif = m.Exif, Xmp = m.Xmp, DpiX = m.DpiX, DpiY = m.DpiY, Gamma = m.Gamma, Orientation = m.Orientation, Transfer = m.Transfer });
+        }
 
         /// <summary>An image as linear Float32 RGB(A) with a linear profile of its primaries (what DecodeHdr returns without a gain map).</summary>
         internal static RawImage LinearRgb(RawImage img)

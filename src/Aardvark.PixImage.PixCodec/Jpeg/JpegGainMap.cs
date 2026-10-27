@@ -231,10 +231,14 @@ namespace Aardvark.ImageCodecs
                     Metadata = meta, Image = img, Source = source,
                     AlternateIcc = source == GainMapSource.Iso21496 ? gh.Icc : null,
                     ImageMax = info.BitsPerSample is > 8 and < 16 ? (1 << info.BitsPerSample) - 1 : 0,
+                    BaselineIsSrgb = ExifColorSpaceIsSrgb(h.Exif),
                 };
             }
             return null;
         }
+
+        /// <summary>Whether an EXIF blob has ColorSpace (A001.H) = 1, sRGB.</summary>
+        static bool ExifColorSpaceIsSrgb(byte[]? exif) => exif != null && ExifData.Parse(exif)?.Get(ExifIfd.Exif, 0xA001)?.GetDouble() == 1;
 
         /// <summary>The GContainer directory (Item:Semantic, Item:Mime, Item:Length, Item:Padding of each item, in order).</summary>
         static List<(string? Semantic, string? Mime, long Length, long Padding)> Directory(XmpData x)
@@ -271,13 +275,8 @@ namespace Aardvark.ImageCodecs
         {
             var baseline = Decode(data, options);
             var gm = GetGainMap(data, options);
-            if (baseline.Metadata?.Exif is { } exif && ExifData.Parse(exif)?.Get(ExifIfd.Exif, 0xA001)?.GetDouble() == 1 && baseline.Metadata.IccProfile != null)
-            {
-                var m = baseline.Metadata;
-                baseline = new RawImage(baseline.Width, baseline.Height, baseline.Color, baseline.Data, baseline.Channels,
-                    new ImageMetadata { Exif = m.Exif, Xmp = m.Xmp, DpiX = m.DpiX, DpiY = m.DpiY, Orientation = m.Orientation, Transfer = m.Transfer });
-            }
-            if (gm == null) return GainMap.LinearRgb(baseline);
+            // (the gain map applies C.4.4 itself; without one the rule is followed all the same)
+            if (gm == null) return GainMap.LinearRgb(ExifColorSpaceIsSrgb(baseline.Metadata?.Exif) && baseline.Metadata!.IccProfile != null ? GainMap.WithoutIcc(baseline) : baseline);
             return GainMap.Apply(baseline, gm, headroom);
         }
 
