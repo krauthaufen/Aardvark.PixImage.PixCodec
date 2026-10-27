@@ -586,6 +586,31 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
 
     // ------------------------------------------------------------------ I.2 dequantization matrices
 
+    // ------------------------------------------------------------------ I.6 chroma from luma
+
+    /// <summary>
+    /// I.6: HF coefficients take x_factor / b_factor "at the coordinates of the 64 x 64 rectangle containing the current
+    /// sample", which leaves open which tile a varblock wider or taller than 64 uses. 128 x 64 varblocks (each covering
+    /// two tiles), the factors differing from tile to tile: libjxl takes those of the tile of the varblock's top-left
+    /// block, as we do. Changing only the factors of the tiles without a varblock origin leaves libjxl's decode as it is.
+    /// (Our encoder cannot write 128 or 256 sample varblocks; they go through the same code.)
+    /// </summary>
+    [Fact]
+    public void ChromaFromLumaOfLargeVarblocksFromTheirFirstTile()
+    {
+        var img = JxlEncodeTests.Synthetic(256, 192, ColorModel.Rgb, SampleType.UInt8, 0);
+        byte[] Enc(Func<int, (int, int)> cfl) => Jxl.Encode(img, new JxlEncodeOptions { Distance = 1, ForceStrategy = JxlAcStrategy.Dct64x128, CflOverride = cfl });
+        // 4 x 3 tiles; the varblocks start in the even tile columns
+        var a = Enc(t => (t % 3 * 40 - 40, (t * 7) % 5 * 20 - 40));
+        var b = Enc(t => t % 2 == 1 ? (100, -100) : (t % 3 * 40 - 40, (t * 7) % 5 * 20 - 40));
+        var m = LossyDiff(a, "cfl 128x64");
+        Assert.True(m == null || m < 2 / 255.0, $"{m}");
+        var la = JxlEncodeTests.Libjxl(a);
+        if (la == null) return;
+        Assert.Equal(Floats(la), Floats(JxlEncodeTests.Libjxl(b)!));
+        Assert.Equal((float[])Jxl.Decode(a, new JxlDecodeOptions { ForceFloat = true }).Data, (float[])Jxl.Decode(b, new JxlDecodeOptions { ForceFloat = true }).Data);
+    }
+
     /// <summary>A RAW (mode 7) encoding of the 8 x 8 table: F16 denominator, then a modular image of the given values.</summary>
     static void RawDct8(JxlBitWriter w, float denominator, int[] perChannel)
     {

@@ -188,6 +188,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             QuantizeLf(f, ComputeDc(f));
             JxlProfile.Mark("vardct lf");
             QuantizeGroups(f);
+            if (opt.CflOverride is { } cflo) for (int i = 0; i < f.CflX.Length; i++) (f.CflX[i], f.CflB[i]) = cflo(i);
             JxlProfile.Mark("vardct hf");
             WriteFrame(cs, f, img, opt);
             JxlProfile.Mark("vardct write");

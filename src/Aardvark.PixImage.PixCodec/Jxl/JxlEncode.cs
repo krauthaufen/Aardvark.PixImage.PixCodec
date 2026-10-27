@@ -66,6 +66,8 @@ namespace Aardvark.ImageCodecs
         internal Func<int, int>? HfMul { get; set; }
         /// <summary>Test hook: the number of HF histogram sets written (num_hf_presets, at most the number of groups).</summary>
         internal int HfPresets { get; set; } = 1;
+        /// <summary>Test hook: XFromY and BFromY of each 64 x 64 tile (by tile index) written instead of the fitted ones.</summary>
+        internal Func<int, (int x, int b)>? CflOverride { get; set; }
 
         /// <summary>The distance that will be used (0 = lossless).</summary>
         public float EffectiveDistance

@@ -237,6 +237,8 @@ namespace Aardvark.ImageCodecs.JpegXl
                     firstBlock![b] = true;
                 }
             }
+            // every BlockInfo column is a varblock placed at the earliest uncovered block inside the LF group (G.2.4): a
+            // column left over when all blocks are covered has no valid position
             if (num != count) throw new ImageFormatException("JPEG XL: unused varblock entries");
         }
 
@@ -571,6 +573,9 @@ namespace Aardvark.ImageCodecs.JpegXl
                         int size = sx * sy * 64;
                         int table = JxlAcStrategy.QuantTable[st];
                         float mul = inv / qfField![b];
+                        // I.6 takes the factors of "the 64 x 64 rectangle containing the current sample"; for varblocks
+                        // over several such tiles libjxl uses the tile of the top-left block, as here
+                        // (JxlAuditRenderTests.ChromaFromLumaOfLargeVarblocksFromTheirFirstTile)
                         int tile = ((by0 + y) / 8) * tilesX + (bx0 + x) / 8;
                         float rx = baseCorrX + cflX![tile] / (float)colourFactor;
                         float rb = baseCorrB + cflB![tile] / (float)colourFactor;
