@@ -797,4 +797,29 @@ public class GainMapTests(ITestOutputHelper output)
         TestUtil.AssertEqual(GainMap.Apply(sdr, gm, 1), ImageCodec.DecodeHdr(file, 1), 1e-4);
         Assert.False(Jxl.GetInfo(Jxl.Encode(sdr, new JxlEncodeOptions { Lossless = true })).HasGainMap);
     }
+
+    /// <summary>A JPEG XL file of a white baseline with a gain map (jhgm box) and the given metadata.</summary>
+    static byte[] JxlWithGainMap(RawImage baseline, RawImage gain, GainMapMetadata m, JxlColourEncoding? alternate = null, int gainBits = 0)
+        => JxlContainer.Signature.ToArray()
+            .Concat(JxlSpecTests.Box("ftyp", "jxl \0\0\0\0jxl "u8.ToArray()))
+            .Concat(JxlSpecTests.Box("jxlc", Jxl.Encode(baseline, new JxlEncodeOptions { Lossless = true })))
+            .Concat(JxlSpecTests.GainMapBox(m.ToIso21496(), alternate, null, Jxl.Encode(gain, new JxlEncodeOptions { Lossless = true, BitsPerSample = gainBits }))).ToArray();
+
+    /// <summary>
+    /// A 10 bit gain map (5.2.3: the bit depth of its codestream) is normalized by 1023: code 1023 is max(G), 512 is
+    /// 512 / 1023 of the range (formula 1).
+    /// </summary>
+    [Fact]
+    public void JxlGainMapOfTenBits()
+    {
+        var white = new RawImage(2, 1, ColorModel.Rgb, new byte[] { 255, 255, 255, 255, 255, 255 });
+        var zero = new[] { 0.0, 0, 0 };
+        var m = new GainMapMetadata { AlternateHdrHeadroom = 2, GainMapMax = new[] { 2.0, 2, 2 }, BaseOffset = zero, AlternateOffset = zero };
+        var file = JxlWithGainMap(white, new RawImage(2, 1, ColorModel.Gray, new ushort[] { 1023, 512 }), m, gainBits: 10);
+        var gm = Jxl.GetGainMap(file)!.ToGainMap()!;
+        Assert.Equal(SampleType.UInt16, gm.Image.SampleType);
+        var r = (float[])Jxl.DecodeHdr(file).Data;
+        Assert.Equal(4, r[0], 4);
+        Assert.Equal(Math.Pow(2, 2 * 512 / 1023.0), r[3], 4);
+    }
 }

@@ -53,7 +53,11 @@ namespace Aardvark.ImageCodecs
             if (m == null) return null;
             var img = DecodeImage(options);
             img.Metadata = null;
-            return new GainMap { Metadata = m, Image = img, AlternateIcc = HasAlternateColourSpace ? AlternateIcc : null, Source = GainMapSource.Iso21496 };
+            // integer samples hold the codestream's bit depth (ISO 21496-1 5.2.3), e.g. 0..1023 for 10 bit
+            var info = Jxl.GetInfo(Image);
+            int bits = info.BitsPerSample;
+            double max = info.SampleType is SampleType.UInt8 or SampleType.UInt16 && bits is > 0 and < 16 && bits != 8 ? (1 << bits) - 1 : 0;
+            return new GainMap { Metadata = m, Image = img, AlternateIcc = HasAlternateColourSpace ? AlternateIcc : null, Source = GainMapSource.Iso21496, ImageMax = max };
         }
 
         /// <summary>Parses the content of a jhgm box; null for a version this reader does not know.</summary>

@@ -68,6 +68,8 @@ namespace Aardvark.ImageCodecs
         internal int HfPresets { get; set; } = 1;
         /// <summary>Test hook: XFromY and BFromY of each 64 x 64 tile (by tile index) written instead of the fitted ones.</summary>
         internal Func<int, (int x, int b)>? CflOverride { get; set; }
+        /// <summary>Lossless only: test hook for the bit depth written for UInt16 images (1..16; their samples have to fit), 0 = 16.</summary>
+        internal int BitsPerSample { get; set; }
 
         /// <summary>The distance that will be used (0 = lossless).</summary>
         public float EffectiveDistance

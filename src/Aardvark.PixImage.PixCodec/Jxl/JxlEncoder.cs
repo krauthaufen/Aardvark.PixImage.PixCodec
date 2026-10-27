@@ -99,6 +99,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             bool gray = img.Color is ColorModel.Gray or ColorModel.GrayAlpha;
             bool alpha = img.Color is ColorModel.GrayAlpha or ColorModel.Rgba;
             var bd = DepthOf(img.SampleType);
+            if (lossless && opt.BitsPerSample is > 0 and < 16 && img.SampleType == SampleType.UInt16) bd = new JxlBitDepth { Bits = opt.BitsPerSample };
             var meta = opt.KeepMetadata ? img.Metadata : null;
             var h = new JxlImageHeader
             {
