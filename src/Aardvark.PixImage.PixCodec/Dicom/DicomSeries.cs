@@ -60,7 +60,8 @@ namespace Aardvark.ImageCodecs
             if (!DicomParser.IsMatch(prefix)) return null;
             if (prefix.Length < length)
             {
-                try { return DicomParser.Parse(prefix, true); }
+                // (a prefix that ends between two elements parses cleanly: only one that reached the pixel data holds the whole header)
+                try { var h = DicomParser.Parse(prefix, true); if (h.ReachedPixels) return h; }
                 catch (ImageFormatException) { }   // header elements beyond the prefix
             }
             try { return DicomParser.Parse(File.ReadAllBytes(path), true); }

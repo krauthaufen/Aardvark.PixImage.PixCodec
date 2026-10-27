@@ -107,6 +107,7 @@ namespace Aardvark.ImageCodecs
                 Format = ImageFormat.Dicom, Sizes = p.Frames > 1 ? new[] { p.Columns, p.Rows, p.Frames } : new[] { p.Columns, p.Rows },
                 Channels = p.OutChannels, Color = p.OutColor, StoredType = p.OutStored,
                 SampleType = p.ModalityLut != null && o.Scaling != DataScaling.Raw ? VolumeIO.ScaledType(p.ModalityType, 1, 0, o.Scaling)
+                    : FrameScales(ds, p, 0, p.Frames) is { } scales && o.Scaling != DataScaling.Raw ? FramesScaledType(p.OutStored, scales, o.Scaling)
                     : VolumeIO.ScaledType(p.OutStored, m.Slope, m.Intercept, p.Scalable ? o.Scaling : DataScaling.Raw),
                 Encoding = TransferSyntaxName(ds.TransferSyntax), Metadata = m,
             };
@@ -195,7 +196,52 @@ namespace Aardvark.ImageCodecs
             if (o.Parallel && count > 1) Parallel.For(0, count, One);
             else for (int i = 0; i < count; i++) One(i);
             var m = Metadata(ds, p, count, first);
-            return Finish(arr, p, m, count > 1 ? new[] { p.Columns, p.Rows, count } : new[] { p.Columns, p.Rows }, o);
+            var sizes = count > 1 ? new[] { p.Columns, p.Rows, count } : new[] { p.Columns, p.Rows };
+            if (FrameScales(ds, p, first, count) is { } scales && o.Scaling != DataScaling.Raw)
+            {
+                // a rescale per frame (enhanced files): each frame scaled with its own
+                var t = FramesScaledType(p.OutStored, scales, o.Scaling);
+                var outArr = VolumeIO.Allocate(t, arr.LongLength, o.MaxSamples, Fmt);
+                var one = RawImage.CreateArray(p.OutStored, (int)frameSamples);
+                for (int i = 0; i < count; i++)
+                {
+                    Array.Copy(arr, i * frameSamples, one, 0, frameSamples);
+                    Array.Copy(VolumeIO.Scale(one, t, scales[i].Slope, scales[i].Intercept, null), 0, outArr, i * frameSamples, frameSamples);
+                }
+                m.Slope = 1; m.Intercept = 0; m.ScalingApplied = true;
+                return new RawVolume(sizes, p.OutColor, outArr, p.OutChannels, m);
+            }
+            return Finish(arr, p, m, sizes, o);
+        }
+
+        /// <summary>
+        /// The rescale of each frame [first, first + count) when the per-frame functional groups give frames different
+        /// ones (Pixel Value Transformation, PS3.3 C.7.6.16.2.9), else null (one rescale for all, see <see cref="Metadata"/>).
+        /// </summary>
+        static (double Slope, double Intercept)[]? FrameScales(DicomDataset ds, PixelInfo p, int first, int count)
+        {
+            if (!p.Scalable || p.ModalityLut != null || count < 2) return null;
+            var per = ds.GetSequence(DicomTags.PerFrameFunctionalGroups);
+            if (per.Count < first + count) return null;
+            var shared = ds.Find(DicomTags.RescaleSlope, DicomTags.SharedFunctionalGroups, DicomTags.PixelValueTransformationSequence)
+                ?? ds.Find(DicomTags.RescaleIntercept, DicomTags.SharedFunctionalGroups, DicomTags.PixelValueTransformationSequence) ?? ds;
+            var r = new (double Slope, double Intercept)[count];
+            for (int k = 0; k < count; k++)
+            {
+                var g = per[first + k].GetSequence(DicomTags.PixelValueTransformationSequence);
+                var src = g.Count > 0 && (g[0].Contains(DicomTags.RescaleSlope) || g[0].Contains(DicomTags.RescaleIntercept)) ? g[0] : shared;
+                double s = src.GetDouble(DicomTags.RescaleSlope) ?? 1;
+                r[k] = (s == 0 ? 1 : s, src.GetDouble(DicomTags.RescaleIntercept) ?? 0);
+            }
+            return r.All(x => x == r[0]) ? null : r;
+        }
+
+        /// <summary>One sample type for frames with different rescales: the type every one of them gives, else float.</summary>
+        static SampleType FramesScaledType(SampleType stored, (double Slope, double Intercept)[] scales, DataScaling mode)
+        {
+            var types = scales.Select(x => VolumeIO.ScaledType(stored, x.Slope, x.Intercept, mode)).Distinct().ToList();
+            if (types.Count == 1) return types[0];
+            return types.Contains(SampleType.Float64) || stored is SampleType.UInt32 or SampleType.Int32 ? SampleType.Float64 : SampleType.Float32;
         }
 
         static RawVolume Finish(Array arr, PixelInfo p, PhysicalMetadata m, int[] sizes, VolumeDecodeOptions o)
@@ -258,8 +304,9 @@ namespace Aardvark.ImageCodecs
                     BigEndian = ds.TransferSyntax == DicomUids.ExplicitVrBigEndian,
                 };
                 if (p.Rows <= 0 || p.Columns <= 0) throw new ImageFormatException($"{Fmt}: bad image size {p.Columns} x {p.Rows}");
-                if (ds.Contains(DicomTags.FloatPixelData)) p.PixelTag = DicomTags.FloatPixelData;
-                else if (ds.Contains(DicomTags.DoubleFloatPixelData)) p.PixelTag = DicomTags.DoubleFloatPixelData;
+                // (a header-only parse has not read the pixel element, only seen its tag)
+                if (ds.Contains(DicomTags.FloatPixelData) || ds.ReachedPixelTag == DicomTags.FloatPixelData) p.PixelTag = DicomTags.FloatPixelData;
+                else if (ds.Contains(DicomTags.DoubleFloatPixelData) || ds.ReachedPixelTag == DicomTags.DoubleFloatPixelData) p.PixelTag = DicomTags.DoubleFloatPixelData;
                 if (p.Spp is not (1 or 3 or 4)) throw new ImageNotSupportedException($"{Fmt}: {p.Spp} samples per pixel");
                 p.BitsAllocated = ds.GetInt(DicomTags.BitsAllocated) ?? (p.PixelTag == DicomTags.DoubleFloatPixelData ? 64 : p.IsFloat ? 32 : 8);
                 p.BitsStored = ds.GetInt(DicomTags.BitsStored) ?? p.BitsAllocated;
@@ -465,6 +512,8 @@ namespace Aardvark.ImageCodecs
                             throw new ImageFormatException($"{Fmt}: the compressed frame is {img.Width} x {img.Height} x {img.Channels}, the header says {Columns} x {Rows} x {Spp}");
                         CopyConverted(img.Data, dst, offset, n);
                         FixBits(dst, offset, n, mask: false);
+                        // YBR_FULL that no codec color transform undid (PS3.5 tables 8.2.1-2, 8.2.3-1, 8.2.4-1)
+                        if (Ybr && YbrLeftByCodec(f)) YbrToRgb(dst, offset, pixels);
                         break;
                 }
                 if (Invert) InvertGray(dst, offset, n);
@@ -487,6 +536,66 @@ namespace Aardvark.ImageCodecs
                     default:
                         throw new ImageNotSupportedException($"{Fmt}: transfer syntax {TransferSyntax}");
                 }
+            }
+
+            /// <summary>
+            /// Whether a decoded code stream still holds the Y, Cb, Cr components of a YBR_FULL(_422) image. Lossy JPEG is
+            /// color converted by the decoder; lossless JPEG never is, so its components are YCbCr unless the stream says
+            /// RGB (Adobe transform 0, or component ids R G B: the stream wins, PS3.5 8.2.1, as in pydicom). JPEG-LS has no
+            /// color transform of its own (PS3.5 8.2.3), JPEG 2000 only when the COD marker's multiple component
+            /// transformation is on (then the image is YBR_RCT / ICT, and comes out RGB).
+            /// </summary>
+            bool YbrLeftByCodec(FrameData f)
+            {
+                if (Spp != 3) return false;
+                var d = f.Data.Span;
+                switch (f.Kind)
+                {
+                    case FrameKind.Jpeg:
+                        return JpegLosslessYcc(d);
+                    case FrameKind.JpegLs:
+                        return true;
+                    case FrameKind.Jpeg2000:
+                        int at = d.IndexOf(stackalloc byte[] { 0xFF, 0x4F, 0xFF, 0x51 });
+                        if (at < 0) return false;
+                        for (int p = at + 2; p + 4 <= d.Length;)
+                        {
+                            int marker = d[p] << 8 | d[p + 1], len = d[p + 2] << 8 | d[p + 3];
+                            if (marker == 0xFF52) return p + 8 < d.Length && d[p + 8] == 0;   // Lcod, Scod, progression, layers, MCT
+                            if (marker is 0xFF90 or 0xFF93 || len < 2) return false;          // tile part: no COD in the main header
+                            p += 2 + len;
+                        }
+                        return false;
+                    default:
+                        return false;
+                }
+            }
+
+            static bool JpegLosslessYcc(ReadOnlySpan<byte> d)
+            {
+                bool lossless = false, jfif = false, adobe = false, rgbIds = false;
+                int adobeTransform = 1;
+                for (int p = 2; p + 4 <= d.Length;)
+                {
+                    if (d[p] != 0xFF) return false;
+                    int m = d[p + 1];
+                    if (m == 0xFF) { p++; continue; }
+                    int len = d[p + 2] << 8 | d[p + 3];
+                    var seg = d.Slice(p + 4, Math.Min(Math.Max(len - 2, 0), d.Length - p - 4));
+                    if (m == 0xE0 && seg.StartsWith("JFIF"u8)) jfif = true;
+                    else if (m == 0xEE && seg.StartsWith("Adobe"u8) && seg.Length >= 12) { adobe = true; adobeTransform = seg[11]; }
+                    else if (m is >= 0xC0 and <= 0xCF && m is not (0xC4 or 0xC8 or 0xCC))
+                    {
+                        lossless = m is 0xC3 or 0xC7 or 0xCB or 0xCF;
+                        rgbIds = seg.Length >= 15 && seg[5] == 3 && seg[6] == 'R' && seg[9] == 'G' && seg[12] == 'B';
+                    }
+                    else if (m == 0xDA) break;
+                    p += 2 + len;
+                }
+                if (!lossless) return false;
+                if (jfif) return true;
+                if (adobe) return adobeTransform != 0;
+                return !rgbIds;
             }
 
             // -------------------------------------------------------------- native samples
@@ -933,8 +1042,9 @@ namespace Aardvark.ImageCodecs
         {
             if (frame.Length < 64) throw new ImageFormatException("DICOM: RLE frame without header");
             int segs = (int)BinaryPrimitives.ReadUInt32LittleEndian(frame);
-            int bps = bitsAllocated / 8;
-            if (bitsAllocated % 8 != 0 || segs != spp * bps || segs > 15) throw new ImageFormatException($"DICOM: RLE frame with {segs} segments for {spp} x {bitsAllocated} bits");
+            // 1 bit samples (binary segmentations, PS3.5 table 8.2.2-1) are padded to a byte each (G.2): one segment
+            int bps = bitsAllocated == 1 ? 1 : bitsAllocated / 8;
+            if ((bitsAllocated % 8 != 0 && bitsAllocated != 1) || segs != spp * bps || segs > 15) throw new ImageFormatException($"DICOM: RLE frame with {segs} segments for {spp} x {bitsAllocated} bits");
             int pixels = rows * cols;
             var seg = new byte[pixels];
             for (int s = 0; s < segs; s++)

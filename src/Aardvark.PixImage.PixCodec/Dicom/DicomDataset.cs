@@ -61,6 +61,8 @@ namespace Aardvark.ImageCodecs
         internal Encoding? CharacterSet;
         /// <summary>A header-only parse stopped at the pixel data (so every header element was seen).</summary>
         internal bool ReachedPixels;
+        /// <summary>The tag of the pixel data element a header-only parse stopped at (pixel data, float or double float).</summary>
+        internal uint ReachedPixelTag;
 
         public IReadOnlyList<DicomElement> Elements => _elements;
 
@@ -329,7 +331,8 @@ namespace Aardvark.ImageCodecs
     {
         const string Fmt = "DICOM";
 
-        static readonly HashSet<string> s_longVRs = new() { "OB", "OD", "OF", "OL", "OV", "OW", "SQ", "UC", "UN", "UR", "UT" };
+        // the VRs with a reserved field and a 32 bit length in explicit VR encodings (PS3.5 7.1.2, table 7.1-1)
+        static readonly HashSet<string> s_longVRs = new() { "OB", "OD", "OF", "OL", "OV", "OW", "SQ", "SV", "UC", "UN", "UR", "UT", "UV" };
 
         static bool IsVR(byte a, byte b) => a >= 'A' && a <= 'Z' && b >= 'A' && b <= 'Z';
 
@@ -451,7 +454,7 @@ namespace Aardvark.ImageCodecs
                     uint tag = (uint)group << 16 | U16(_pos + 2);
                     if (tag == DicomTags.ItemDelimitation) { _pos += 8; return _pos; }
                     if (tag == DicomTags.SequenceDelimitation) { _pos += 8; continue; } // stray delimiter
-                    if (headerOnly && tag >= DicomTags.FloatPixelData && tag <= DicomTags.PixelData) { _root.ReachedPixels = true; break; }
+                    if (headerOnly && tag >= DicomTags.FloatPixelData && tag <= DicomTags.PixelData) { _root.ReachedPixels = true; _root.ReachedPixelTag = tag; break; }
                     ReadElement(ds, tag);
                     if (tag == DicomTags.SpecificCharacterSet) ds.CharacterSet = CharacterSet(ds.GetStrings(tag));
                 }

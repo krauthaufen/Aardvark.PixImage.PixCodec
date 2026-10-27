@@ -105,6 +105,13 @@ namespace Aardvark.ImageCodecs
                     pm.Strings(DicomTags.SliceThickness, "DS", new[] { g.SliceSpacing });
                     var po = new DicomWriter();
                     po.Strings(DicomTags.ImageOrientationPatient, "DS", g.Orientation);
+                    // with these macros the Multi-frame Functional Groups module (C.7.6.16: Content Date / Time, Type 1) and
+                    // the Frame of Reference module (A.8.3.3 - A.8.5.3) are required
+                    var now = DateTime.Now;
+                    w.String(0x00080023, "DA", now.ToString("yyyyMMdd", CultureInfo.InvariantCulture));
+                    w.String(0x00080033, "TM", now.ToString("HHmmss.ffffff", CultureInfo.InvariantCulture));
+                    w.String(DicomTags.FrameOfReferenceUid, "UI", NewUid());
+                    w.String(0x00201040, "LO", "");       // Position Reference Indicator (Type 2)
                     shared.Sequence(DicomTags.PixelMeasuresSequence, new[] { pm });
                     shared.Sequence(DicomTags.PlaneOrientationSequence, new[] { po });
                     w.Sequence(DicomTags.SharedFunctionalGroups, new[] { shared });
@@ -276,8 +283,9 @@ namespace Aardvark.ImageCodecs
                 throw new ImageNotSupportedException($"DICOM: 32 bit samples cannot be written with {o.Compression}");
             if (jpegBaseline && px.Bits != 8) throw new ImageNotSupportedException("DICOM: baseline JPEG needs 8 bit samples");
             w.Strings(DicomTags.SamplesPerPixel, "US", new double[] { px.Channels });
+            // (baseline JPEG color is YBR_FULL_422 or RGB, PS3.5 table 8.2.1-1: the chroma is subsampled 4:2:2)
             string photometric = px.Channels == 1 ? "MONOCHROME2"
-                : jpegBaseline ? "YBR_FULL"
+                : jpegBaseline ? "YBR_FULL_422"
                 : o.Compression is DicomCompression.Jpeg2000Lossless or DicomCompression.HtJ2kLossless ? "YBR_RCT" : "RGB";
             w.String(DicomTags.PhotometricInterpretation, "CS", photometric);
             if (px.Channels > 1) w.Strings(DicomTags.PlanarConfiguration, "US", new double[] { 0 });
@@ -296,6 +304,19 @@ namespace Aardvark.ImageCodecs
                     w.Strings(DicomTags.RescaleSlope, "DS", new[] { m.Slope });
                     w.String(DicomTags.RescaleType, "LO", m.ValueUnit ?? "US");
                 }
+                else if (frames > 1 && px.Channels == 1)
+                {
+                    // SC Multi-frame Image module (C.8.6.3): an identity rescale is Type 1C for MONOCHROME2
+                    w.Strings(DicomTags.RescaleIntercept, "DS", new double[] { 0 });
+                    w.Strings(DicomTags.RescaleSlope, "DS", new double[] { 1 });
+                    w.String(DicomTags.RescaleType, "LO", "US");
+                }
+            }
+            if (frames > 1)
+            {
+                // SC Multi-frame Image module (C.8.6.3): Burned In Annotation is Type 1, Presentation LUT Shape 1C for MONOCHROME2
+                w.String(0x00280301, "CS", "NO");
+                if (px.Channels == 1 && !px.Float && !px.Double) w.String(0x20500020, "CS", "IDENTITY");
             }
             if (jpegBaseline)
             {
@@ -396,7 +417,7 @@ namespace Aardvark.ImageCodecs
                     });
                     break;
                 case DicomCompression.JpegBaseline:
-                    Jpeg.Encode(img, ms, new JpegEncodeOptions { Quality = o.Quality, Subsampling = JpegSubsampling.Chroma444 });
+                    Jpeg.Encode(img, ms, new JpegEncodeOptions { Quality = o.Quality, Subsampling = JpegSubsampling.Chroma422 });
                     break;
             }
             return ms.ToArray();
@@ -412,7 +433,7 @@ namespace Aardvark.ImageCodecs
 
         // ================================================================ file
 
-        static void WriteFile(DicomWriter body, Stream output, string sop, string instance, string syntax)
+        internal static void WriteFile(DicomWriter body, Stream output, string sop, string instance, string syntax)
         {
             var meta = new DicomWriter();
             meta.Bytes(0x00020001, "OB", new byte[] { 0, 1 });
@@ -444,7 +465,7 @@ namespace Aardvark.ImageCodecs
     {
         readonly SortedDictionary<uint, byte[]> _elements = new();
 
-        static readonly HashSet<string> s_long = new() { "OB", "OD", "OF", "OL", "OV", "OW", "SQ", "UC", "UN", "UR", "UT" };
+        static readonly HashSet<string> s_long = new() { "OB", "OD", "OF", "OL", "OV", "OW", "SQ", "SV", "UC", "UN", "UR", "UT", "UV" };
 
         void Add(uint tag, string vr, ReadOnlySpan<byte> value)
         {

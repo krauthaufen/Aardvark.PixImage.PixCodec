@@ -231,7 +231,8 @@ public class DicomTests
         Assert.Equal(v.Sizes, back.Sizes);
         Assert.Equal(v.Channels, back.Channels);
         Assert.Equal(v.SampleType, back.SampleType);
-        if (lossy) Assert.True(TestUtil.Psnr(new RawImage(1, (int)v.Data.LongLength, ColorModel.Gray, v.Data), new RawImage(1, (int)back.Data.LongLength, ColorModel.Gray, back.Data), 255) > 35);
+        // (color: YBR_FULL_422, the chroma of the noisy test grid subsampled 4:2:2)
+        if (lossy) { double psnr = TestUtil.Psnr(new RawImage(1, (int)v.Data.LongLength, ColorModel.Gray, v.Data), new RawImage(1, (int)back.Data.LongLength, ColorModel.Gray, back.Data), 255); Assert.True(psnr > (channels == 3 ? 30 : 35), $"PSNR {psnr}"); }
         else AssertSame(v, back);
 
         // pydicom (with pylibjpeg / pyjpegls for the compressed ones) reads the same
