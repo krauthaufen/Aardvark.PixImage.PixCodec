@@ -20,6 +20,8 @@ public class TiffTests
     public static IEnumerable<object[]> WebpFixtures => Dirs("webp");
     public static IEnumerable<object[]> JpegFixtures => Dirs("jpeg");
     public static IEnumerable<object[]> LercFixtures => Dirs("lerc");
+    public static IEnumerable<object[]> JxlFixtures => Dirs("jxl");
+    public static IEnumerable<object[]> JxrFixtures => Dirs("jxr");
 
     // the references hold the stored pixels: these leave the orientation alone
     static readonly TiffDecodeOptions Stored = new() { ApplyOrientation = false };
@@ -146,6 +148,15 @@ public class TiffTests
     [MemberData(nameof(WebpFixtures))]
     public void DecodesWebpFixture(string file) => CheckFixture(file);
 
+    // tifffile + imagecodecs files (tests/oracle/gen_tiff_jx.py): libjxl / jxrlib codestreams per strip or tile
+    [Theory]
+    [MemberData(nameof(JxlFixtures))]
+    public void DecodesJpegXlFixture(string file) => CheckFixture(file);
+
+    [Theory]
+    [MemberData(nameof(JxrFixtures))]
+    public void DecodesJpegXrFixture(string file) => CheckFixture(file);
+
     [Fact]
     public void PendingCodecsReportInfoAndFailCleanly()
     {
@@ -267,13 +278,11 @@ public class TiffTests
         Assert.True(problems.Count == 0, string.Join("\n", problems));
         // the one broken file GDAL still reads (with a warning: its strip is said to be longer than the file)
         Assert.Equal(new[] { "minimum_tiff_tags_with_warning.tif" }, rejected);
-        // valid files Aardvark.PixImage.PixCodec does not read: JPEG XL (but DNG's compression 52546), NeXT RLE, 12-bit YCbCr without JPEG, codecs nobody knows,
+        // valid files Aardvark.PixImage.PixCodec does not read: NeXT RLE, 12-bit YCbCr without JPEG, codecs nobody knows,
         // and headers describing images too large for one array
         Assert.Equal(new[]
         {
-            "bigtiff_header_extract.tif", "gtiff_byte_JXL.tif", "gtiff_byte_JXL_tiled.tif", "gtiff_byte_jxl_deprecated_50002.tif",
-            "gtiff_jxl-rgbi.tif", "gtiff_rgbsmall_JXL.tif", "gtiff_rgbsmall_JXL_separate.tif", "gtiff_rgbsmall_JXL_tiled.tif", "gtiff_rgbsmall_JXL_tiled_separate.tif",
-            "gtiff_unsupported_codec_unknown.tif", "huge-number-strips.tif", "huge4GB.tif", "int12_ycbcr_contig.tif", "leak-ZIPSetupDecode.tif",
+            "bigtiff_header_extract.tif", "gtiff_unsupported_codec_unknown.tif", "huge-number-strips.tif", "huge4GB.tif", "int12_ycbcr_contig.tif", "leak-ZIPSetupDecode.tif",
             "next_default_case.tif", "next_literalrow.tif", "next_literalspan.tif", "strip_larger_than_2GB_header.tif", "tiff_dos_strip_chop.tif", "unknown_compression.tif",
         }, unsupported);
         Assert.True(same >= 290, $"only {same} files compared");
@@ -1431,6 +1440,131 @@ public class TiffTests
             if (oracle != null) Assert.True(img.GetBytes().SequenceEqual(oracle.GetBytes()), "OpenJPEG decodes other samples");
         }
         Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.Float32, 1), new TiffEncodeOptions { Compression = TiffCompression.Jpeg2000 }));
+    }
+
+    /// <summary>A smooth pattern with some noise: integers over their range, floats in 0..1 (lossy JPEG XL's nominal range).</summary>
+    static RawImage MakeJx(int w, int h, int channels, SampleType type)
+    {
+        var img = RawImage.Create(w, h, RawImage.DefaultColorModel(channels), type, channels);
+        var rnd = new Random(channels * 31 + (int)type);
+        int n = w * h * channels;
+        double V(int i)
+        {
+            int c = i % channels, x = i / channels % w, y = i / channels / w;
+            return Math.Clamp(0.5 + 0.4 * Math.Sin(x / (9.0 + 2 * c) + c) * Math.Cos(y / (7.0 + c)) + 0.06 * rnd.NextDouble(), 0, 1);
+        }
+        switch (type)
+        {
+            case SampleType.UInt8: { var a = img.GetData<byte>(); for (int i = 0; i < n; i++) a[i] = (byte)Math.Round(V(i) * 255); break; }
+            case SampleType.UInt16: { var a = img.GetData<ushort>(); for (int i = 0; i < n; i++) a[i] = (ushort)Math.Round(V(i) * 65535); break; }
+            case SampleType.Float16: { var a = img.GetData<Half>(); for (int i = 0; i < n; i++) a[i] = (Half)V(i); break; }
+            default: { var a = img.GetData<float>(); for (int i = 0; i < n; i++) a[i] = (float)V(i); break; }
+        }
+        return img;
+    }
+
+    [Theory]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 1, false, 0, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 2, false, 32, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 3, false, 32, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 4, false, 0, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 5, true, 16, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt16, 3, false, 0, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt16, 4, true, 32, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.Float16, 3, false, 32, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.Float32, 1, false, 0, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.Float32, 4, false, 16, true)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 3, false, 32, false)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 4, false, 0, false)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt8, 1, true, 0, false)]
+    [InlineData(TiffCompression.JpegXl, SampleType.UInt16, 3, false, 0, false)]
+    [InlineData(TiffCompression.JpegXl, SampleType.Float32, 3, false, 16, false)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 1, false, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 2, true, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 3, false, 32, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 4, false, 16, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 5, false, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt16, 3, true, 32, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt16, 4, false, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt16, 6, false, 16, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.Float16, 1, false, 16, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.Float16, 4, false, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.Float32, 3, false, 0, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.Float32, 4, false, 32, true)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 3, false, 32, false)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt8, 4, false, 0, false)]
+    [InlineData(TiffCompression.JpegXr, SampleType.UInt16, 1, false, 16, false)]
+    [InlineData(TiffCompression.JpegXr, SampleType.Float16, 3, true, 0, false)]
+    public void EncodesJpegXlAndJpegXr(TiffCompression comp, SampleType type, int channels, bool planar, int tile, bool lossless)
+    {
+        bool jxl = comp == TiffCompression.JpegXl;
+        var img = MakeJx(71, 45, channels, type);
+        var o = new TiffEncodeOptions
+        {
+            Compression = comp, Planar = planar, TileWidth = tile, TileHeight = tile, RowsPerStrip = 20,
+            JpegXlLossless = lossless, JpegXrLossless = lossless, JpegXlQuality = 85, JpegXrQuality = 85,
+        };
+        var file = Encode(img, o);
+        Assert.Equal(jxl ? 50002 : 34934, Tiff.ReadTags(file).Single(t => t.Id == 259).AsIntegers()[0]);
+        Assert.Equal(1, Tiff.ReadTags(file).FirstOrDefault(t => t.Id == 317)?.AsIntegers()[0] ?? 1);
+        var back = Tiff.Decode(file);
+        Assert.Equal((img.Width, img.Height, img.Channels, img.SampleType, img.Color), (back.Width, back.Height, back.Channels, back.SampleType, back.Color));
+        double peak = type switch { SampleType.UInt8 => 255, SampleType.UInt16 => 65535, _ => 1 };
+        if (lossless && !(type == SampleType.Float32 && !jxl)) Assert.True(img.GetBytes().SequenceEqual(back.GetBytes()), "lossless round trip differs");
+        // (JPEG XR's 32-bit float formats are not bit exact; jxrlib's round trip through tifffile is off by as much)
+        else if (lossless) Assert.True(TestUtil.MaxDiff(img, back) < 1e-4, $"JPEG XR float difference {TestUtil.MaxDiff(img, back)}");
+        else Assert.True(TestUtil.Psnr(img, back, peak) > 30, $"PSNR {TestUtil.Psnr(img, back, peak):F1}");
+        // libjxl / jxrlib (tifffile + imagecodecs) decode our file to the same samples; libjxl rounds its lossy maths
+        // its own way (the fixtures above show the same 1 LSB)
+        var oracle = Oracle(file);
+        if (oracle != null)
+        {
+            double tol = jxl && !lossless ? (type == SampleType.UInt8 ? 1 : type == SampleType.UInt16 ? 4 : 2e-5) : 0;
+            TestUtil.AssertEqual(oracle, back, tol);
+        }
+    }
+
+    [Fact]
+    public void JpegXlAndJpegXrRefuseWhatTheyCannotStore()
+    {
+        foreach (var comp in new[] { TiffCompression.JpegXl, TiffCompression.JpegXr })
+        {
+            var o = new TiffEncodeOptions { Compression = comp };
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.Int16, 1), o));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.UInt32, 1), o));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.Float64, 1), o));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.UInt8, 1), new TiffEncodeOptions { Compression = comp, BitsPerSample = 4 }));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Gray, SampleType.UInt8, 1), new TiffEncodeOptions { Compression = comp, Photometric = TiffPhotometric.MinIsWhite }));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Rgb, SampleType.UInt8, 3), new TiffEncodeOptions { Compression = comp, Photometric = TiffPhotometric.YCbCr }));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Other, SampleType.Float32, 5), o));
+            Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Other, SampleType.UInt8, 9), o));
+            // (as planes they can)
+            Assert.Equal(5, Tiff.Decode(Encode(MakeJx(8, 8, 5, SampleType.Float32), new TiffEncodeOptions { Compression = comp, Planar = true })).Channels);
+        }
+        // JPEG XL takes at most 4 contiguous samples, JPEG XR has no gray + alpha
+        Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.Other, SampleType.UInt8, 5), new TiffEncodeOptions { Compression = TiffCompression.JpegXl }));
+        Assert.Throws<ArgumentException>(() => Encode(MakeImage(8, 8, ColorModel.GrayAlpha, SampleType.UInt8, 2), new TiffEncodeOptions { Compression = TiffCompression.JpegXr }));
+    }
+
+    [Fact]
+    public void JpegXlAndJpegXrStripsHoldBareStreams()
+    {
+        // what tifffile / imagecodecs store (gen_tiff_jx.py): a JPEG XL codestream, a JPEG XR file per strip
+        foreach (var (comp, magic) in new[] { (TiffCompression.JpegXl, new byte[] { 0xFF, 0x0A }), (TiffCompression.JpegXr, new byte[] { 0x49, 0x49, 0xBC }) })
+        {
+            var file = Encode(MakeJx(20, 10, 3, SampleType.UInt8), new TiffEncodeOptions { Compression = comp });
+            long off = Tiff.ReadTags(file).Single(t => t.Id == 273).AsIntegers()[0];
+            Assert.True(file.AsSpan((int)off, magic.Length).SequenceEqual(magic));
+        }
+        // the big endian byte order changes nothing inside the codestreams
+        var img = MakeJx(33, 17, 3, SampleType.UInt16);
+        foreach (var comp in new[] { TiffCompression.JpegXl, TiffCompression.JpegXr })
+        {
+            var be = Encode(img, new TiffEncodeOptions { Compression = comp, BigEndian = true, TileWidth = 16, TileHeight = 16 });
+            Assert.True(img.GetBytes().SequenceEqual(Tiff.Decode(be).GetBytes()));
+            var oracle = Oracle(be);
+            if (oracle != null) Assert.True(img.GetBytes().SequenceEqual(oracle.GetBytes()), "tifffile reads other samples from the big endian file");
+        }
     }
 
     [Theory]

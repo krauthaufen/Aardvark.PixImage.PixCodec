@@ -126,13 +126,16 @@ def gdal():
             with rasterio.open(path) as ds:
                 a = ds.read()
         except Exception:
-            # GDAL does not read it (most of these are its broken-file tests); JPEG XL as DNG 1.7 stores it (compression
-            # 52546) needs a GDAL built with libjxl: tifffile + imagecodecs read it instead
+            # GDAL does not read it (most of these are its broken-file tests); JPEG XL (compression 50002, or 52546 as
+            # DNG 1.7 stores it) needs a GDAL built with libjxl: tifffile + imagecodecs read it instead
             try:
                 with tifffile.TiffFile(path) as t:
-                    if int(t.pages[0].compression) != 52546:
+                    pg = t.pages[0]
+                    if int(pg.compression) not in (50002, 52546):
                         continue
-                    a = t.pages[0].asarray()
+                    a = pg.asarray()
+                    if pg.planarconfig == 2 and pg.samplesperpixel > 1:
+                        a = np.moveaxis(a, 0, -1)
                 write_ref(path + '.ref', np.ascontiguousarray(a))
                 written += 1
             except Exception:

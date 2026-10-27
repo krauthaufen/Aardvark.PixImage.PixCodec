@@ -28,7 +28,7 @@ namespace Aardvark.ImageCodecs
 
         const string TooBig = "TIFF: the output exceeds 4 GB, which needs BigTiff (leave BigTiff unset or set it to true)";
         const int None = 1, CcittRle = 2, Ccitt3 = 3, Ccitt4 = 4, Lzw = 5, JpegComp = 7, Deflate = 8, PackBits = 32773,
-            ZstdComp = 50000, LzmaComp = 34925, WebpComp = 50001, Jp2Comp = 34712, JbigComp = 34661;
+            ZstdComp = 50000, LzmaComp = 34925, WebpComp = 50001, Jp2Comp = 34712, JbigComp = 34661, JxlComp = 50002, JxrComp = 34934;
 
         /// <summary>Everything derived from one image and its options before a byte is written.</summary>
         sealed class Layout
@@ -72,6 +72,8 @@ namespace Aardvark.ImageCodecs
                     TiffCompression.Webp => WebpComp,
                     TiffCompression.Jpeg2000 => Jp2Comp,
                     TiffCompression.Jbig => JbigComp,
+                    TiffCompression.JpegXl => JxlComp,
+                    TiffCompression.JpegXr => JxrComp,
                     _ => throw new ArgumentException("unknown TIFF compression"),
                 };
                 Planar = o.Planar && Spp > 1;
@@ -159,7 +161,7 @@ namespace Aardvark.ImageCodecs
                 else if (Photometric == 6)
                 {
                     // TIFF 6.0 YCbCr without JPEG: blocks of SubH * SubV luma samples followed by Cb and Cr
-                    if (Planar || Comp is WebpComp or Jp2Comp) throw new ArgumentException("TIFF: YCbCr output is contiguous and not available with this compression");
+                    if (Planar || Comp is WebpComp or Jp2Comp or JxlComp or JxrComp) throw new ArgumentException("TIFF: YCbCr output is contiguous and not available with this compression");
                     YccPacked = true;
                     (SubH, SubV) = o.JpegSubsampling switch { JpegSubsampling.Chroma444 => (1, 1), JpegSubsampling.Chroma422 => (2, 1), _ => (2, 2) };
                 }
@@ -168,6 +170,19 @@ namespace Aardvark.ImageCodecs
                 if (Comp == Jp2Comp && (Packed || YccPacked || Bilevel))
                     throw new ArgumentException("TIFF: this compression needs whole-byte samples");
                 if (Comp == Jp2Comp && (IsFloat || Bps > 2)) throw new ArgumentException("JPEG 2000 compressed TIFF output needs 8 or 16 bit integer samples");
+                if (Comp is JxlComp or JxrComp)
+                {
+                    string name = Comp == JxlComp ? "JPEG XL" : "JPEG XR";
+                    if (Packed || Bilevel || YccPacked || !(type is SampleType.UInt8 or SampleType.UInt16 or SampleType.Float16 or SampleType.Float32))
+                        throw new ArgumentException($"{name} compressed TIFF output needs 8 or 16 bit unsigned or half / single float samples");
+                    if (!(Photometric is 1 or 2)) throw new ArgumentException($"{name} compressed TIFF output needs a MinIsBlack or Rgb photometric interpretation");
+                    // what one codestream can hold (the same layouts imagecodecs writes); planes are always Gray
+                    int ps = Planar ? 1 : Spp;
+                    if (Comp == JxlComp && ps > 4)
+                        throw new ArgumentException("JPEG XL compressed TIFF output holds up to 4 contiguous samples (Gray, Gray + alpha, Rgb, Rgb + alpha): write more as planes");
+                    if (Comp == JxrComp && (ps == 2 || ps > 8 || ps > 4 && IsFloat))
+                        throw new ArgumentException("JPEG XR compressed TIFF output holds 1, 3 or 4 contiguous samples, or 5..8 integer ones (JPEG XR has no gray + alpha format): write others as planes");
+                }
 
                 if (o.Predictor == TiffPredictor.FloatingPoint && !IsFloat)
                     throw new ArgumentException("the floating point predictor needs float samples");
@@ -670,7 +685,7 @@ namespace Aardvark.ImageCodecs
                 int x0 = ci % l.Across * l.Cw, y0 = ci / l.Across * l.Ch;
                 int rows = l.Tiled ? l.Ch : Math.Min(l.Ch, l.H - y0);
                 int copyCols = Math.Min(l.Cw, l.W - x0), copyRows = Math.Min(rows, l.H - y0);
-                if (l.Comp is JpegComp or WebpComp or Jp2Comp) return CompressImage(plane, x0, y0, rows, copyCols, copyRows);
+                if (l.Comp is JpegComp or WebpComp or Jp2Comp or JxlComp or JxrComp) return CompressImage(plane, x0, y0, rows, copyCols, copyRows);
 
                 int ps = l.Ps, pix = ps * l.Bps;
                 int nativeRow = l.Cw * pix;
@@ -912,7 +927,7 @@ namespace Aardvark.ImageCodecs
             }
 
             /// <summary>
-            /// Codecs that take an image: JPEG, WebP, JPEG 2000 - one strip / tile as a complete stream of its
+            /// Codecs that take an image: JPEG, WebP, JPEG 2000, JPEG XL, JPEG XR - one strip / tile as a complete stream of its
             /// own. Tiles are padded by repeating the edge pixels.
             /// </summary>
             Chunk CompressImage(int plane, int x0, int y0, int rows, int copyCols, int copyRows)
@@ -932,6 +947,20 @@ namespace Aardvark.ImageCodecs
                         Webp.Encode(new RawImage(l.Cw, rows, l.Spp == 4 ? ColorModel.Rgba : ColorModel.Rgb, px), ms,
                             new WebpEncodeOptions { Lossless = l.Options.WebpLossless, Quality = l.Options.WebpQuality });
                         break;
+                    case JxlComp:
+                    case JxrComp:
+                    {
+                        var img = RawImage.Create(l.Cw, rows, ps switch { 1 => ColorModel.Gray, 2 => ColorModel.GrayAlpha, 3 => ColorModel.Rgb, 4 => ColorModel.Rgba, _ => ColorModel.Other },
+                            l.Image.SampleType, ps);
+                        px.AsSpan().CopyTo(img.GetBytes());
+                        var o = l.Options;
+                        // (strips / tiles are encoded in parallel already)
+                        if (l.Comp == JxlComp)
+                            Jxl.Encode(img, ms, new JxlEncodeOptions { Lossless = o.JpegXlLossless, Quality = o.JpegXlLossless ? null : Math.Clamp(o.JpegXlQuality, 0, 99), Multithreaded = false, KeepMetadata = false });
+                        else
+                            JpegXr.Encode(img, ms, new JpegXrEncodeOptions { Quality = o.JpegXrLossless ? 1.0 : Math.Clamp(o.JpegXrQuality, 1, 99) / 100.0, Multithreaded = false });
+                        break;
+                    }
                     default:
                         TiffForeignCodecs.Encode(l.Comp, px, l.Cw, rows, ps, l.Image.SampleType, l.Photometric == 2 && plane < 0, l.Options, ms);
                         break;

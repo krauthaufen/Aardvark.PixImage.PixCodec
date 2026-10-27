@@ -223,6 +223,21 @@ namespace Aardvark.ImageCodecs
         /// <summary>Quality 0..100 of lossy WebP.</summary>
         public int WebpQuality { get; set; } = 75;
 
+        /// <summary>For <see cref="TiffCompression.JpegXl"/>: lossless (default) or lossy with <see cref="JpegXlQuality"/>.</summary>
+        public bool JpegXlLossless { get; set; } = true;
+
+        /// <summary>Quality 0..100 of lossy JPEG XL, mapped to a distance as cjxl -q does (90 = distance 1).</summary>
+        public int JpegXlQuality { get; set; } = 90;
+
+        /// <summary>
+        /// For <see cref="TiffCompression.JpegXr"/>: lossless (default; 32-bit floats are not bit exact in JPEG XR, values
+        /// in 0..1 come back within about 3e-5) or lossy with <see cref="JpegXrQuality"/>.
+        /// </summary>
+        public bool JpegXrLossless { get; set; } = true;
+
+        /// <summary>Quality 1..99 of lossy JPEG XR (the encoder's quality times 100).</summary>
+        public int JpegXrQuality { get; set; } = 90;
+
         /// <summary>Colormap entries from 8-bit R, G, B triples.</summary>
         public static ushort[] PaletteFromRgb8(ReadOnlySpan<byte> rgb)
         {
@@ -311,7 +326,8 @@ namespace Aardvark.ImageCodecs
     /// <item>Compression: none, LZW, Deflate, PackBits, CCITT RLE / Group 3 / Group 4 (incl. uncompressed mode), JPEG
     /// (8 and 12 bit DCT, lossless, old-style in strips, tiles and planes), ZSTD, LZMA, WebP, JPEG 2000 (34712 and
     /// Aperio's 33003 / 33005), LERC (with its Deflate / ZSTD variants and validity masks), JBIG, SGI LogLuv (32 and
-    /// 24 bit) and LogL, PixarLog, ThunderScan; DNG's lossy JPEG (34892) and JPEG XL (52546). Predictors 2 and 3, and DNG's
+    /// 24 bit) and LogL, PixarLog, ThunderScan; JPEG XL (50002, and DNG's 52546), JPEG XR (34934, and NDPI's 22610); DNG's
+    /// lossy JPEG (34892). Predictors 2 and 3, and DNG's
     /// X2 / X4 variants (34892..34895).</item>
     /// <item>Samples: unsigned and signed integers of 1..64 bits, floats of 16, 24, 32 and 64 bits, complex numbers
     /// (two channels each). Samples of an odd bit depth arrive with their stored values in the next larger type
@@ -330,7 +346,7 @@ namespace Aardvark.ImageCodecs
     /// </list>
     /// <para>Encoding: all sample types and colour models, packed depths of 1..32 bits, palettes, CMYK / Lab / YCbCr /
     /// MinIsWhite photometrics, contiguous or planar; none, LZW, Deflate, Zstd, LZMA, PackBits, JPEG (8 / 12 bit, YCbCr
-    /// or RGB), WebP, JPEG 2000 (lossless), CCITT RLE / Group 3 / Group 4 and JBIG; strips or tiles; multi-page
+    /// or RGB), WebP, JPEG 2000 (lossless), JPEG XL and JPEG XR (lossless or lossy), CCITT RLE / Group 3 / Group 4 and JBIG; strips or tiles; multi-page
     /// files, mask directories, generated overviews and the cloud optimized layout of GDAL; either byte order;
     /// arbitrary extra tags. LERC is read but not written (Esri holds patents on LERC compression).</para>
     /// <para>Limits: a strip or tile must decode to less than 2 GB unless it is uncompressed, LZW, PackBits or
@@ -702,5 +718,17 @@ namespace Aardvark.ImageCodecs
         /// stored the way libtiff does. One strip unless RowsPerStrip is set (libtiff reads single strip files only).
         /// </summary>
         Jbig,
+        /// <summary>
+        /// JPEG XL (compression 50002, as libtiff / GDAL / tifffile write it): 8 or 16 bit unsigned, half or single float
+        /// samples, lossless or lossy. A bare codestream per strip / tile: contiguous Gray, Gray + extra sample (as
+        /// alpha), Rgb or Rgb + extra sample (as alpha); planar images code every plane as Gray. No predictor.
+        /// </summary>
+        JpegXl,
+        /// <summary>
+        /// JPEG XR (compression 34934, as tifffile / imagecodecs write it): 8 or 16 bit unsigned, half or single float
+        /// samples, lossless or lossy. A JPEG XR file per strip / tile: contiguous Gray, Rgb, Rgb + extra sample (as
+        /// alpha) or 5..8 integer samples (n-channel formats); planar images code every plane as Gray. No predictor.
+        /// </summary>
+        JpegXr,
     }
 }
