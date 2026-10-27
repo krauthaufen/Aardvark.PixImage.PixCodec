@@ -89,7 +89,7 @@ RawImage stored = ImageCodec.Decode("photo.jpg", new ImageDecodeOptions
 ImageCodec.Encode(img, "out.png");                  // format from the extension
 Jpeg.Encode(img, stream, new JpegEncodeOptions { Quality = 85, Progressive = true });
 
-Jpeg.DecodeBands(bytes, 64, (band, y) => Consume(band, y));   // rows 64 at a time, the image is never whole (JPEG, PNG)
+Jpeg.DecodeBands(bytes, 64, (band, y) => Consume(band, y));   // rows 64 at a time, the pixels are never whole (JPEG, PNG; progressive JPEG keeps its coefficients)
 
 GeoReference? geo = Tiff.Decode(bytes).Metadata?.Geo;          // GeoTIFF placement, CRS and no-data, fitted to the upright image
 Tiff.Encode(img, stream, new TiffEncodeOptions { Geo = GeoReference.FromOrigin(600000, 5300000, 10, 10,

@@ -216,7 +216,7 @@ namespace Aardvark.ImageCodecs
             Options = options ?? throw new ArgumentNullException(nameof(options));
         }
 
-        /// <summary>A part from an interleaved image, with the channel naming and options of <see cref="Exr.Encode"/>.</summary>
+        /// <summary>A part from an interleaved image, with the channel naming and options of <see cref="Exr.Encode(RawImage, Stream, ExrEncodeOptions)"/>.</summary>
         public static ExrPart FromImage(string? name, RawImage image, ExrEncodeOptions? options = null)
         {
             if (image == null) throw new ArgumentNullException(nameof(image));
@@ -644,7 +644,7 @@ namespace Aardvark.ImageCodecs
         /// <summary>
         /// Writes a deep image as a single-part deep scan line file, or a deep tiled one when
         /// <see cref="ExrEncodeOptions.TileWidth"/> / TileHeight are set. Compression None, Rle or Zips (the default Zip
-        /// is taken as Zips); samples are written in the order given, HALF channels rounded like in <see cref="Encode"/>.
+        /// is taken as Zips); samples are written in the order given, HALF channels rounded like in <see cref="Encode(RawImage, Stream, ExrEncodeOptions)"/>.
         /// For deep parts next to others use <see cref="EncodeParts"/> with <see cref="ExrPart(string, ExrDeepImage, ExrEncodeOptions)"/>.
         /// </summary>
         public static void EncodeDeep(ExrDeepImage image, Stream output, ExrEncodeOptions? options = null)

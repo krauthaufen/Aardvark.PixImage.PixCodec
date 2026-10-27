@@ -196,7 +196,7 @@ namespace Aardvark.ImageCodecs
 
         public static byte[] Encode(uint[] argb, int w, int h, WebpEncodeOptions opt)
         {
-            var frame = WebpYuv.FromArgb(argb, w, h, opt.Chroma);
+            var frame = WebpYuv.FromArgb(argb, w, h, opt.Chroma, opt.CancellationToken);
             var enc = new Vp8Encoder(frame, opt, true);
             var res = enc.Run();
             if (res == null)
@@ -264,6 +264,8 @@ namespace Aardvark.ImageCodecs
             fixed (byte* py = _src.Y)
             {
                 for (int my = 0; my < _mbH; my++)
+                {
+                    _opt.CancellationToken.ThrowIfCancellationRequested();
                     for (int mx = 0; mx < _mbW; mx++)
                     {
                         byte* p = py + (long)my * 16 * _src.YStride + mx * 16;
@@ -274,6 +276,7 @@ namespace Aardvark.ImageCodecs
                         act[my * _mbW + mx] = dev;
                         order[my * _mbW + mx] = my * _mbW + mx;
                     }
+                }
             }
             Array.Sort(act, order);
             for (int i = 0; i < n; i++) _segmentMap[order[i]] = (byte)((long)i * _numSegments / n);
@@ -1032,9 +1035,11 @@ namespace Aardvark.ImageCodecs
             int mbCount = _mbW * _mbH;
             // token statistics and the probabilities that fit them
             var stats = new int[_probs.Length * 2];
+            var ct = _opt.CancellationToken;
             foreach (var tb in parts)
                 for (int i = 0; i < tb.Count; i++)
                 {
+                    if ((i & 0xffff) == 0) ct.ThrowIfCancellationRequested();
                     int t = tb.Data[i];
                     if ((t & 0x4000) == 0) stats[(t & 0x3fff) * 2 + (t >> 15)]++;
                 }
@@ -1151,6 +1156,7 @@ namespace Aardvark.ImageCodecs
             Span<byte> left = stackalloc byte[4];
             for (int mby = 0; mby < _mbH; mby++)
             {
+                ct.ThrowIfCancellationRequested();
                 left.Clear();
                 for (int mbx = 0; mbx < _mbW; mbx++)
                 {
@@ -1211,6 +1217,7 @@ namespace Aardvark.ImageCodecs
                 var tb = parts[k];
                 for (int i = 0; i < tb.Count; i++)
                 {
+                    if ((i & 0xffff) == 0) ct.ThrowIfCancellationRequested();
                     int t = tb.Data[i];
                     w.Put(t >> 15, (t & 0x4000) != 0 ? t & 0xff : newProbs[t & 0x3fff]);
                 }

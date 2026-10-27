@@ -205,7 +205,7 @@ namespace Aardvark.ImageCodecs
         /// <see cref="WebpChroma.Sharp"/>: plain mean, then every luma sample is corrected for the chroma the decoder
         /// will actually interpolate at its pixel, so that the decoded RGB comes out as close as luma alone can make it.
         /// </summary>
-        public static Vp8Frame FromArgb(uint[] argb, int w, int h, WebpChroma mode = WebpChroma.Average)
+        public static Vp8Frame FromArgb(uint[] argb, int w, int h, WebpChroma mode = WebpChroma.Average, System.Threading.CancellationToken cancel = default)
         {
             int mbW = (w + 15) >> 4, mbH = (h + 15) >> 4;
             var f = new Vp8Frame
@@ -219,6 +219,7 @@ namespace Aardvark.ImageCodecs
             {
                 for (int y = 0; y < h; y++)
                 {
+                    if ((y & 15) == 0) cancel.ThrowIfCancellationRequested();
                     uint* s = src + (long)y * w;
                     byte* d = py + (long)y * f.YStride;
                     for (int x = 0; x < w; x++)
@@ -233,6 +234,7 @@ namespace Aardvark.ImageCodecs
 
                 for (int y = 0; y < uvH; y++)
                 {
+                    if ((y & 7) == 0) cancel.ThrowIfCancellationRequested();
                     uint* s0 = src + (long)(2 * y) * w;
                     uint* s1 = 2 * y + 1 < h ? s0 + w : s0;
                     byte* du = pu + (long)y * f.UVStride, dv = pv + (long)y * f.UVStride;
@@ -263,7 +265,7 @@ namespace Aardvark.ImageCodecs
                     Buffer.MemoryCopy(pu + (long)(uvH - 1) * f.UVStride, pu + (long)y * f.UVStride, f.UVStride, f.UVStride);
                     Buffer.MemoryCopy(pv + (long)(uvH - 1) * f.UVStride, pv + (long)y * f.UVStride, f.UVStride, f.UVStride);
                 }
-                if (mode == WebpChroma.Sharp) CompensateLuma(src, f, py, pu, pv);
+                if (mode == WebpChroma.Sharp) CompensateLuma(src, f, py, pu, pv, cancel);
             }
             return f;
         }
@@ -272,7 +274,7 @@ namespace Aardvark.ImageCodecs
         /// Chroma is shared by four pixels and interpolated by the decoder, so on colored edges a pixel gets chroma
         /// that is not its own. Luma is per pixel: pick the value for which the decoded RGB is closest to the source.
         /// </summary>
-        static void CompensateLuma(uint* src, Vp8Frame f, byte* py, byte* pu, byte* pv)
+        static void CompensateLuma(uint* src, Vp8Frame f, byte* py, byte* pu, byte* pv, System.Threading.CancellationToken cancel)
         {
             int w = f.Width, h = f.Height, uvH = (h + 1) >> 1;
             var chroma = new byte[2 * w + 32];
@@ -283,6 +285,7 @@ namespace Aardvark.ImageCodecs
                 byte* u = pc, v = pc + w + 16;
                 for (int y = 0; y < h; y++)
                 {
+                    if ((y & 15) == 0) cancel.ThrowIfCancellationRequested();
                     int near = y >> 1, far = (y & 1) != 0 ? near + 1 : near - 1;
                     if (far < 0 || far >= uvH) far = near;
                     UpsampleLine(pu + (long)near * f.UVStride, pu + (long)far * f.UVStride, u, w);

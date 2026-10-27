@@ -6,7 +6,7 @@ namespace Aardvark.ImageCodecs.Tests;
 /// <summary>Truncation, pixel limits, cancellation and the format independent decode options.</summary>
 public class DecodeOptionsTests
 {
-    static RawImage Photo(int w, int h, int channels = 3)
+    internal static RawImage Photo(int w, int h, int channels = 3)
     {
         var img = RawImage.Create(w, h, RawImage.DefaultColorModel(channels), SampleType.UInt8, channels);
         var b = img.GetData<byte>();
@@ -137,6 +137,24 @@ public class DecodeOptionsTests
         Assert.Equal(jpeg, Jpeg.Encode(img, new JpegEncodeOptions { CancellationToken = live }));
     }
 
+    // a cancelled WebP encode stops before converting the pixels (the ARGB copy alone is 4 MiB here)
+    [Fact]
+    public void WebpEncodeChecksCancellationFirst()
+    {
+        var img = Photo(1024, 1024);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        foreach (var lossless in new[] { false, true })
+        {
+            var o = new WebpEncodeOptions { Lossless = lossless, CancellationToken = cts.Token };
+            Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, o));
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            Assert.ThrowsAny<OperationCanceledException>(() => Webp.Encode(img, o));
+            long used = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.True(used < 1 << 20, $"lossless {lossless}: {used} bytes allocated");
+        }
+    }
+
     [Theory]
     [InlineData(1, 1, false)]
     [InlineData(3, 1, false)]
@@ -162,6 +180,24 @@ public class DecodeOptionsTests
         var deep = new RawImage(20, 10, ColorModel.Rgb, Array.ConvertAll(Photo(20, 10, 3).GetData<byte>(), v => (ushort)(v * 16)));
         var d = Jpeg.Decode(Jpeg.Encode(deep, new JpegEncodeOptions { Precision = 12 }), new JpegDecodeOptions { Rgba = true });
         Assert.Equal(4095, d.GetData<ushort>()[3]);
+    }
+
+    // rows of every length around the vector widths of the expansion to Rgba
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public void JpegRgbaRowsOfEveryWidth(int channels)
+    {
+        for (int w = 1; w <= 40; w++)
+        {
+            var data = Jpeg.Encode(Photo(w, 5, channels), new JpegEncodeOptions { Quality = 95 });
+            var p = Jpeg.Decode(data).GetData<byte>();
+            var q = Jpeg.Decode(data, new JpegDecodeOptions { Rgba = true }).GetData<byte>();
+            Assert.Equal(w * 5 * 4, q.Length);
+            for (int i = 0; i < w * 5; i++)
+                for (int c = 0; c < 4; c++)
+                    Assert.Equal(c == 3 ? 255 : p[i * channels + (channels == 1 ? 0 : c)], q[i * 4 + c]);
+        }
     }
 
     [Fact]

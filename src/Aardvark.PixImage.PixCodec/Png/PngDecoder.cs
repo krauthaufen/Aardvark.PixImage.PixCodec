@@ -91,17 +91,18 @@ namespace Aardvark.ImageCodecs
             return options.ApplyOrientation ? ImageOps.ApplyOrientation(image) : image;
         }
 
-        /// <summary>
-        /// Decodes one PNG datastream of the file: the default image (<paramref name="frame"/> null or an IDAT
-        /// frame), or an animation frame, which is a stream of its own with the frame's size that shares everything
-        /// else (bit depth, color type, palette, transparency) with the file.
-        /// </summary>
+        /// <summary>Throws when width x height exceeds <paramref name="maxPixels"/> (PngDecodeOptions.MaxPixels; 0 = no limit).</summary>
         public static void CheckMaxPixels(int width, int height, long maxPixels)
         {
             if (maxPixels > 0 && (long)width * height > maxPixels)
                 throw new ImageNotSupportedException($"PNG image of {width}x{height} exceeds PngDecodeOptions.MaxPixels ({maxPixels})");
         }
 
+        /// <summary>
+        /// Decodes one PNG datastream of the file: the default image (<paramref name="frame"/> null or an IDAT
+        /// frame), or an animation frame, which is a stream of its own with the frame's size that shares everything
+        /// else (bit depth, color type, palette, transparency) with the file.
+        /// </summary>
         public static RawImage DecodeImage(ReadOnlySpan<byte> data, PngStructure s, PngFrameEntry? frame, PngDecodeOptions options)
             => DecodeImage(data, s, frame, options, 0, null)!;
 

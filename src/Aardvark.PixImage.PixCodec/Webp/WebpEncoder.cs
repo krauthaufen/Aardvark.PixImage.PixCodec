@@ -52,9 +52,7 @@ namespace Aardvark.ImageCodecs
                 if (!opt.Exact && hasAlpha)
                     for (int i = 0; i < argb.Length; i++) if (argb[i] >> 24 == 0) argb[i] = 0;
                 if (opt.NearLossless < 100) argb = NearLossless(argb, w, h, 5 - Math.Clamp(opt.NearLossless, 0, 99) / 20);
-                opt.CancellationToken.ThrowIfCancellationRequested();
-                chunks.Add(("VP8L", Vp8lEncoder.Encode(argb, w, h, hasAlpha, opt.Method)));
-                opt.CancellationToken.ThrowIfCancellationRequested();
+                chunks.Add(("VP8L", Vp8lEncoder.Encode(argb, w, h, hasAlpha, opt.Method, opt.CancellationToken)));
             }
             else
             {
@@ -62,7 +60,7 @@ namespace Aardvark.ImageCodecs
                 // middle efforts it gets the effort of 2, about 2.5 times faster at alpha payloads 0 to 2 % larger
                 // (soft-edged masks, hard masks and detailed mattes on photographs and synthetic tiles).
                 int alphaMethod = opt.Method is 3 or 4 ? 2 : opt.Method;
-                if (hasAlpha) chunks.Add(("ALPH", EncodeAlpha(argb, w, h, alphaMethod, opt.AlphaQuality)));
+                if (hasAlpha) chunks.Add(("ALPH", EncodeAlpha(argb, w, h, alphaMethod, opt.AlphaQuality, opt.CancellationToken)));
                 chunks.Add(("VP8 ", Vp8Encoder.Encode(argb, w, h, opt)));
             }
             return chunks;
@@ -92,7 +90,7 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>The alpha plane as ALPH chunk payload; below quality 100 it is reduced to fewer levels first.</summary>
-        static byte[] EncodeAlpha(uint[] argb, int w, int h, int method, int quality)
+        static byte[] EncodeAlpha(uint[] argb, int w, int h, int method, int quality, System.Threading.CancellationToken cancel)
         {
             // the plane goes into the green channel of a lossless stream, which brings its own prediction
             var plane = new uint[argb.Length];
@@ -109,7 +107,7 @@ namespace Aardvark.ImageCodecs
             }
             else
                 for (int i = 0; i < plane.Length; i++) plane[i] = 0xff000000 | (argb[i] >> 24) << 8;
-            var stream = Vp8lEncoder.EncodeHeaderless(plane, w, h, method);
+            var stream = Vp8lEncoder.EncodeHeaderless(plane, w, h, method, cancel);
             if (stream.Length < argb.Length)
             {
                 var res = new byte[stream.Length + 1];
@@ -126,6 +124,7 @@ namespace Aardvark.ImageCodecs
         public static void EncodeStill(RawImage image, Stream output, WebpEncodeOptions opt)
         {
             CheckSize(image.Width, image.Height);
+            opt.CancellationToken.ThrowIfCancellationRequested();
             var argb = ToArgb(image);
             bool alpha = image.HasAlpha;
             var chunks = EncodeImage(argb, image.Width, image.Height, alpha, opt);
@@ -200,6 +199,7 @@ namespace Aardvark.ImageCodecs
             foreach (var frame in frames)
             {
                 var image = frame.Image ?? throw new ArgumentException("animation frame without image");
+                opt.CancellationToken.ThrowIfCancellationRequested();
                 var argb = ToArgb(image);
                 if (prev == null)
                 {
