@@ -264,4 +264,42 @@ public class IccBpcTests
             Assert.True(max <= 1, $"{name} intent {it}: max difference {max}");
         }
     }
+
+    // ------------------------------------------------------------------ n-colour profiles
+
+    [Fact]
+    public void XclrIsHandledLikeCmyk()
+    {
+        // ISO/TS 21830 4.2.2: an output-capable xCLR source is treated like CMYK (with the LittleCMS choices of
+        // OutputCmykSourceBlack): relative colorimetric from the perceptual B2A (L* 20), else full ink (L* 10)
+        foreach (var (cs, n) in new[] { (IccColorSpace.Color5, 5), (IccColorSpace.Color7, 7) })
+        {
+            var p = InkLimited(cs, n);
+            Near(20, BlackL(p, IccRenderingIntent.RelativeColorimetric, true));
+            Near(10, BlackL(p, IccRenderingIntent.Perceptual, true));
+            foreach (var intent in Intents) Near(20, BlackL(p, intent, false), 0.05);
+        }
+    }
+
+    [Fact]
+    public void TwoColourProfilesGetNoCompensation()
+    {
+        // ISO/TS 21830 1 and 4.1 leave 2CLR out (and ISO 18619 4.1 allows Gray, RGB, CMYK and Lab only): no BPC, where its
+        // 4.2.5 black would be L* 20 here
+        var a2b = Lut16(2, 3, 2, x => Gray(100 - 80 * x[1]));
+        var b2a = Lut16(3, 2, 21, x => new[] { 0, Math.Clamp((100 - LOf(x[0])) / 80, 0, 1) });
+        var p = Profile(IccProfileClass.Output, IccColorSpace.Color2, ("A2B0", a2b), ("A2B1", a2b), ("B2A0", b2a), ("B2A1", b2a));
+        var rgb = new float[] { 0, 0, 0, 0.1f, 0.1f, 0.1f, 0.5f, 0.5f, 0.5f };
+        foreach (var intent in Intents)
+        {
+            var a = new float[6]; var b = new float[6];
+            new IccTransform(IccProfile.Srgb, p, intent).Transform(rgb, a);
+            new IccTransform(IccProfile.Srgb, p, intent, true).Transform(rgb, b);
+            Assert.Equal(a, b);
+            var c = new float[9]; var d = new float[9];
+            new IccTransform(p, IccProfile.Srgb, intent).Transform(a, c);
+            new IccTransform(p, IccProfile.Srgb, intent, true).Transform(a, d);
+            Assert.Equal(c, d);
+        }
+    }
 }

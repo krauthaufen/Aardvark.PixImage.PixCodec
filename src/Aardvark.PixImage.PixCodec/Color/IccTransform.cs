@@ -186,7 +186,7 @@ namespace Aardvark.ImageCodecs
                 scale = new[] { ws.X / wd.X, ws.Y / wd.Y, ws.Z / wd.Z };
                 offset = new double[3];
             }
-            else if (bpc || AutoBpc(intent))
+            else if ((bpc || AutoBpc(intent)) && BpcDefined(Source.ColorSpace) && BpcDefined(Destination.ColorSpace))
             {
                 var bs = BlackPoint(Source, intent, true, trilinear);
                 var bd = BlackPoint(Destination, intent, false, trilinear);
@@ -243,8 +243,14 @@ namespace Aardvark.ImageCodecs
             return new CieXyz(x, y, z);
         }
 
-        /// <summary>Whether ISO 18619 / ISO/TS 21830 handle the colour space like CMYK.</summary>
-        static bool CmykLike(IccColorSpace cs) => cs is IccColorSpace.Cmyk or IccColorSpace.Cmy;
+        /// <summary>Whether ISO 18619 / ISO/TS 21830 handle the colour space like CMYK: CMYK, CMY and xCLR with 3 to 15
+        /// colourants (ISO/TS 21830 4.2.1).</summary>
+        static bool CmykLike(IccColorSpace cs) => cs is IccColorSpace.Cmyk or IccColorSpace.Cmy
+            || ((uint)cs & 0xFFFFFF) == 0x434C52 && IccSig.Channels(cs) >= 3; // 'xCLR'
+
+        /// <summary>Whether black point compensation is defined for the colour space: Gray, RGB, Lab (ISO 18619 4.1) and the
+        /// CMYK like ones. 2CLR is excluded by ISO/TS 21830 (clause 1, 4.1), and so are XYZ, Luv, YCbCr, Yxy, HSV, HLS.</summary>
+        static bool BpcDefined(IccColorSpace cs) => cs is IccColorSpace.Gray or IccColorSpace.Rgb or IccColorSpace.Lab || CmykLike(cs);
 
         /// <summary>Output-capable (ISO 18619 3.9): the profile has a transform from the PCS to its colour space.</summary>
         static bool OutputCapable(IccProfile p) => p.HasTag(IccSig.B2A0) || p.HasTag(IccSig.B2A1) || p.HasTag(IccSig.B2A2);
