@@ -645,7 +645,7 @@ public class JxlSpecTests(ITestOutputHelper output)
         var g = Jxl.GetGainMap(f1)!;
         Assert.Equal((0, true, TransferFunction.Pq), (g.Version, g.HasAlternateColourSpace, g.AlternateTransfer));
         Assert.Equal(meta, g.Metadata);
-        Assert.Null(g.AlternateIcc);   // PQ is said by the transfer function
+        Assert.Equal(new IccCicp(9, 16, 0, true), IccProfile.Parse(g.AlternateIcc!).Cicp);   // PQ and the primaries in a cicp tag
         JxlEncodeTests.AssertExact(gain, g.DecodeImage());
         Assert.True(ImageCodec.ReadMetadata(f1).HasGainMap);
         var p3 = new JxlColourEncoding { Primaries = JxlPrimaries.P3, Transfer = JxlTransfer.Gamma, Gamma = 0.5 };

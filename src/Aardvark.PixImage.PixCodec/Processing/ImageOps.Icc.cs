@@ -124,7 +124,10 @@ namespace Aardvark.ImageCodecs
         static IccProfile SourceProfile(RawImage image, out bool embedded, bool ignoreIcc = false)
         {
             embedded = false;
-            if (!ignoreIcc && GetIccProfile(image) is { } p && p.Channels > 0 && p.Class is not (IccProfileClass.DeviceLink or IccProfileClass.NamedColor))
+            // (PQ / HLG images described by a profile with a cicp tag, as the AVIF and JPEG XL decoders do: its sampled
+            // curves are not the display rendering, the same as without the profile)
+            if (!ignoreIcc && GetIccProfile(image) is { } p && p.Channels > 0 && p.Class is not (IccProfileClass.DeviceLink or IccProfileClass.NamedColor)
+                && !(p.Cicp is { TransferCharacteristics: 16 or 18 } && image.Metadata!.Transfer is TransferFunction.Pq or TransferFunction.Hlg))
             {
                 int colour = image.Color == ColorModel.Other ? image.Channels : image.HasAlpha ? image.Channels - 1 : image.Channels;
                 if (p.Channels == colour || image.Color == ColorModel.Other && p.Channels == colour - 1) { embedded = true; return p; }

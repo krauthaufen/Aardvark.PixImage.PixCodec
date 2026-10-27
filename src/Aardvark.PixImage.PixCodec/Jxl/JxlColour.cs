@@ -512,9 +512,9 @@ namespace Aardvark.ImageCodecs.JpegXl
 
         /// <summary>
         /// An ICC profile describing an enumerated colour encoding the transfer function tag alone cannot (other primaries or
-        /// white point, a gamma, BT.709 or DCI curve), so the returned pixels can be interpreted. Null for sRGB and linear
-        /// sRGB / gray (said by the transfer function), PQ and HLG (said by the transfer function, no ICC curve), XYB and
-        /// unknown transfers.
+        /// white point, a gamma, BT.709 or DCI curve), so the returned pixels can be interpreted. PQ and HLG get a version 4.4
+        /// profile with a cicp tag that names the curve (and the primaries, which the transfer function does not say).
+        /// Null for sRGB and linear sRGB / gray (said by the transfer function), XYB and unknown transfers.
         /// </summary>
         public static byte[]? DescribingIcc(JxlColourEncoding ce)
         {
@@ -522,6 +522,25 @@ namespace Aardvark.ImageCodecs.JpegXl
             IccCurve trc;
             switch (ce.Transfer)
             {
+                case JxlTransfer.Pq or JxlTransfer.Hlg:
+                    {
+                        var (wx, wy) = WhiteXy(ce);
+                        var (r, g, b) = PrimariesXy(ce);
+                        bool d65 = ce.WhitePoint == JxlWhitePoint.D65;
+                        // H.273 colour primaries: 1 BT.709, 9 BT.2020, 12 P3 D65, 11 P3 DCI; 2 (unspecified) for custom ones
+                        int cp = ce.Primaries switch
+                        {
+                            JxlPrimaries.Srgb when d65 => 1, JxlPrimaries.Bt2100 when d65 => 9,
+                            JxlPrimaries.P3 when d65 => 12, JxlPrimaries.P3 when ce.WhitePoint == JxlWhitePoint.Dci => 11, _ => 2,
+                        };
+                        if (ce.IsGray) cp = 2;
+                        try
+                        {
+                            return IccProfile.CreateHdr(ce.Transfer == JxlTransfer.Pq ? "JPEG XL PQ" : "JPEG XL HLG", new CieXy(wx, wy), new CieXy(r.Item1, r.Item2),
+                                new CieXy(g.Item1, g.Item2), new CieXy(b.Item1, b.Item2), ce.IsGray, cp, ce.Transfer == JxlTransfer.Pq ? 16 : 18)?.ToBytes();
+                        }
+                        catch (Exception e) when (e is ArgumentException or ImageFormatException) { return null; }
+                    }
                 case JxlTransfer.Srgb: trc = IccCurve.Srgb; break;
                 case JxlTransfer.Linear: trc = IccCurve.Identity; break;
                 case JxlTransfer.Gamma: trc = IccCurve.Gamma(1 / ce.Gamma); break;

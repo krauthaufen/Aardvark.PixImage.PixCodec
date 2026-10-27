@@ -611,12 +611,26 @@ namespace Aardvark.ImageCodecs.Heif
             return m;
         }
 
-        /// <summary>An ICC profile for nclx primaries other than BT.709 / sRGB (or a curve the enum cannot name); null when none is needed.</summary>
+        /// <summary>
+        /// An ICC profile for nclx primaries other than BT.709 / sRGB (or a curve the enum cannot name); null when none is
+        /// needed. PQ and HLG get a version 4.4 profile with a cicp tag of the code points (their primaries otherwise lost).
+        /// </summary>
         public static byte[]? DescribingIcc(int cp, int tc, bool gray)
         {
             IccCurve trc;
             switch (tc)
             {
+                case 16: case 18:
+                    {
+                        bool known = AvifColor.Primaries(cp is 0 or 2 ? 1 : cp, out var q);
+                        if (!known) return null;
+                        try
+                        {
+                            return IccProfile.CreateHdr(tc == 16 ? "AVIF PQ" : "AVIF HLG", new CieXy(q[6], q[7]), new CieXy(q[0], q[1]), new CieXy(q[2], q[3]),
+                                new CieXy(q[4], q[5]), gray, gray ? 2 : cp, tc)?.ToBytes();
+                        }
+                        catch (Exception e) when (e is ArgumentException or ImageFormatException) { return null; }
+                    }
                 case 13: case 2: case 0: trc = IccCurve.Srgb; break;
                 case 8: trc = IccCurve.Identity; break;
                 case 4: trc = IccCurve.Gamma(2.2); break;

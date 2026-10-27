@@ -134,7 +134,7 @@ namespace Aardvark.ImageCodecs.JpegXl
             var c = new JxlColourEncoding { ColourSpace = gray ? JxlColourSpace.Grey : JxlColourSpace.Rgb };
             if (meta?.IccProfile is { Length: > 0 } icc && IccFits(icc, gray))
             {
-                c.WantIcc = true;
+                if (!HdrCicp(icc, gray, c)) c.WantIcc = true;
                 return c;
             }
             var tf = meta?.Transfer ?? TransferFunction.Unknown;
@@ -150,6 +150,26 @@ namespace Aardvark.ImageCodecs.JpegXl
                 default: c.Transfer = isFloat ? JxlTransfer.Linear : JxlTransfer.Srgb; break;
             }
             return c;
+        }
+
+        /// <summary>
+        /// A profile whose cicp tag says PQ or HLG with primaries the enumerated encoding has (what the decoder describes such
+        /// encodings with): fills in <paramref name="c"/> with that encoding instead of storing the profile.
+        /// </summary>
+        static bool HdrCicp(byte[] icc, bool gray, JxlColourEncoding c)
+        {
+            if (IccProfile.TryParse(icc)?.Cicp is not { TransferCharacteristics: 16 or 18, MatrixCoefficients: 0 } cicp) return false;
+            if (!gray)
+                switch (cicp.ColourPrimaries)
+                {
+                    case 1: c.Primaries = JxlPrimaries.Srgb; break;
+                    case 9: c.Primaries = JxlPrimaries.Bt2100; break;
+                    case 12: c.Primaries = JxlPrimaries.P3; break;
+                    case 11: c.Primaries = JxlPrimaries.P3; c.WhitePoint = JxlWhitePoint.Dci; break;
+                    default: return false;
+                }
+            c.Transfer = cicp.TransferCharacteristics == 16 ? JxlTransfer.Pq : JxlTransfer.Hlg;
+            return true;
         }
 
         /// <summary>Whether an ICC profile describes the image's colour space (RGB for colour, gray for gray images).</summary>

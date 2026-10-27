@@ -867,10 +867,46 @@ public class GainMapTests(ITestOutputHelper output)
 
     /// <summary>A JPEG XL file of a white baseline with a gain map (jhgm box) and the given metadata.</summary>
     static byte[] JxlWithGainMap(RawImage baseline, RawImage gain, GainMapMetadata m, JxlColourEncoding? alternate = null, int gainBits = 0)
-        => JxlContainer.Signature.ToArray()
+    {
+        var b = Jxl.Encode(baseline, new JxlEncodeOptions { Lossless = true });
+        return JxlContainer.Signature.ToArray()
             .Concat(JxlSpecTests.Box("ftyp", "jxl \0\0\0\0jxl "u8.ToArray()))
-            .Concat(JxlSpecTests.Box("jxlc", Jxl.Encode(baseline, new JxlEncodeOptions { Lossless = true })))
+            .Concat(JxlSpecTests.Box("jxlc", JxlContainer.Parse(b).Codestream(b)))
             .Concat(JxlSpecTests.GainMapBox(m.ToIso21496(), alternate, null, Jxl.Encode(gain, new JxlEncodeOptions { Lossless = true, BitsPerSample = gainBits }))).ToArray();
+    }
+
+    /// <summary>
+    /// JPEG XL colour encodings given by enums keep their primaries for the gain map (5.3.2 to 5.3.4, Annex B): a PQ
+    /// BT.2100 baseline is linearized in BT.2020 (203 cd/m² = 1.0) and the result is labelled so; a P3 PQ alternate with
+    /// use_base_colour_space 0 converts sRGB red to P3 (about 0.8225, 0.0332, 0.0171).
+    /// </summary>
+    [Fact]
+    public void JxlEnumeratedColourEncodingsKeepTheirPrimaries()
+    {
+        var zero = new[] { 0.0, 0, 0 };
+        var m = new GainMapMetadata { AlternateHdrHeadroom = 1, GainMapMax = zero, BaseOffset = zero, AlternateOffset = zero };
+        var gain = new RawImage(1, 1, ColorModel.Gray, new byte[] { 0 });
+        ushort pq203 = (ushort)Math.Round(PqInverseEotf(0.0203) * 65535);
+        var pqBase = new RawImage(1, 1, ColorModel.Rgb, new[] { pq203, pq203, (ushort)0 }) { Metadata = new ImageMetadata { Transfer = TransferFunction.Pq } };
+        var f1 = JxlWithGainMap(pqBase, gain, m);
+        var baseline = Jxl.Decode(f1);
+        Assert.Equal(TransferFunction.Pq, baseline.Metadata!.Transfer);
+        Assert.Equal(new IccCicp(9, 16, 0, true), IccProfile.Parse(baseline.Metadata.IccProfile!).Cicp);
+        var a = Jxl.DecodeHdr(f1);
+        var r = (float[])a.Data;
+        Assert.Equal((1, 1, 0), (Math.Round(r[0], 3), Math.Round(r[1], 3), Math.Round(r[2], 6)));
+        Assert.Equal(IccProfile.LinearRec2020.RedColorant!.Value.X, IccProfile.Parse(a.Metadata!.IccProfile!).RedColorant!.Value.X, 1e-3);
+        // the alternate's encoding (P3, PQ) gives the application space primaries
+        var red = new RawImage(1, 1, ColorModel.Rgb, new byte[] { 255, 0, 0 });
+        var alt = new GainMapMetadata { UseBaseColourSpace = false, AlternateHdrHeadroom = 1, GainMapMax = zero, BaseOffset = zero, AlternateOffset = zero };
+        var f2 = JxlWithGainMap(red, gain, alt, new JxlColourEncoding { Primaries = JxlPrimaries.P3, Transfer = JxlTransfer.Pq });
+        var p = (float[])Jxl.DecodeHdr(f2).Data;
+        Assert.Equal(0.8225, p[0], 1e-3); Assert.Equal(0.0332, p[1], 1e-3); Assert.Equal(0.0171, p[2], 1e-3);
+        // decoding and encoding again keeps the enumerated encoding
+        var again = Jxl.Decode(Jxl.Encode(baseline, new JxlEncodeOptions { Lossless = true }));
+        Assert.Equal((TransferFunction.Pq, new IccCicp(9, 16, 0, true)), (again.Metadata!.Transfer, IccProfile.Parse(again.Metadata.IccProfile!).Cicp));
+        Assert.Throws<NotSupportedException>(() => ImageOps.ToSrgb(baseline));   // as without a profile: PQ is no ICC curve
+    }
 
     /// <summary>
     /// A 10 bit gain map (5.2.3: the bit depth of its codestream) is normalized by 1023: code 1023 is max(G), 512 is

@@ -59,6 +59,10 @@ namespace Aardvark.ImageCodecs
         /// <inheritdoc cref="CreateRgb(string, CieXy, CieXy, CieXy, CieXy, IccCurve, int)"/>
         public static IccProfile CreateRgb(string description, CieXy white, CieXy red, CieXy green, CieXy blue,
             IccCurve redTrc, IccCurve greenTrc, IccCurve blueTrc, int version = 4)
+            => CreateRgb(description, white, red, green, blue, redTrc, greenTrc, blueTrc, version, null);
+
+        static IccProfile CreateRgb(string description, CieXy white, CieXy red, CieXy green, CieXy blue,
+            IccCurve redTrc, IccCurve greenTrc, IccCurve blueTrc, int version, IccCicp? cicp)
         {
             ArgumentNullException.ThrowIfNull(redTrc); ArgumentNullException.ThrowIfNull(greenTrc); ArgumentNullException.ThrowIfNull(blueTrc);
             CheckVersion(version);
@@ -78,11 +82,14 @@ namespace Aardvark.ImageCodecs
             w.Add((IccSig.RTrc, rc));
             w.Add((IccSig.GTrc, gc));
             w.Add((IccSig.BTrc, bc));
-            return new IccProfile(Assemble(IccProfileClass.Display, IccColorSpace.Rgb, IccColorSpace.Xyz, version, w));
+            if (cicp is { } cc) w.Add((IccSig.Cicp, CicpTag(cc)));
+            return new IccProfile(Assemble(IccProfileClass.Display, IccColorSpace.Rgb, IccColorSpace.Xyz, version, w, cicp != null));
         }
 
         /// <summary>Builds a gray display profile (kTRC) with the given white and transfer curve.</summary>
-        public static IccProfile CreateGray(string description, CieXy white, IccCurve trc, int version = 4)
+        public static IccProfile CreateGray(string description, CieXy white, IccCurve trc, int version = 4) => CreateGray(description, white, trc, version, null);
+
+        static IccProfile CreateGray(string description, CieXy white, IccCurve trc, int version, IccCicp? cicp)
         {
             ArgumentNullException.ThrowIfNull(trc);
             CheckVersion(version);
@@ -92,7 +99,44 @@ namespace Aardvark.ImageCodecs
             w.Add((IccSig.Wtpt, XyzTag(CieXyz.D50)));
             w.Add((IccSig.Chad, Sf32Tag(IccMath.BradfordAdaptation(white.ToXyz(), CieXyz.D50))));
             w.Add((IccSig.KTrc, CurveTag(trc, v2)));
-            return new IccProfile(Assemble(IccProfileClass.Display, IccColorSpace.Gray, IccColorSpace.Xyz, version, w));
+            if (cicp is { } cc) w.Add((IccSig.Cicp, CicpTag(cc)));
+            return new IccProfile(Assemble(IccProfileClass.Display, IccColorSpace.Gray, IccColorSpace.Xyz, version, w, cicp != null));
+        }
+
+        /// <summary>
+        /// A version 4.4 profile for an H.273 colour encoding with the PQ (transfer characteristics 16) or HLG (18) curve,
+        /// which ICC curves cannot say: the primaries and white as usual, a cicp tag with the code points (primaries
+        /// <paramref name="primaries"/>, 2 when they have no code; matrix 0, full range) and, for colour management that
+        /// ignores the cicp tag, sampled curves (PQ: the EOTF relative to 10000 cd/m², HLG: the inverse OETF, scene light).
+        /// Null for other transfers.
+        /// </summary>
+        internal static IccProfile? CreateHdr(string description, CieXy white, CieXy red, CieXy green, CieXy blue, bool gray, int primaries, int transfer)
+        {
+            Func<double, double> f;
+            if (transfer == 16)
+            {
+                const double m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128, c1 = 3424.0 / 4096, c2 = 2413.0 / 4096 * 32, c3 = 2392.0 / 4096 * 32;
+                f = e => { double p = Math.Pow(e, 1 / m2); return Math.Pow(Math.Max(p - c1, 0) / (c2 - c3 * p), 1 / m1); };
+            }
+            else if (transfer == 18)
+            {
+                const double a = 0.17883277, b = 0.28466892, c = 0.55991073;
+                f = e => e <= 0.5 ? e * e / 3 : (Math.Exp((e - c) / a) + b) / 12;
+            }
+            else return null;
+            var t = new ushort[4096];
+            for (int i = 0; i < t.Length; i++) t[i] = (ushort)Math.Round(Math.Clamp(f(i / (t.Length - 1.0)), 0, 1) * 65535);
+            var trc = IccCurve.Table(t);
+            var cicp = new IccCicp(primaries, transfer, 0, true);
+            return gray ? CreateGray(description, white, trc, 4, cicp) : CreateRgb(description, white, red, green, blue, trc, trc, trc, 4, cicp);
+        }
+
+        static byte[] CicpTag(IccCicp c)
+        {
+            var w = new IccWrite();
+            w.Sig(IccSig.Cicp); w.U32(0);
+            w.U8((byte)c.ColourPrimaries); w.U8((byte)c.TransferCharacteristics); w.U8((byte)c.MatrixCoefficients); w.U8(c.FullRange ? (byte)1 : (byte)0);
+            return w.ToArray();
         }
 
         static void CheckVersion(int version)
@@ -163,12 +207,12 @@ namespace Aardvark.ImageCodecs
         }
 
         /// <summary>Header, tag directory and tag data; identical tag arrays (by reference) share their data.</summary>
-        static byte[] Assemble(IccProfileClass cls, IccColorSpace cs, IccColorSpace pcs, int version, List<(uint Sig, byte[] Data)> tagList)
+        static byte[] Assemble(IccProfileClass cls, IccColorSpace cs, IccColorSpace pcs, int version, List<(uint Sig, byte[] Data)> tagList, bool v44 = false)
         {
             var w = new IccWrite();
             w.U32(0);                                  // size, patched below
             w.U32(0);                                  // preferred CMM
-            w.U32(version == 4 ? 0x04300000u : 0x02100000u);
+            w.U32(version == 4 ? (v44 ? 0x04400000u : 0x04300000u) : 0x02100000u);   // (the cicp tag is new in 4.4)
             w.Sig((uint)cls); w.Sig((uint)cs); w.Sig((uint)pcs);
             // a fixed creation date keeps the bytes (and the profile ID) reproducible
             w.U16(2026); w.U16(1); w.U16(1); w.U16(0); w.U16(0); w.U16(0);
