@@ -13,6 +13,15 @@ namespace Aardvark.ImageCodecs.JpegXl
             return allReplace && fh.X0 == 0 && fh.Y0 == 0 && frame.Width == img.Width && frame.Height == img.Height;
         }
 
+        /// <summary>
+        /// Blends the frame onto Reference[source] (18181-1:2024 F.2, Tables F.7 and F.8). Table F.7 blends the colour by
+        /// blending_info and each extra channel by its own ec_blending_info. libjxl (djxl 0.12) differs where the colour
+        /// uses kBlend: the extra channel that is its alpha_channel is alpha-composited (old_alpha + new_alpha * (1 -
+        /// old_alpha), new_alpha clamped by blending_info.clamp) whatever its own mode, and old_alpha, for that channel,
+        /// the colour and every other channel blending with that alpha, is the alpha of Reference[source of the alpha
+        /// channel's ec_blending_info] (0 when that source is not coded), not of the blending channel's own source. We
+        /// match djxl (JxlAuditRenderTests.FrameAlphaWithBlendedColour, fixtures jxl-spec/blend_*.jxl).
+        /// </summary>
         public static JxlFrameImage Blend(JxlImageHeader img, JxlFrameHeader fh, JxlFrameImage frame, JxlDecoderState state)
         {
             int W = img.Width, H = img.Height;
@@ -26,9 +35,11 @@ namespace Aardvark.ImageCodecs.JpegXl
             int fx0 = Math.Max(0, -x0), fy0 = Math.Max(0, -y0);
             int cx0 = Math.Max(0, x0), cy0 = Math.Max(0, y0);
             int ow = Math.Min(W - cx0, frame.Width - fx0), oh = Math.Min(H - cy0, frame.Height - fy0);
+            int colourAlpha = fh.Blending.Mode == JxlBlendMode.Blend && nc + fh.Blending.AlphaChannel < nch ? nc + fh.Blending.AlphaChannel : -1;
             for (int c = 0; c < nch; c++)
             {
                 var bi = c < nc ? fh.Blending : fh.EcBlending[c - nc];
+                if (c == colourAlpha) bi = fh.Blending with { Source = bi.Source };   // composited as djxl does, see above
                 var src = state.References[bi.Source];
                 var bg = BackgroundPlane(src, c, W, H);
                 var o = (float[])bg.Clone();
@@ -43,7 +54,7 @@ namespace Aardvark.ImageCodecs.JpegXl
                     if (ai < nch)
                     {
                         fa = frame.Planes[ai];
-                        ba = BackgroundPlane(src, ai, W, H);
+                        ba = BackgroundPlane(state.References[fh.EcBlending[bi.AlphaChannel].Source], ai, W, H);   // old_alpha as djxl
                         premul = img.ExtraChannels[bi.AlphaChannel].AlphaAssociated;
                     }
                 }

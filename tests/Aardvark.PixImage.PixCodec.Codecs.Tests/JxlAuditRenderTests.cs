@@ -34,12 +34,15 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
 
         public Stream(int width, int height, params JxlExtraChannelType[] extra) : this(width, height, false, extra) { }
 
-        public Stream(int width, int height, bool grey, params JxlExtraChannelType[] extra)
+        public Stream(int width, int height, bool grey, params JxlExtraChannelType[] extra) : this(width, height, grey, false, extra) { }
+
+        /// <summary><paramref name="premultiplied"/> sets alpha_associated of the alpha channels.</summary>
+        public Stream(int width, int height, bool grey, bool premultiplied, params JxlExtraChannelType[] extra)
         {
             Header = new JxlImageHeader
             {
                 Width = width, Height = height, BitDepth = Float32, XybEncoded = false, Modular16BitBuffers = false,
-                ExtraChannels = extra.Select(t => new JxlExtraChannel { Type = t, BitDepth = Float32 }).ToArray(),
+                ExtraChannels = extra.Select(t => new JxlExtraChannel { Type = t, BitDepth = Float32, AlphaAssociated = premultiplied && t == JxlExtraChannelType.Alpha }).ToArray(),
             };
             if (grey) Header.Colour = new JxlColourEncoding { ColourSpace = JxlColourSpace.Grey };
             JxlHeaderWriter.WriteImageHeader(w, Header);
@@ -337,6 +340,144 @@ public class JxlAuditRenderTests(ITestOutputHelper output)
     {
         var data = PatchStream(new[] { JxlExtraChannelType.Alpha }, new[] { colourMode, alphaMode }, _ => null, clamp: true);
         AssertClose(data, $"patch colour {colourMode} alpha {alphaMode}", 1e-4);
+    }
+
+    // ------------------------------------------------------------------ F.2 frame blending
+
+    /// <summary>
+    /// Two frames saved as references 1 and 2, then the last frame blended onto them with the given blending_info and
+    /// ec_blending_info, covering the image or cropped (to 24 x 20 at (5, 7) of 40 x 32). Samples are in [-0.2, 1.2];
+    /// <paramref name="small"/>: a 12 x 10 image (crop 7 x 6 at (2, 3)) with alpha in [0.05, 1] (the fixtures).
+    /// </summary>
+    static byte[] BlendStream(JxlExtraChannelType[] extra, JxlBlendingInfo colour, JxlBlendingInfo[] ec, bool crop, bool premultiplied = false, bool small = false)
+    {
+        int W = small ? 12 : 40, H = small ? 10 : 32;
+        int n = 3 + extra.Length;
+        var s = new Stream(W, H, false, premultiplied, extra);
+        float Sample(int seed, int c, int x, int y) => small && c >= 3 && extra[c - 3] == JxlExtraChannelType.Alpha
+            ? 0.05f + 0.95f * Rand(seed + c, x, y) : Rand(seed + c, x, y) * 1.4f - 0.2f;
+        for (int k = 1; k <= 2; k++)
+        {
+            var r = s.NewFrame(W, H);
+            r.Type = JxlFrameType.ReferenceOnly; r.IsLast = false; r.SaveAsReference = k;
+            int seed = k == 1 ? 7 : 11;
+            s.Frame(r, Enumerable.Range(0, n).Select(c => new Plane(W, H, (x, y) => Sample(seed, c, x, y))).ToArray());
+        }
+        int fw = !crop ? W : small ? 7 : 24, fh = !crop ? H : small ? 6 : 20;
+        var f = s.NewFrame(fw, fh);
+        if (crop) { f.X0 = small ? 2 : 5; f.Y0 = small ? 3 : 7; }
+        f.IsLast = true;
+        f.Blending = colour;
+        f.EcBlending = ec;
+        s.Frame(f, Enumerable.Range(0, n).Select(c => new Plane(fw, fh, (x, y) => Sample(20, c, x, y))).ToArray());
+        return s.ToArray();
+    }
+
+    static JxlBlendingInfo Bi(JxlBlendMode m, int src, bool clamp = false, int alpha = 0) => new() { Mode = m, Source = src, Clamp = clamp, AlphaChannel = alpha };
+
+    static readonly JxlExtraChannelType[] AlphaOnly = { JxlExtraChannelType.Alpha };
+
+    /// <summary>Largest difference of our float decode to libjxl's (premultiplied colour compared as stored).</summary>
+    double BlendDiff(byte[] data, string name, bool premultiplied)
+    {
+        var (ours, lib, nc) = DecodeBoth(data, name);
+        if (lib == null) return 0;
+        // libjxl returns premultiplied colour for such files, Jxl.Decode straight alpha
+        if (premultiplied) ours = (float[])Jxl.Decode(data, new JxlDecodeOptions { ApplyOrientation = false, AllChannels = true }).Data;
+        double m = 0;
+        for (int i = 0; i < ours.Length; i++) m = Math.Max(m, Math.Abs(ours[i] - lib[i]));
+        output.WriteLine($"{name}: largest difference to libjxl {m:g3}");
+        return m;
+    }
+
+    /// <summary>
+    /// Table F.7 blends each extra channel by its own ec_blending_info. With the colour in kBlend, libjxl (djxl 0.12)
+    /// composites the colour's alpha channel whatever that channel's mode (new_alpha clamped by the colour's clamp),
+    /// and takes old_alpha from Reference[source of the alpha channel] (source 0 when it is not coded: kReplace over the
+    /// whole image) for the colour and for that alpha. Colour kBlend with each alpha mode, sources equal and different,
+    /// cropped and full frames, straight and premultiplied alpha, against libjxl; the other colour modes leave the alpha
+    /// to its own mode.
+    /// </summary>
+    [Theory]
+    [InlineData(2, 0, 1, 1, false, false)]
+    [InlineData(2, 0, 1, 1, true, false)]
+    [InlineData(2, 0, 1, 2, true, false)]
+    [InlineData(2, 0, 2, 1, true, true)]
+    [InlineData(2, 1, 1, 1, false, false)]
+    [InlineData(2, 1, 2, 1, true, false)]
+    [InlineData(2, 1, 1, 0, true, true)]
+    [InlineData(2, 3, 1, 1, false, false)]
+    [InlineData(2, 3, 1, 2, true, false)]
+    [InlineData(2, 4, 1, 1, false, false)]
+    [InlineData(2, 4, 2, 1, true, true)]
+    [InlineData(2, 2, 1, 2, true, false)]
+    [InlineData(2, 2, 2, 1, false, true)]
+    [InlineData(1, 0, 1, 2, true, false)]
+    [InlineData(3, 0, 1, 2, true, false)]
+    [InlineData(3, 1, 2, 1, false, true)]
+    [InlineData(4, 0, 1, 1, false, false)]
+    public void FrameAlphaWithBlendedColour(int colourMode, int alphaMode, int colourSrc, int alphaSrc, bool crop, bool premultiplied)
+    {
+        var data = BlendStream(AlphaOnly, Bi((JxlBlendMode)colourMode, colourSrc, true), new[] { Bi((JxlBlendMode)alphaMode, alphaSrc, alphaMode == 4) }, crop, premultiplied);
+        var m = BlendDiff(data, $"frame colour {colourMode} src {colourSrc} alpha {alphaMode} src {alphaSrc} crop {crop} premul {premultiplied}", premultiplied);
+        Assert.True(m <= 1e-4, $"{m}");
+    }
+
+    /// <summary>
+    /// The same with extra channels {alpha, depth, alpha}: the colour composites with alpha 0 or 2, a depth channel in
+    /// kBlend over alpha 0 takes old_alpha from alpha 0's source too, the other alpha keeps its own mode.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 1, 1, 2, 1, 0)]
+    [InlineData(2, 2, 1, 1, 2, 1)]
+    [InlineData(0, 1, 2, 1, 2, 4)]
+    [InlineData(2, 1, 1, 2, 1, 3)]
+    public void FrameExtraChannelsWithBlendedColour(int alpha, int colourSrc, int s0, int s1, int s2, int mode)
+    {
+        var ex = new[] { JxlExtraChannelType.Alpha, JxlExtraChannelType.Depth, JxlExtraChannelType.Alpha };
+        var m0 = (JxlBlendMode)mode;
+        var data = BlendStream(ex, Bi(JxlBlendMode.Blend, colourSrc, true, alpha),
+            new[] { Bi(m0, s0, true), Bi(JxlBlendMode.Blend, s1, false, 0), Bi(m0, s2, false, 2) }, true);
+        var m = BlendDiff(data, $"frame colour alpha {alpha} src {colourSrc} ec {mode} {s0} 2 {s1} {mode} {s2}", false);
+        Assert.True(m <= 1e-4, $"{m}");
+    }
+
+    /// <summary>The fixtures pinning djxl's frame blending (tests/oracle/gen_jxl_blend.py), as built.</summary>
+    internal static IEnumerable<(string name, byte[] data)> BlendFixtures()
+    {
+        yield return ("blend_alpha_replace_full", BlendStream(AlphaOnly, Bi(JxlBlendMode.Blend, 1, true), new[] { Bi(JxlBlendMode.Replace, 1) }, false, small: true));
+        yield return ("blend_alpha_replace_src2", BlendStream(AlphaOnly, Bi(JxlBlendMode.Blend, 1, true), new[] { Bi(JxlBlendMode.Replace, 2) }, true, small: true));
+        yield return ("blend_alpha_add", BlendStream(AlphaOnly, Bi(JxlBlendMode.Blend, 2, false), new[] { Bi(JxlBlendMode.Add, 1) }, true, small: true));
+        yield return ("blend_alpha_mul_premul", BlendStream(AlphaOnly, Bi(JxlBlendMode.Blend, 1, true), new[] { Bi(JxlBlendMode.Mul, 2, true) }, true, true, small: true));
+    }
+
+    /// <summary>
+    /// <see cref="FrameAlphaWithBlendedColour"/> pinned: djxl 0.12's float decodes of small streams (colour kBlend,
+    /// alpha kReplace over the whole image / from another source, kAdd, kMul with premultiplied alpha) as fixtures.
+    /// PIXCODEC_JXLBLEND_FIXTURES=dir instead writes the streams there (for gen_jxl_blend.py).
+    /// </summary>
+    [Fact]
+    public void FrameBlendFixturesAreDjxls()
+    {
+        if (Environment.GetEnvironmentVariable("PIXCODEC_JXLBLEND_FIXTURES") is string dir)
+        {
+            foreach (var (name, data) in BlendFixtures()) File.WriteAllBytes(Path.Combine(dir, name + ".jxl"), data);
+            return;
+        }
+        foreach (var (name, _) in BlendFixtures())
+        {
+            var path = Path.Combine(FixtureDir, "jxl-spec", name + ".jxl");
+            var data = File.ReadAllBytes(path);
+            var reference = LoadRef(path + ".ref");
+            var ours = Jxl.Decode(data, new JxlDecodeOptions { ApplyOrientation = false, AllChannels = true });
+            Assert.Equal((reference.Width, reference.Height, reference.Channels), (ours.Width, ours.Height, ours.Channels));
+            var e = (float[])reference.Data;
+            var o = (float[])ours.Data;
+            double m = 0;
+            for (int i = 0; i < o.Length; i++) m = Math.Max(m, Math.Abs(o[i] - e[i]));
+            output.WriteLine($"{name}: largest difference to djxl {m:g3}");
+            Assert.True(m <= 1e-5, $"{name}: {m}");
+        }
     }
 
     // ------------------------------------------------------------------ K.4 splines, K.5 noise
