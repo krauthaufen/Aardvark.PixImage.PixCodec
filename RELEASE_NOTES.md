@@ -1,3 +1,14 @@
+### 1.0.4
+* DICOM decode (all transfer syntaxes, series, DICOMDIR) and encode, checked against PS3, pydicom and GDCM.
+* Georeferencing: `GeoReference` for GeoTIFF, ENVI and NITF; ENVI and NITF read and written, checked against GDAL.
+* TIFF: JPEG XL and JPEG XR compression, decode and encode.
+* AVIF: gain map HDR decode (`Avif.DecodeHdr`, `ImageCodec.DecodeHdr`), low-overhead `mini` files, grid / alpha / transform fixes from a HEIF and MIAF audit.
+* Gain maps: fixes from a check against ISO 21496-1:2025.
+* JPEG XL: fixes from a check against ISO/IEC 18181-1:2024, conformance levels 5 and 10, encoder 128 / 256 varblocks, fixed a parallel decode race.
+* ICC: black point compensation per ISO 18619, paper white kept for integer images as LittleCMS (`MapWhiteToWhite`).
+* Decode options: `ImageDecodeOptions` (MaxPixels, strict truncation, cancellation), JPEG ScaleEighths and Rgba output, `DecodeBands`.
+* `ImageOps`: Retype, ConvertChannels, Premultiply, bounded resize; faster WebP decode and encode.
+
 ### 1.0.3
 * Encoding allocates next to nothing: JPEG is converted per MCU row with compact blocks between the two passes, deflate stream buffers are reused, TIFF strips are pooled.
 
